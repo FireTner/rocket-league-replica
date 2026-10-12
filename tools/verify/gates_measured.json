@@ -1,0 +1,116 @@
+[
+ {
+  "id": "G1",
+  "gate": "throttle top speed 1410\u00b11",
+  "pass": true,
+  "detail": "1410.06 uu/s ck=a1c67f00ff200012"
+ },
+ {
+  "id": "G2",
+  "gate": "boost cap 2300\u00b11",
+  "pass": true,
+  "detail": "max 2300.0 ck=4be7f0a1fd6e934c"
+ },
+ {
+  "id": "G8",
+  "gate": "supersonic >=2200",
+  "pass": true,
+  "detail": "first tick 190"
+ },
+ {
+  "id": "G3",
+  "gate": "held single jump (truth 214.6\u00b15)",
+  "pass": true,
+  "detail": "rise 214.6 ck=07647d0b7d928256"
+ },
+ {
+  "id": "G4",
+  "gate": "double jump (truth 449.3\u00b18)",
+  "pass": true,
+  "detail": "rise 449.3 ck=05b0247911367c90"
+ },
+ {
+  "id": "G9b",
+  "gate": "small pad +12",
+  "pass": true,
+  "detail": "ck=486a65c66d8c5a30"
+ },
+ {
+  "id": "G9a",
+  "gate": "big pad refill 100",
+  "pass": true,
+  "detail": "ck=830879e4261ba774"
+ },
+ {
+  "id": "G9c",
+  "gate": "big respawn 1200\u00b15 ticks",
+  "pass": true,
+  "detail": "span 1201"
+ },
+ {
+  "id": "G9d",
+  "gate": "small respawn 480\u00b15 ticks",
+  "pass": true,
+  "detail": "small spans [480, 480, 480]"
+ },
+ {
+  "id": "TAS",
+  "gate": "zero divergence",
+  "pass": true,
+  "detail": "3601cf6f803b928c vs 3601cf6f803b928c"
+ },
+ {
+  "id": "G5/6",
+  "gate": "turn rate in family (2.0-2.6 rad/s @~10m/s)",
+  "pass": true,
+  "detail": "2.42 rad/s"
+ },
+ {
+  "id": "G5a",
+  "gate": "turn rate ~2.28 @~1292 (tol \u00b10.15)",
+  "pass": true,
+  "detail": "2.28 rad/s @ 1292 uu/s ck=e7313088c904a8e9"
+ },
+ {
+  "id": "G5b",
+  "gate": "turn rate ~1.98 @~1980 (tol \u00b10.15)",
+  "pass": true,
+  "detail": "1.96 rad/s @ 2299 uu/s ck=1fdd3d635677e9ee"
+ },
+ {
+  "id": "G7",
+  "gate": "front flip (truth 324\u00b110 deg)",
+  "pass": true,
+  "detail": "323.9 deg ck=b716470aaa07b342"
+ },
+ {
+  "id": "G10",
+  "gate": "supersonic demo + 360-tick respawn",
+  "pass": true,
+  "detail": "demo tick 318 bumper 0 victim 1 frozen OK respawn@678 y=4608 OK ck=7a58e155d54071f8"
+ },
+ {
+  "id": "G10b",
+  "gate": "subsonic contact = bump, no demo",
+  "pass": true,
+  "detail": "0 events (expect 0)"
+ },
+ {
+  "id": "I1",
+  "gate": "dodge threshold discontinuity at dodgeDeadzone 0.5",
+  "pass": true,
+  "detail": "peak rot rate: 0.25=83, 0.49=216 (dodge-less), 0.5=423, 1.0=423 deg/s"
+ },
+ {
+  "id": "I2",
+  "gate": "analog input response is monotonic",
+  "pass": true,
+  "detail": "0.25 <= 0.49 <= 0.5 rotation rates hold"
+ },
+ {
+  "id": "I3",
+  "gate": "dodge threshold sums across pitch/yaw/roll channels",
+  "pass": true,
+  "detail": "roll=0.5 alone -> peak rot rate 440 deg/s (flip regime)"
+ }
+]

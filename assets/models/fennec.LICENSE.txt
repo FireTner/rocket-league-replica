@@ -1,0 +1,53 @@
+Fennec - Rocket League Car
+==========================
+
+This file documents the third-party 3D asset shipped in this directory as
+`fennec.glb`.
+
+  Title    : Fennec - Rocket League Car
+  Author   : Jako  (https://sketchfab.com/fairlight51)
+  Source   : https://sketchfab.com/3d-models/fennec-rocket-league-car-5b43b50b6eeb4a12a29671df3418f57a
+  Licence  : Creative Commons Attribution 4.0 International (CC-BY-4.0)
+             https://creativecommons.org/licenses/by/4.0/
+  Format   : glTF 2.0 binary (.glb), 12,567,160 bytes
+  Retrieved: 2026-09-22, via
+             https://raw.githubusercontent.com/IgorPauloRezende/Rocket-League/main/3D%20models/fennec.glb
+
+Attribution is REQUIRED by the licence. It is reproduced in:
+
+  - README.md                       ("Credits / third-party assets")
+  - docs/DISCREPANCIES.md           (finding `carMesh.assets`)
+  - src/render/FennecModel.ts       (file header)
+
+What this asset is and is not
+-----------------------------
+
+It IS a community recreation of the Rocket League Fennec body, used here as the
+player car's visual mesh.
+
+It is NOT geometry extracted from Rocket League. The game's real Fennec mesh
+does exist on this machine, and Rocket League names that car internally
+**"Feline"**, not "Fennec":
+
+  TAGame/CookedPCConsole/body_feline_SF.upk   1,147,341 bytes
+    sha1 81040164ab930b3057c2825e8a72852a320f3de0
+    UE3 FileVersion 868 / LicenseeVersion 32, cooked, zlib
+    names=997  imports=215  exports=598
+    -> 1 SkeletalMesh export "Body_Feline_01", 3,230,720-byte serial payload
+    plus 22 Texture2D, 7 Material, 5 MaterialInstanceConstant, 1 StaticMesh,
+    1 StaticMeshComponent, 1 AnimTree
+
+so the shipped mesh differs from this recreation in ways we cannot measure
+without a UE3 mesh exporter. Reproduce that report with:
+
+    python3 scripts/upk_feline_report.py
+
+This project does not fabricate geometry, so the game mesh is left unextracted
+and this asset's provenance is stated plainly instead.
+
+Trademarks
+----------
+
+Rocket League is a trademark of Psyonix LLC / Epic Games, Inc. This project is
+an unofficial, non-commercial fan reimplementation and is not affiliated with or
+endorsed by Psyonix or Epic Games.

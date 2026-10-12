@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+*.o
+*.a
+
+# Runtime-generated / user-supplied arena collision meshes.
+#
+# NEVER commit collision_meshes/: a dump produced by RLArenaCollisionDumper is
+# Psyonix-owned geometry and must stay a runtime-only, user-supplied input
+# (repo rule 1). The in-repo clean-room mesh is NOT tracked here either — it is
+# regenerated deterministically by `make meshgen`. See docs/MESH_SETUP.md.
+collision_meshes/
+
+# Local scratch
+*.ppm
+render_pacing.log
+__pycache__/
+*.pyc
