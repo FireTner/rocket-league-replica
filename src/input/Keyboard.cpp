@@ -86,11 +86,13 @@ void Keyboard::PollFromState(const Uint8* state, int numKeys, Controls& controls
     };
 
     controls.throttle = axis(bindings_.throttle);
-    // CANONICAL SIGNS (TAPE_FORMAT.md §2, verbatim passthrough, zero negation):
-    // steer +1 = LEFT (slotA), pitch +1 = nose UP (slotA = W/Up),
-    // yaw +1 = left (slotA). axis() already yields slotA - slotB.
+    // CANONICAL SIGNS (TAPE_FORMAT.md §2 describes the SIM layer: pitch +1 =
+    // nose UP). The KEYBOARD layer negates: real RL flies stick-up / W as
+    // nose-DOWN (= front-flip direction, sim pitch -1, MEASURED air_pitch_240
+    // fz>0 under pitch +1). Throttle keeps +1 = forward, so W yields
+    // throttle +1 / pitch -1; axis() already yields slotA - slotB.
     controls.steer = axis(bindings_.steer);
-    controls.pitch = axis(bindings_.pitch);
+    controls.pitch = -axis(bindings_.pitch);
     controls.yaw = axis(bindings_.yaw);
     // roll sign (MEASURED headless air_roll_300: roll +1 = roll-LEFT;
     // up-vector tips toward -x when facing +y). slotA=Q (left), slotB=E.

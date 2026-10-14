@@ -29,7 +29,8 @@ struct AxisBinding {
 struct InputBindings {
     AxisBinding throttle;  // A=forward  B=back
     AxisBinding steer;     // A=left     B=right
-    AxisBinding pitch;     // A=up-ish (W)  B=down-ish (S); reuses drive keys
+    AxisBinding pitch;     // A=forward key (W)  B=back key (S); reuses drive keys,
+                           // Keyboard negates to sim pitch (W -> pitch -1 = nose DOWN)
     AxisBinding yaw;       // A=left     B=right; reuses steer keys
     AxisBinding roll;      // A=roll-left (Q) B=roll-right (E)
     std::vector<std::string> jump = {"Space"};

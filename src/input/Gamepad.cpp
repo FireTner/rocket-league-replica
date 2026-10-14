@@ -163,9 +163,13 @@ void Gamepad::PollFromState(const State& st, Controls& controls, InputEvents& ev
     const float dz = bound_.deadzone;
     DeadzoneResult stick = ApplyDeadzone(st.leftX, st.leftY, dz);
     // Sign contract: throttle +1 = forward (stick up = +Y), steer +1 = LEFT
-    // (stick right = +X, so steer is the negated X). Zero negation elsewhere.
+    // (stick right = +X, so steer is the negated X). The same stick flies
+    // the car in air (RL convention): stick-up = nose-DOWN = sim pitch -1,
+    // stick-X = yaw same sign as steer. Ground frames ignore pitch/yaw.
     c.throttle = stick.y;
     c.steer = -stick.x;
+    c.pitch = -stick.y;
+    c.yaw = c.steer;
 
     auto held = [&](SDL_GameControllerButton b) {
         return b >= 0 && b < SDL_CONTROLLER_BUTTON_MAX && st.buttons[b];

@@ -47,7 +47,7 @@ int main() {
     k.set("W");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);  // first poll: no edges
     CHECK(c.throttle == 1.0f, "W -> throttle +1");
-    CHECK(c.pitch == 1.0f, "W -> pitch +1 (nose UP, tape canonical)");
+    CHECK(c.pitch == -1.0f, "W -> pitch -1 (nose DOWN, RL-correct)");
     k.clear();
     k.set("S");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
