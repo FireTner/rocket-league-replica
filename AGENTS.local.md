@@ -19,3 +19,14 @@ verification are done, to keep sessions fast and cheap.
   every edit.
 - **Renderer / camera / model / FX work:** load the
   `raw-cpp-opengl-compatibility-builder` skill before editing.
+- **Shell output via `rtk` (mandatory).** `rtk` 0.51.0 is on `PATH`
+  (`~/.local/bin/rtk`); the `dsh-bash-rtk` auto-routing plugin is NOT installed
+  (blocked: it caps DSH at <0.2.0, this harness runs 0.2.0-rc.2), so prefix
+  eligible commands with `rtk` by hand. Route every simple `git` (`status`,
+  `log`, `diff`), build/test (`cargo test`, `pytest`, `vitest`, `jest`) and
+  `pnpm` invocation through `rtk`; complex shell (pipes, `&&`/`;`, redirects,
+  `$( )`) always runs native. Never regress to bare commands where an `rtk`
+  subcommand exists. Check savings with `rtk gain` at session end.
+- **Dev shell (mandatory).** Prefix every `bash` session that builds with
+  `source tools/dev-local.sh &&` (one line: ccache, parallel make, git→rtk).
+  Never edit the Makefile to add it.
