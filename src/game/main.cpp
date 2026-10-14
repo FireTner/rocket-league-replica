@@ -484,6 +484,8 @@ int main(int argc, char** argv) {
 			if (padConnected) {
 				ctl.throttle = gp.throttle;
 				ctl.steer = gp.steer;
+				ctl.pitch = gp.pitch;
+				ctl.yaw = gp.yaw;
 				ctl.jump = ctl.jump || gp.jump;
 				ctl.boost = ctl.boost || gp.boost;
 				ctl.handbrake = ctl.handbrake || gp.handbrake;
@@ -655,6 +657,25 @@ int main(int argc, char** argv) {
 		snap.ballPos[2] = bl.z;
 		snap.boost = sim->GetBoost(player);
 		snap.boosting = sim->IsBoosting(player);
+		snap.handbrake = ctl.handbrake;
+		// Render-only airborne heuristic: clearly off the ground or moving
+		// vertically fast. No sim coupling (no new Sim API).
+		snap.airborne = (cs.z > 45.0f) || (cs.vz > 250.0f) || (cs.vz < -250.0f);
+		{
+			// Frame angular speed from fwd/up change (flip / stall gate).
+			static float pF[3] = {1,0,0}, pU[3] = {0,0,1};
+			static uint64_t pT = 0;
+			uint64_t tk = sim->tick();
+			if (pT != 0 && tk > pT) {
+				float dt = float(tk - pT) / 120.0f;
+				float df = (fwdx-pF[0])*(fwdx-pF[0])+(fwdy-pF[1])*(fwdy-pF[1])+(fwdz-pF[2])*(fwdz-pF[2]);
+				float du = (upx-pU[0])*(upx-pU[0])+(upy-pU[1])*(upy-pU[1])+(upz-pU[2])*(upz-pU[2]);
+				snap.angSpeed = (std::sqrt(df) + std::sqrt(du)) / (dt > 0 ? dt : 1.0f);
+				if (snap.angSpeed > 30.0f) snap.angSpeed = 30.0f;
+			}
+			pF[0]=fwdx; pF[1]=fwdy; pF[2]=fwdz;
+			pU[0]=upx; pU[1]=upy; pU[2]=upz; pT = tk;
+		}
 		snap.ballCam = camera.BallCam();
 		snap.demoed = sim->IsDemoed(player); // FX respawn flash
 		snap.tick = (uint32_t)sim->tick();
@@ -991,6 +1012,8 @@ int main(int argc, char** argv) {
 				1, 1.0f, 0.9f, 0.3f);
 		fx.DrawBallIndicator(renderer, snap);
 		fx.DrawBoostFlame(renderer, snap);
+		fx.DrawDrift(renderer, snap);
+		fx.DrawAir(renderer, snap);
 		fx.DrawTrail(renderer, snap);
 		if (menu.IsOpen()) {
 			// On-screen menu (bitmap text) + log mirror.

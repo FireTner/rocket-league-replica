@@ -26,6 +26,9 @@ struct Snapshot {
     float ballPos[3] = {0, 0, 100};
     float boost = 50.0f;           // 0..100
     bool boosting = false;
+    bool handbrake = false;  // powerslide/drift smoke gate (from input)
+    bool airborne = false;   // no ground contact (z + vz heuristic, render-only)
+    float angSpeed = 0.0f;   // rad/s of fwd/up frame change (flip/stall streaks)
     bool ballCam = true;
     bool demoed = false;           // demo respawn hook for FX
     bool goalScored = false;       // goal explosion hook

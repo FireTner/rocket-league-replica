@@ -182,18 +182,188 @@ void FX::DrawBallIndicator(Renderer& r, const Snapshot& s) {
 }
 
 void FX::DrawBoostFlame(Renderer& r, const Snapshot& s) {
+    // RL boost: twin exhaust cones, white-hot core -> yellow -> orange outer,
+    // flickering length, plus faint smoke wisps. Oriented along -forward in
+    // full 3D (works pitched/rolled), unlit emissive.
     if (!s.boosting || s.boost <= 0) return;
     float amt = s.boost / 100.0f; // scale flame by remaining boost
-    float len = 60.0f + 140.0f * amt;
-    float w = 18.0f + 22.0f * amt;
-    float fx = std::cos(s.carYaw), fy = std::sin(s.carYaw);
-    float bx = s.carPos[0] - fx * 70.0f, by = s.carPos[1] - fy * 70.0f;
-    float flick = 0.85f + 0.15f * std::sin(time_ * 40.0f);
-    // Core (yellow-white) + outer (orange), stretched behind car.
-    r.DrawBox(bx - fx*len*0.25f, by - fy*len*0.25f, s.carPos[2],
-              len*flick, w, w*0.7f, s.carYaw, 1.0f, 0.55f, 0.1f, 0.85f);
-    r.DrawBox(bx - fx*len*0.12f, by - fy*len*0.12f, s.carPos[2],
-              len*0.5f*flick, w*0.55f, w*0.4f, s.carYaw, 1.0f, 0.95f, 0.6f, 0.9f);
+    float flick = 0.85f + 0.15f * std::sin(time_ * 43.0f)
+                + 0.06f * std::sin(time_ * 91.0f);
+    float len = (70.0f + 150.0f * amt) * flick;
+    float wOut = 16.0f + 14.0f * amt, wCore = wOut * 0.5f;
+    float fx = s.carForward[0], fy = s.carForward[1], fz = s.carForward[2];
+    // Left vector for twin exhaust offsets (up x fwd), ~24 uu apart.
+    float ux = s.carUp[0], uy = s.carUp[1], uz = s.carUp[2];
+    float lx = uy * fz - uz * fy, ly = uz * fx - ux * fz, lz = ux * fy - uy * fx;
+    float ll = std::sqrt(lx*lx + ly*ly + lz*lz);
+    if (ll < 1e-6f) { lx = -fy; ly = fx; lz = 0; ll = std::sqrt(lx*lx+ly*ly); }
+    lx /= ll; ly /= ll; lz /= ll;
+    glDisable(GL_LIGHTING);
+    glDepthMask(GL_FALSE);
+    for (int e = -1; e <= 1; e += 2) {
+        float ex = s.carPos[0] - fx * 62.0f + lx * (e * 24.0f);
+        float ey = s.carPos[1] - fy * 62.0f + ly * (e * 24.0f);
+        float ez = s.carPos[2] - fz * 62.0f + lz * (e * 24.0f) - 4.0f;
+        float tx = ex - fx * len, ty = ey - fy * len, tz = ez - fz * len;
+        // Build a cone frame: pick side/up perpendicular to flame dir.
+        float ax = -fx, ay = -fy, az = -fz;
+        float sx = ay * uz - az * uy, sy = az * ux - ax * uz, sz2 = ax * uy - ay * ux;
+        float sl = std::sqrt(sx*sx + sy*sy + sz2*sz2);
+        if (sl < 1e-6f) { sx = lx; sy = ly; sz2 = lz; sl = 1; }
+        sx /= sl; sy /= sl; sz2 /= sl;
+        float vx = sy * az - sz2 * ay, vy = sz2 * ax - sx * az, vz = sx * ay - sy * ax;
+        const int N = 10;
+        // Outer cone (orange, translucent).
+        glColor4f(1.0f, 0.45f, 0.08f, 0.75f);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex3f(tx, ty, tz);
+        for (int i = 0; i <= N; i++) {
+            float a = 2.0f * (float)M_PI * i / N;
+            glVertex3f(ex + (std::cos(a) * sx + std::sin(a) * vx) * wOut,
+                       ey + (std::cos(a) * sy + std::sin(a) * vy) * wOut,
+                       ez + (std::cos(a) * sz2 + std::sin(a) * vz) * wOut);
+        }
+        glEnd();
+        // Mid cone (yellow).
+        glColor4f(1.0f, 0.80f, 0.25f, 0.85f);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex3f(ex - fx * len * 0.7f, ey - fy * len * 0.7f, ez - fz * len * 0.7f);
+        for (int i = 0; i <= N; i++) {
+            float a = 2.0f * (float)M_PI * i / N;
+            glVertex3f(ex + (std::cos(a) * sx + std::sin(a) * vx) * wCore * 1.4f,
+                       ey + (std::cos(a) * sy + std::sin(a) * vy) * wCore * 1.4f,
+                       ez + (std::cos(a) * sz2 + std::sin(a) * vz) * wCore * 1.4f);
+        }
+        glEnd();
+        // Hot core (near-white, short).
+        glColor4f(1.0f, 0.97f, 0.85f, 0.95f);
+        glBegin(GL_TRIANGLE_FAN);
+        glVertex3f(ex - fx * len * 0.35f, ey - fy * len * 0.35f, ez - fz * len * 0.35f);
+        for (int i = 0; i <= N; i++) {
+            float a = 2.0f * (float)M_PI * i / N;
+            glVertex3f(ex + (std::cos(a) * sx + std::sin(a) * vx) * wCore * 0.7f,
+                       ey + (std::cos(a) * sy + std::sin(a) * vy) * wCore * 0.7f,
+                       ez + (std::cos(a) * sz2 + std::sin(a) * vz) * wCore * 0.7f);
+        }
+        glEnd();
+        // Exhaust glow sphere at the tip.
+        r.DrawSphere(ex, ey, ez, wCore * 1.1f, 8, 1.0f, 0.85f, 0.5f, 0.8f);
+    }
+    // Smoke wisps trailing behind (grey, expanding, fading).
+    for (int i = 0; i < 6; i++) {
+        float ph = time_ * 7.0f + i * 1.7f;
+        float back = 90.0f + 40.0f * i + 18.0f * std::sin(ph);
+        float a = 0.22f * (1.0f - i / 6.0f);
+        r.DrawSphere(s.carPos[0] - fx * back, s.carPos[1] - fy * back,
+                     s.carPos[2] - fz * back + 8.0f + 6.0f * std::sin(ph * 1.3f),
+                     8.0f + 4.0f * i, 6, 0.55f, 0.55f, 0.58f, a);
+    }
+    glDepthMask(GL_TRUE);
+    if (r.LightingOn()) glEnable(GL_LIGHTING);
+}
+
+void FX::DrawDrift(Renderer& r, const Snapshot& s) {
+    // RL powerslide: white-grey tire smoke at the rear wheels + dark slide
+    // marks when handbrake is held at speed on the ground. Also a light smoke
+    // wisp on hard non-slide turns (high slip) so drift reads pre-slide.
+    float f[3] = {s.carForward[0], s.carForward[1], s.carForward[2]};
+    float u[3] = {s.carUp[0], s.carUp[1], s.carUp[2]};
+    float l[3] = {u[1]*f[2]-u[2]*f[1], u[2]*f[0]-u[0]*f[2], u[0]*f[1]-u[1]*f[0]};
+    float fwdSp = s.carVel[0]*f[0]+s.carVel[1]*f[1]+s.carVel[2]*f[2];
+    float latSp = s.carVel[0]*l[0]+s.carVel[1]*l[1]+s.carVel[2]*l[2];
+    float slip = std::fabs(latSp) / (std::fabs(fwdSp) + 250.0f);
+    bool sliding = s.handbrake && !s.airborne && s.carSpeed > 350.0f;
+    bool hardTurn = !s.airborne && slip > 0.45f && s.carSpeed > 800.0f;
+    if (!sliding && !hardTurn) return;
+    float density = sliding ? 1.0f : 0.4f;
+    glDisable(GL_LIGHTING);
+    glDepthMask(GL_FALSE);
+    for (int w = -1; w <= 1; w += 2) {
+        for (int i = 0; i < 5; i++) {
+            float ph = time_ * 11.0f + i * 2.1f + (w > 0 ? 3.1f : 0.0f);
+            float back = 38.0f + 30.0f * i + 10.0f * std::sin(ph);
+            float side = w * 44.0f + 8.0f * std::sin(ph * 1.7f);
+            float dx = s.carPos[0] - f[0] * back + l[0] * side;
+            float dy = s.carPos[1] - f[1] * back + l[1] * side;
+            float dz = s.carPos[2] - 18.0f + 6.0f * i + 4.0f * std::sin(ph);
+            if (dz < 4.0f) dz = 4.0f;
+            float a = (0.42f - 0.07f * i) * density
+                    * (0.6f + 0.4f * std::sin(ph * 1.3f));
+            if (a < 0) a = 0;
+            r.DrawSphere(dx, dy, dz, 7.0f + 4.5f * i, 6,
+                         0.75f, 0.75f, 0.78f, a);
+        }
+        // Dark rubber mark at the contact patch while sliding.
+        if (sliding)
+            r.DrawDisc(s.carPos[0] - f[0]*38.0f + l[0]*(w*44.0f),
+                       s.carPos[1] - f[1]*38.0f + l[1]*(w*44.0f),
+                       1.5f, 16.0f, 10, 0.08f, 0.08f, 0.09f, 0.5f);
+    }
+    // Supersonic-slide sparks (orange embers mixed into the smoke).
+    if (sliding && s.carSpeed >= supersonic_) {
+        for (int i = 0; i < 4; i++) {
+            float ph = time_ * 17.0f + i * 2.7f;
+            float back = 50.0f + 40.0f * std::fabs(std::sin(ph));
+            float side = (i & 1 ? 44.0f : -44.0f);
+            r.DrawSphere(s.carPos[0]-f[0]*back+l[0]*side,
+                         s.carPos[1]-f[1]*back+l[1]*side,
+                         s.carPos[2]-14.0f+8.0f*std::sin(ph), 4.5f, 5,
+                         1.0f, 0.55f, 0.15f, 0.6f);
+        }
+    }
+    glDepthMask(GL_TRUE);
+    if (r.LightingOn()) glEnable(GL_LIGHTING);
+}
+
+void FX::DrawAir(Renderer& r, const Snapshot& s) {
+    // Flip / stall read: fast rotation draws motion streak arcs around the
+    // car (like RL's dodge blur); a stall — airborne, slow spin AFTER recent
+    // rotation — draws a brief stabilization ring + puff so the cancel reads.
+    // Stall latch is render-only (no sim coupling): high angSpeed arms it,
+    // and near-zero spin while still airborne shows the ring briefly.
+    static float stallT = 0, cool = 0;
+    bool spinning = s.airborne && s.angSpeed > 6.0f;
+    if (spinning) { stallT = 0.55f; cool = 0.0f; }
+    if (cool > 0) cool -= 1.0f / 120.0f;
+    float dt = 1.0f / 120.0f;
+    if (stallT > 0) stallT -= dt;
+    glDisable(GL_LIGHTING);
+    glDepthMask(GL_FALSE);
+    if (spinning) {
+        // 3 orthogonal streak arcs (forward/left/up planes), alpha by rate.
+        float a = 0.25f + 0.45f * (s.angSpeed / 12.0f);
+        if (a > 0.7f) a = 0.7f;
+        const int N = 20;
+        for (int plane = 0; plane < 3; plane++) {
+            glColor4f(0.65f, 0.85f, 1.0f, a * (plane == 0 ? 1.0f : 0.55f));
+            glBegin(GL_LINE_STRIP);
+            for (int i = 0; i <= N; i++) {
+                float t = -0.9f + 1.8f * i / N + time_ * 2.0f;
+                float c = std::cos(t) * 95.0f, q = std::sin(t) * 95.0f;
+                float x = s.carPos[0], y = s.carPos[1], z = s.carPos[2] + 10.0f;
+                if (plane == 0) { x += c * s.carForward[0]; y += c * s.carForward[1]; z += q; }
+                else if (plane == 1) {
+                    float lx = s.carUp[1]*s.carForward[2]-s.carUp[2]*s.carForward[1];
+                    float ly = s.carUp[2]*s.carForward[0]-s.carUp[0]*s.carForward[2];
+                    x += c * lx; y += c * ly; z += q * 0.6f;
+                } else { x += c; y += q * 0.6f; }
+                glVertex3f(x, y, z);
+            }
+            glEnd();
+        }
+    } else if (s.airborne && stallT > 0 && cool <= 0) {
+        // Stall / flip-cancel freeze ring: thin cyan ring + soft puff.
+        float k = stallT / 0.55f; // 1 -> 0
+        r.DrawRing(s.carPos[0], s.carPos[1], s.carPos[2] + 10.0f,
+                   90.0f + 60.0f * (1.0f - k), 96.0f + 60.0f * (1.0f - k),
+                   32, 0.6f, 0.9f, 1.0f, 0.6f * k);
+        r.DrawSphere(s.carPos[0], s.carPos[1], s.carPos[2] + 10.0f,
+                     30.0f + 40.0f * (1.0f - k), 8,
+                     0.7f, 0.9f, 1.0f, 0.25f * k);
+        if (stallT <= 0) cool = 1.0f;
+    }
+    glDepthMask(GL_TRUE);
+    if (r.LightingOn()) glEnable(GL_LIGHTING);
 }
 
 void FX::DrawTrail(Renderer& r, const Snapshot& s) {

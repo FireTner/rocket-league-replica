@@ -37,6 +37,11 @@ public:
     // Boost flame behind car, scaled by boost amount + boosting flag.
     void DrawBoostFlame(Renderer& r, const Snapshot& s);
 
+    // Powerslide/drift tire smoke + stall/flip-cancel air streaks. Call after
+    // camera Apply with the current snapshot. Deterministic (sim time).
+    void DrawDrift(Renderer& r, const Snapshot& s);
+    void DrawAir(Renderer& r, const Snapshot& s);
+
     // Supersonic feedback: fading trail ribbon + wheel embers when
     // carSpeed >= threshold (default 2200 uu/s). Also drives the goal
     // shockwave ring and demo flash.
