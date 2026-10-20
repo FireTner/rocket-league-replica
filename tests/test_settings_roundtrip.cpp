@@ -26,16 +26,20 @@ int main() {
     CHECK(loaded, ("load: " + (loaded ? std::string("ok") : err)).c_str());
     CHECK(s.camera.fov == 110.0f, "camera.fov == 110");
     CHECK(s.camera.ballcam == true, "camera.ballcam == true");
+    CHECK(s.camera.transitionSpeed == 1.2f, "camera.transition_speed == 1.2");
+    CHECK(s.camera.swivelSpeed == 5.0f, "camera.swivel_speed == 5.0");
+    CHECK(s.camera.shake == true, "camera.shake == true");
+    CHECK(s.camera.invertSwivel == false, "camera.invert_swivel == false");
     CHECK(s.input.throttle.slotA.size() == 2 && s.input.throttle.slotA[0] == "W" &&
               s.input.throttle.slotA[1] == "Up",
           "throttle slotA == {W,Up}");
     CHECK(s.input.throttle.slotB.size() == 2 && s.input.throttle.slotB[0] == "S",
           "throttle slotB starts with S");
-    CHECK(s.input.boost.size() == 1 && s.input.boost[0] == "LeftShift",
-          "boost == {LeftShift}");
+    CHECK(s.input.boost.size() == 1 && s.input.boost[0] == "K",
+          "boost == {K}");
     CHECK(s.input.handbrake.size() == 2, "handbrake has 2 keys");
-    CHECK(s.input.kickoff[4].size() == 1 && s.input.kickoff[4][0] == "F5",
-          "kickoff_4 == {F5}");
+    CHECK(s.input.kickoff[4].size() == 1 && s.input.kickoff[4][0] == "5",
+          "kickoff_4 == {5}");
     CHECK(s.physics.tick == 120, "physics.tick == 120");
     CHECK(s.boost.unlimited == false, "boost.unlimited == false");
     CHECK(s.arena.soccar == true, "arena.soccar == true");
@@ -44,6 +48,10 @@ int main() {
     std::printf("[2] modify every section, save to /tmp/rt_out.ini\n");
     s.camera.fov = 100.0f;
     s.camera.ballcam = false;
+    s.camera.transitionSpeed = 1.5f;
+    s.camera.swivelSpeed = 7.0f;
+    s.camera.shake = false;
+    s.camera.invertSwivel = true;
     s.input.throttle.slotA = {"T"};
     s.input.jump = {"J", "Space"};
     s.physics.tick = 60;
@@ -60,6 +68,10 @@ int main() {
     CHECK(reloaded, ("reparse: " + (reloaded ? std::string("ok") : err)).c_str());
     CHECK(r.camera.fov == 100.0f, "fov mutation survived (100)");
     CHECK(r.camera.ballcam == false, "ballcam mutation survived (false)");
+    CHECK(r.camera.transitionSpeed == 1.5f, "transition_speed mutation survived (1.5)");
+    CHECK(r.camera.swivelSpeed == 7.0f, "swivel_speed mutation survived (7)");
+    CHECK(r.camera.shake == false, "shake mutation survived (false)");
+    CHECK(r.camera.invertSwivel == true, "invert_swivel mutation survived (true)");
     CHECK(r.camera.distance == 270.0f, "untouched camera.distance intact (270)");
     CHECK(r.input.throttle.slotA.size() == 1 && r.input.throttle.slotA[0] == "T",
           "throttle.slotA mutation survived ({T})");

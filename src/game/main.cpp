@@ -11,9 +11,11 @@
 #include <SDL2/SDL.h>
 #include <GL/gl.h> // --calibrate 3D-path probe draws raw fixed-function quads
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,7 @@
 #include "menu/Menu.h"
 #include "models/Fennec.h"
 #include "models/Models.h"
+#include "models/ArenaTextures.h"
 #include "render/Renderer.h"
 #include "settings/Settings.h"
 #include "sim/Sim.h"
@@ -281,8 +284,22 @@ int main(int argc, char** argv) {
 		std::fprintf(stderr, "[game] SDL_INIT_GAMECONTROLLER failed: %s\n", SDL_GetError());
 
 	rl::Renderer renderer;
+	// GRAPHICS45 G2: request GL 4.5 compatibility profile via SDL_GL attrs.
+	// (Renderer::Init re-asserts the same values before CreateWindow; both
+	// agree. No fallback — Init aborts loudly when 4.5-compat is unavailable.)
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+	if (settings.render.msaa > 0) {
+		int msaa = settings.render.msaa < 0 ? 0 : (settings.render.msaa > 16 ? 16 : settings.render.msaa);
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa);
+	} else {
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+		SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+	}
 	if (!renderer.Init(1280, 720, !noVsync)) {
-		std::fprintf(stderr, "[game] renderer init failed\n");
+		std::fprintf(stderr, "[game] FATAL: renderer init failed (GL 4.5 compatibility required, no fallback)\n");
 		delete sim;
 		return 1;
 	}
@@ -297,6 +314,10 @@ int main(int argc, char** argv) {
 	camera.Params().height = settings.camera.height;
 	camera.Params().angle = settings.camera.angle;
 	camera.Params().stiffness = settings.camera.stiffness;
+	camera.Params().transitionSpeed = settings.camera.transitionSpeed;
+	camera.Params().swivelSpeed = settings.camera.swivelSpeed;
+	camera.Params().shake = settings.camera.shake;
+	camera.Params().invertSwivel = settings.camera.invertSwivel;
 	if (!settings.camera.ballcam && camera.BallCam())
 		camera.ToggleBallCam();
 	if (settings.camera.ballcam && !camera.BallCam())
@@ -374,6 +395,13 @@ int main(int argc, char** argv) {
 		[&](int) { sim->ResetCarToSpawn(player); sim->ResetCarToSpawn(botIdx); sim->ResetBall(); },
 		[&]() { camera.ToggleBallCam(); },
 		[&]() { unlimitedBoost = !unlimitedBoost; },
+		[&]() {
+			std::string err;
+			if (!rl::Settings::Save("config/settings.ini", settings, &err))
+				std::fprintf(stderr, "[menu] save failed: %s\n", err.c_str());
+			else
+				std::fprintf(stderr, "[menu] settings saved\n");
+		},
 	});
 
 	bool running = true, menuLogged = false;
@@ -397,6 +425,11 @@ int main(int argc, char** argv) {
 
 	while (running) {
 		SDL_PumpEvents();
+		// Set when the event path below already toggled the menu for an
+		// Escape keydown this frame. keyboard.Poll() still sees the held
+		// Escape as an ev.openMenu edge afterwards, which would toggle the
+		// menu right back (Esc looked dead). The poll edge is ignored once.
+		bool escToggledMenu = false;
 		// Discrete key events.
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
@@ -425,6 +458,7 @@ int main(int argc, char** argv) {
 				if (menu.IsOpen()) {
 					if (k == SDLK_ESCAPE) {
 						menu.Close();
+						escToggledMenu = true;
 					} else {
 						menu.HandleKey(k);
 						for (auto& line : menu.RenderText())
@@ -432,10 +466,11 @@ int main(int argc, char** argv) {
 					}
 				} else if (k == SDLK_ESCAPE) {
 					menu.Open();
+					escToggledMenu = true;
 					for (auto& line : menu.RenderText())
 						std::fprintf(stderr, "[menu] %s\n", line.c_str());
-				} else if (k == SDLK_b) {
-					camera.ToggleBallCam();
+				} else if (k == SDLK_c) {
+					sim->ResetBall();
 				} else if (k == SDLK_m) {
 					audio.SetMuted(!audio.Muted());
 					std::fprintf(stderr, "[game] audio %s\n",
@@ -447,14 +482,22 @@ int main(int argc, char** argv) {
 				} else if (k == SDLK_F12) {
 					shotTaken = 2; // capture before EndFrame below
 				} else if (k == SDLK_r) {
-				} else if (k == SDLK_r) {
 					sim->ResetCarToSpawn(player);
-				} else if (k == SDLK_t) {
-					sim->ResetBall();
-				} else if (k >= SDLK_F1 && k <= SDLK_F5) {
-					sim->ResetCarToSpawn(player);
-					sim->ResetCarToSpawn(botIdx);
-					sim->ResetBall();
+				} else if (k >= SDLK_1 && k <= SDLK_5) {
+					Sim::BodySample cc;
+					sim->GetCar(player, &cc);
+					float fx0 = 0, fy0 = 1;
+					float fz0 = 0;
+					sim->GetCarForward(player, &fx0, &fy0, &fz0);
+					float fl = sqrtf(fx0*fx0 + fy0*fy0);
+					if (fl > 1e-6f) { fx0 /= fl; fy0 /= fl; }
+					int drill = (int)(k - SDLK_1);
+					if (drill == 0) sim->SetBall(cc.x + fx0*400, cc.y + fy0*400, 110, 0, 0, 0);
+					else if (drill == 1) sim->SetBall(cc.x, cc.y, cc.z + 250, cc.vx, cc.vy, cc.vz);
+					else if (drill == 2) sim->SetBall(cc.x + fx0*1800, cc.y + fy0*1800, 300, -fx0*1200, -fy0*1200, 200);
+					else if (drill == 3) sim->SetBall(cc.x, cc.y, 110, 0, 0, 1400);
+					else sim->SetBall(cc.x * 0.3f, (cc.y > 0 ? 3500 : -3500), 500, 0, (cc.y > 0 ? 1200 : -1200), 300);
+					std::fprintf(stderr, "[game] drill %d ball spawn\n", drill + 1);
 				}
 			}
 		}
@@ -507,12 +550,12 @@ int main(int argc, char** argv) {
 			if (!menuLogged) {
 				menuLogged = true;
 			}
-			if (ev.openMenu)
+			if (ev.openMenu && !escToggledMenu)
 				menu.Close();
 			ctl = rl::Controls(); // menu open: no driving
 		} else {
 			menuLogged = false;
-			if (ev.openMenu)
+			if (ev.openMenu && !escToggledMenu)
 				menu.Open();
 			if (ev.toggleBallcam)
 				camera.ToggleBallCam();
@@ -523,10 +566,42 @@ int main(int argc, char** argv) {
 			if (ev.toggleUnlimitedBoost)
 				unlimitedBoost = !unlimitedBoost;
 			if (ev.kickoffIndex >= 0) {
-				sim->ResetCarToSpawn(player);
-				sim->ResetCarToSpawn(botIdx);
-				sim->ResetBall();
+				// Ball drills 1..5 (rebindable via kickoff_0..4): ball-only.
+				Sim::BodySample cc;
+				sim->GetCar(player, &cc);
+				float fx0 = 0, fy0 = 1;
+				float fz0 = 0;
+				sim->GetCarForward(player, &fx0, &fy0, &fz0);
+				float fl = sqrtf(fx0*fx0 + fy0*fy0);
+				if (fl > 1e-6f) { fx0 /= fl; fy0 /= fl; }
+				int drill = ev.kickoffIndex;
+				if (drill == 0) sim->SetBall(cc.x + fx0*400, cc.y + fy0*400, 110, 0, 0, 0);
+				else if (drill == 1) sim->SetBall(cc.x, cc.y, cc.z + 250, cc.vx, cc.vy, cc.vz);
+				else if (drill == 2) sim->SetBall(cc.x + fx0*1800, cc.y + fy0*1800, 300, -fx0*1200, -fy0*1200, 200);
+				else if (drill == 3) sim->SetBall(cc.x, cc.y, 110, 0, 0, 1400);
+				else sim->SetBall(cc.x * 0.3f, (cc.y > 0 ? 3500 : -3500), 500, 0, (cc.y > 0 ? 1200 : -1200), 300);
+				std::fprintf(stderr, "[game] drill %d ball spawn\n", drill + 1);
 			}
+			{
+				// J held = look behind (rear view). Fixed key, like F freecam.
+				int nKeys = 0;
+				const Uint8* ks = SDL_GetKeyboardState(&nKeys);
+				bool behind = ks && SDL_SCANCODE_J < nKeys && ks[SDL_SCANCODE_J];
+				camera.SetLookBehind(behind && !menu.IsOpen());
+			}
+		}
+
+		// Camera swivel (right-stick look): gamepad-only, deadzoned with the
+		// same radial deadzone as the left stick. Zero while the menu is
+		// open so menu navigation never moves the camera.
+		float swivelX = 0.0f, swivelY = 0.0f;
+		if (!menu.IsOpen() && gamepad.connected()) {
+			float rx = 0.0f, ry = 0.0f;
+			gamepad.RightStick(rx, ry);
+			rl::Gamepad::DeadzoneResult dz =
+				rl::Gamepad::ApplyDeadzone(rx, ry, settings.gamepad.deadzone);
+			swivelX = dz.x;
+			swivelY = dz.y;
 		}
 
 		// Player -> sim (verbatim; Keyboard owns canonical signs).
@@ -704,6 +779,10 @@ int main(int argc, char** argv) {
 		camera.Params().height = settings.camera.height;
 		camera.Params().angle = settings.camera.angle;
 		camera.Params().stiffness = settings.camera.stiffness;
+		camera.Params().transitionSpeed = settings.camera.transitionSpeed;
+		camera.Params().swivelSpeed = settings.camera.swivelSpeed;
+		camera.Params().shake = settings.camera.shake;
+		camera.Params().invertSwivel = settings.camera.invertSwivel;
 		if (freeCam) {
 			// Free flight: throttle dolly, steer orbit, jump/boost height.
 			float fvx = freeCenter[0] - freeEye[0], fvy = freeCenter[1] - freeEye[1],
@@ -737,7 +816,11 @@ int main(int argc, char** argv) {
 				freeEye[2] = 20;
 			camera.SetFreeView(freeEye, freeCenter);
 		} else {
-			camera.Update(dtf, snap.carPos, snap.carYaw, snap.ballPos, camera.BallCam());
+			// Supersonic threshold 2200 (G8 MEASURED) selects the extra
+			// dynamic distance/FOV kick (Rocket Science #2).
+			camera.Update(dtf, snap.carPos, snap.carYaw, snap.ballPos,
+				camera.BallCam(), snap.carSpeed, snap.carSpeed >= 2200.0f,
+				swivelX, swivelY);
 		}
 		// Camera collision (1:1 feel): RL pulls the eye in when a wall would
 		// block it. Clamp the smoothed eye inside the shell so translucent
@@ -760,9 +843,9 @@ int main(int argc, char** argv) {
 		}
 		// Camera shake (W5): a presentation-only overlay on the eye. It never
 		// touches CameraParams (the 1:1 defaults stay exact) and is disabled
-		// for freecam/capture and with --no-shake, so gate captures are
-		// pixel-stable.
-		if (!freeCam && !noShake) {
+		// for freecam/capture, with --no-shake, and by the [camera] shake
+		// setting (RL default ON), so gate captures stay pixel-stable.
+		if (!freeCam && !noShake && settings.camera.shake) {
 			float sh[2];
 			fx.ShakeOffset(sh);
 			if (sh[0] != 0.0f || sh[1] != 0.0f) {
@@ -803,154 +886,14 @@ int main(int argc, char** argv) {
 		// (x +/-4096, y +/-5120) rather than the old +/-9000.
 		if (debugGrid)
 			renderer.DrawGroundGrid(5120.0f, 512.0f);
-		for (int i = 0; i < 16; i++) {
-			float y0 = -5120.0f + i * 640.0f;
-			bool dark = (i % 2) == 0;
-			renderer.DrawBox(0, y0 + 320, -5, 8192, 640, 8, 0,
-				dark ? 0.11f : 0.14f, dark ? 0.52f : 0.60f, dark ? 0.09f : 0.11f, 1.0f);
-		}
-		renderer.DrawBox(0, 0, 1, 8192, 24, 2, 0, 0.9f, 0.9f, 0.9f, 0.9f); // midfield
-		for (int i = 0; i < 36; i++) { // center circle r=600 (approx)
-			float a = i * 2.0f * 3.14159265f / 36.0f;
-			renderer.DrawBox(600.0f * cosf(a), 600.0f * sinf(a), 1, 26, 26, 2, a,
-				0.9f, 0.9f, 0.9f, 0.9f);
-		}
-		// ---- Glass walls (transparent, hex net) + curbs + goals -----------
-		// Analytic 1:1 dims: side walls x=±4096, back y=±5120, ceiling 2044,
-		// goal mouths |x|<892.755 z<642.775, corner planes |x|+|y|=8064.
-		struct Curb { float x, y, yaw, halfLen, r; };
-		// Wall-base fillets (the physics wall fillet, made visible): side 256,
-		// back 160 (mesh-measured, rl-like). Color: cool blue-gray curb.
-		auto curbQuad = [&](float cx, float cy, float cz, float sx, float sy,
-				float r, float g, float b, float a) {
-			renderer.DrawBox(cx, cy, cz, sx, sy, 1.0f, 0, r, g, b, a);
-		};
-		auto wallCurb = [&](float cx, float cy, float yaw, float halfLen, float rr) {
-			// Quarter-round from floor to wall, swept along the wall base.
-			// Local: x along wall, y outward to wall, z up.
-			const int LN = 24, AN = 6;
-			glPushMatrix();
-			glTranslatef(cx, cy, 0);
-			glRotatef(yaw, 0, 0, 1); // yaw is DEGREES here (see the calls below)
-			glColor4f(0.20f, 0.28f, 0.37f, 1.0f);
-			glBegin(GL_QUADS);
-			for (int i = 0; i < LN; i++) {
-				float x0 = -halfLen + 2 * halfLen * i / float(LN);
-				float x1 = -halfLen + 2 * halfLen * (i + 1) / float(LN);
-				for (int k = 0; k < AN; k++) {
-					float a0 = k * (float)M_PI / 2 / AN, a1 = (k + 1) * (float)M_PI / 2 / AN;
-					float y0 = -rr + rr * cosf(a0), z0 = rr - rr * sinf(a0);
-					float y1 = -rr + rr * cosf(a1), z1 = rr - rr * sinf(a1);
-					glNormal3f(0, -sinf((a0 + a1) / 2), cosf((a0 + a1) / 2));
-					glVertex3f(x0, y0, z0); glVertex3f(x1, y0, z0);
-					glVertex3f(x1, y1, z1); glVertex3f(x0, y1, z1);
-				}
-			}
-			glEnd();
-			glPopMatrix();
-		};
-		// Local-frame convention (must hold for EVERY wall): local +x runs
-		// ALONG the wall, local +y points OUTWARD (into the wall), local +z up.
-		// yaw is in DEGREES and rotates local -> world, so local +y must map to
-		// the wall's outward normal and local +x to its tangent. The straight
-		// walls stop at the 45 deg chamfer junctions (side y=+/-3968, back
-		// x=+/-2944): the collision octagon has no wall past those points, so a
-		// longer visual panel was a wall you could drive through.
-		wallCurb(4096.0f, 0.0f, -90.0f, 3968.0f, 256.0f);   // +x side, n = +X
-		wallCurb(-4096.0f, 0.0f, 90.0f, 3968.0f, 256.0f);   // -x side, n = -X
-		wallCurb(0.0f, 5120.0f, 0.0f, 2944.0f, 160.0f);     // +y back, n = +Y
-		wallCurb(0.0f, -5120.0f, 180.0f, 2944.0f, 160.0f);  // -y back, n = -Y
-		// 45° chamfers: centre = midpoint of (4096,3968)-(2944,5120) =
-		// (3520,4544). Local +y must point OUTWARD for every corner, so the
-		// -Y side needs +135/-135 (the old +/-45 faced the cove inwards).
-		wallCurb(3520.0f, 4544.0f, -45.0f, 814.6f, 208.0f);
-		wallCurb(-3520.0f, 4544.0f, 45.0f, 814.6f, 208.0f);
-		wallCurb(3520.0f, -4544.0f, -135.0f, 814.6f, 208.0f);
-		wallCurb(-3520.0f, -4544.0f, 135.0f, 814.6f, 208.0f);
-		(void)curbQuad;
-		// Glass shell: tinted quad + hex net on the inner surface. The net is
-		// offset INWARD from the panel so it is not depth-occluded by the
-		// (nearer) glass face — with both at the same plane the net never drew
-		// a pixel, which is why the walls read as blank sheets before.
-		// Alpha/cell values are documented in docs/VISUAL_PARITY_LEDGER.md.
-		// Deepened tint + raised alpha after the lighting rework: the key/fill
-		// model multiplies the tint up, so the old (0.22,0.44,0.90)@0.16 washed
-		// out to near-neutral grey. VG6 asserts the walls stay >90% blue.
-		const float kGlassA = 0.30f, kHexA = 0.42f, kHexCell = 420.0f;
-		auto glass = [&](float cx, float cy, float cz, float sx, float sy, float sz,
-				float hexYawDeg, float halfW, float netDX, float netDY) {
-			renderer.DrawBox(cx, cy, cz, sx, sy, sz, 0, 0.06f, 0.20f, 0.95f, kGlassA);
-			// DrawHexNet takes its yaw in radians (the Renderer convention);
-			// this lambda's angle is in degrees like every other wall angle.
-			if (!noHexNet)
-				renderer.DrawHexNet(cx + netDX, cy + netDY, cz, halfW, sz * 0.5f,
-					hexYawDeg * (float)M_PI / 180.0f,
-					kHexCell, 0.90f, 0.95f, 1.0f, kHexA);
-		};
-		// Hex-net yaw = the wall TANGENT direction (local +x runs along the
-		// wall): side walls run along Y (90°), back walls along X (0°). Panel
-		// length stops at the chamfer junctions (side y=+/-3968, back
-		// x=+/-2944), matching the collision octagon.
-		glass(4096.0f + 2.0f, 0.0f, 1024.0f, 6.0f, 7936.0f, 2048.0f, 90.0f, 3968.0f, -5.0f, 0.0f);
-		glass(-4096.0f - 2.0f, 0.0f, 1024.0f, 6.0f, 7936.0f, 2048.0f, 90.0f, 3968.0f, 5.0f, 0.0f);
-		glass(0.0f, 5120.0f + 2.0f, 1024.0f, 5888.0f, 6.0f, 2048.0f, 0.0f, 2944.0f, 0.0f, -5.0f);
-		glass(0.0f, -5120.0f - 2.0f, 1024.0f, 5888.0f, 6.0f, 2048.0f, 0.0f, 2944.0f, 0.0f, 5.0f);
-		// Corner glass panels (45° planes, |x|+|y| = 8064, length 1629).
-		auto cornerGlass = [&](float cx, float cy, float yaw) {
-			glPushMatrix();
-			glTranslatef(cx, cy, 1024.0f);
-			glRotatef(yaw, 0, 0, 1);
-			renderer.DrawBox(0, 0, 0, 1629.0f, 6.0f, 2048.0f, 0, 0.22f, 0.44f, 0.90f, 0.16f);
-			// local +y is outward, so -5 puts the net just inside the glass.
-			renderer.DrawHexNet(0, -5.0f, 0, 814.6f, 1024.0f, 0.0f, 420.0f, 0.80f, 0.90f, 1.0f, 0.13f);
-			glPopMatrix();
-		};
-		// Corner panels: centre = the chamfer midpoint (3520,4544), yaw = the
-		// corner wall's tangent direction with local +y OUTWARD (same
-		// convention as the curbs above).
-		cornerGlass(3520.0f, 4544.0f, -45.0f);
-		cornerGlass(-3520.0f, 4544.0f, 45.0f);
-		cornerGlass(3520.0f, -4544.0f, -135.0f);
-		cornerGlass(-3520.0f, -4544.0f, 135.0f);
-		// Ceiling: base panel + structural beams so it reads as a ceiling rather
-		// than a void (VISUAL_BUGS_TODO.md V5). Drawn before the lip trim so the
-		// trim stays on top. The previous base was (0.02,0.04,0.07) -- near-black
-		// once the old single light left the -Z face ambient-only.
-		renderer.DrawBox(0, 0, 2044.0f + 30.0f, 8192.0f, 10240.0f, 8.0f, 0,
-			0.15f, 0.19f, 0.27f, 0.92f);
-		for (int i = 0; i < 9; i++) { // cross beams
-			float y = -5120.0f + 640.0f + i * 1120.0f;
-			renderer.DrawBox(0, y, 2044.0f + 18.0f, 8192.0f, 90.0f, 30.0f, 0,
-				0.28f, 0.34f, 0.45f, 0.9f);
-		}
-		for (int i = 0; i < 7; i++) { // longitudinal beams
-			float x = -4096.0f + 585.0f + i * 1170.0f;
-			renderer.DrawBox(x, 0, 2044.0f + 18.0f, 90.0f, 10240.0f, 30.0f, 0,
-				0.28f, 0.34f, 0.45f, 0.9f);
-		}
-		// Curb lip (r=550 arc) with emissive trim.
-		renderer.DrawBox(0, 0, 2044.0f - 6.0f, 8192.0f, 10240.0f, 10.0f, 0,
-			0.13f, 0.19f, 0.28f, 0.85f);
-		renderer.DrawBox(0, 0, 2044.0f - 14.0f, 8192.0f, 10240.0f, 4.0f, 0,
-			0.45f, 0.72f, 1.0f, 0.45f);
-		// Goals (mouths at |x|<892.755, z<642.775, depth to |y|=6000):
-		// dark interior + glowing team trim frame + white posts/crossbar.
-		for (int g = 0; g < 2; g++) {
-			float ys = g == 0 ? 5120.0f : -5120.0f;
-			float tr = g == 0 ? 1.0f : 0.16f, tg = g == 0 ? 0.48f : 0.55f,
-				tb = g == 0 ? 0.10f : 1.0f;
-			// Interior shell (dark, team-tinted net box).
-			renderer.DrawBox(0, ys + (g == 0 ? 440.0f : -440.0f), 321.0f,
-				1785.51f, 880.0f, 642.775f, 0, tr * 0.35f, tg * 0.35f, tb * 0.35f, 0.30f);
-			// Glowing trim frame around the mouth (emissive team color).
-			renderer.DrawBox(0, ys, 642.775f + 8.0f, 1875.0f, 26.0f, 14.0f, 0, tr, tg, tb, 0.95f);
-			renderer.DrawBox(-906.0f, ys, 321.0f, 26.0f, 26.0f, 642.775f + 8.0f, 0, tr, tg, tb, 0.95f);
-			renderer.DrawBox(906.0f, ys, 321.0f, 26.0f, 26.0f, 642.775f + 8.0f, 0, tr, tg, tb, 0.95f);
-			// White posts + crossbar (felt in RL).
-			renderer.DrawBox(-892.755f, ys, 321.4f, 24.0f, 24.0f, 642.775f, 0, 0.95f, 0.95f, 0.95f, 1.0f);
-			renderer.DrawBox(892.755f, ys, 321.4f, 24.0f, 24.0f, 642.775f, 0, 0.95f, 0.95f, 0.95f, 1.0f);
-			renderer.DrawBox(0, ys, 642.775f, 1815.51f, 24.0f, 24.0f, 0, 0.95f, 0.95f, 0.95f, 1.0f);
-		}
+		// G3c: arena draw buckets (GRAPHICS45 §5/G3 step 3). Replaces the
+		// per-frame immediate arena calls below (turf B1 + markings B2 overlay +
+		// glass/crown/round walls C1-C4 + trim/beams/cove/skirt/goal-trim A/D +
+		// ceiling B4 + bases B3/B7 + skirts B5/B6 + opaque goal boxes A5/A6).
+		// Order inside buckets (opaque -> B2 overlay -> glass) matches the old
+		// state sandwiches (V5/V6); B2 keeps depth-test OFF and C5/C6 keep
+		// depth-write OFF inside their own draws. Grid instrument above stays.
+		renderer.DrawArenaBuckets(sim->usingRealSoccar(), noHexNet);
 		// Pads.
 		{
 			int n = sim->NumPads();
@@ -982,6 +925,9 @@ int main(int argc, char** argv) {
 			rl::DrawCar(renderer, osnap, false);
 		}
 		rl::DrawBall(renderer, snap);
+		// G3c: goal interiors via buckets (C5 shells + C6 weave, depth-write
+		// OFF inside). Stays AFTER cars/ball: C5/C6 blend OVER cars today.
+		renderer.DrawArenaGoalInteriors(sim->usingRealSoccar());
 		if (debugColliders) {
 			// W6 instrument: x-ray collision proxies over the shaded scene.
 			glDisable(GL_DEPTH_TEST);
@@ -1016,16 +962,138 @@ int main(int argc, char** argv) {
 		fx.DrawAir(renderer, snap);
 		fx.DrawTrail(renderer, snap);
 		if (menu.IsOpen()) {
-			// On-screen menu (bitmap text) + log mirror.
+			// RL-style SETTINGS panel: full-screen dim, centered card with a
+			// title bar, section sub-bars, a cyan selection bar, right-
+			// aligned values (binding pills), scroll-follow and a footer
+			// with hints. Data comes straight from Menu::RenderText() so
+			// the view can never diverge from settings.ini (schema v1).
+			const auto& items = menu.items();
+			int sel = menu.selected();
 			std::vector<std::string> lines = menu.RenderText();
-			int rows = int(lines.size());
-			int panelW = 760, panelH = rows * 18 + 24;
-			renderer.FillRect2D(20, 20, panelW, panelH, 0.05f, 0.06f, 0.09f, 0.85f);
-			for (int i = 0; i < rows; i++) {
-				bool sel = (i == menu.selected());
-				renderer.DrawText2D(32, 32 + i * 18, lines[size_t(i)].c_str(), 2,
-					sel ? 1.0f : 0.75f, sel ? 0.85f : 0.8f, sel ? 0.2f : 0.85f);
+			// Duplicate keyboard bindings get an orange value as a conflict
+			// hint (gamepad names live in a separate namespace: skipped).
+			std::map<std::string, int> bindUse;
+			for (const auto& it : items)
+				if (it.kind == rl::Menu::ItemKind::Binding && it.value) {
+					std::string v = it.value();
+					if (!v.empty() && v != "(none)") bindUse[v]++;
+				}
+			// NOTE: lines[0] is the "=== SETTINGS ===" title; items[n]
+			// renders as lines[n+1]. All index math below accounts for it.
+			const int kRows = 22;  // visible item rows under the title
+			int first = 1;
+			int selLine = sel + 1;
+			if ((int)lines.size() > kRows + 1) {
+				first = selLine - kRows / 2;
+				if (first < 1) first = 1;
+				int maxFirst = (int)lines.size() - kRows;
+				if (first > maxFirst) first = maxFirst;
 			}
+			int last = std::min((int)lines.size(), first + kRows);
+			const int px = 190, pw = 900;
+			const int rowH = 22, topH = 44, footH = 30;
+			int ph = topH + (last - first) * rowH + footH + 14;
+			int py = (720 - ph) / 2;
+			if (py < 8) py = 8;
+			renderer.FillRect2D(0, 0, 1280, 720, 0.01f, 0.02f, 0.04f, 0.72f);
+			renderer.FillRect2D(px, py, pw, ph, 0.05f, 0.08f, 0.14f, 0.96f);
+			// Title bar (RL blue) + accent line.
+			renderer.FillRect2D(px, py, pw, topH, 0.07f, 0.28f, 0.55f, 1.0f);
+			renderer.FillRect2D(px, py + topH - 3, pw, 3, 0.15f, 0.75f, 0.95f, 1.0f);
+			renderer.DrawText2D(px + 24, py + 10, "SETTINGS", 3, 1, 1, 1);
+			renderer.DrawText2D(px + pw - 320, py + 14, "ROCKET LEAGUE-STYLE  |  schema v1", 1,
+				0.75f, 0.85f, 0.95f);
+			if (menu.IsCapturing())
+				renderer.DrawText2D(px + 24, py + 28, menu.CapturePrompt().c_str(), 1, 1.0f,
+					0.9f, 0.4f);
+			auto itemAt = [&](int line) -> const rl::Menu::Item* {
+				int n = line - 1;  // lines[0] is the title, not an item
+				if (n < 0 || n >= (int)items.size()) return nullptr;
+				return &items[size_t(n)];
+			};
+			auto isHeader = [&](int line) {
+				const auto* it = itemAt(line);
+				return it && it->kind == rl::Menu::ItemKind::Header;
+			};
+			auto isBind = [&](int line) {
+				const auto* it = itemAt(line);
+				return it && (it->kind == rl::Menu::ItemKind::Binding ||
+							  it->kind == rl::Menu::ItemKind::PadBinding);
+			};
+			auto isKeyBind = [&](int line) {
+				const auto* it = itemAt(line);
+				return it && it->kind == rl::Menu::ItemKind::Binding;
+			};
+			for (int i = first; i < last; i++) {
+				int ry = py + topH + (i - first) * rowH;
+				bool isSel = (i == selLine && !menu.IsCapturing());
+				if (isHeader(i)) {
+					renderer.FillRect2D(px + 12, ry + 1, pw - 24, rowH - 2, 0.10f, 0.22f,
+						0.38f, 1.0f);
+					// Strip the "--- X ---" / "  label : value" framing.
+					std::string t = lines[size_t(i)];
+					if (t.rfind("--- ", 0) == 0) t = t.substr(4);
+					while (!t.empty() && (t.back() == '-' || t.back() == ' ')) t.pop_back();
+					renderer.DrawText2D(px + 24, ry + 4, t.c_str(), 2, 0.55f, 0.85f, 1.0f);
+					continue;
+				}
+				if (isSel)
+					renderer.FillRect2D(px + 12, ry, pw - 24, rowH, 0.12f, 0.55f, 0.85f,
+						0.95f);
+				// Split "prefix label : value" into label/value columns.
+				std::string row = lines[size_t(i)];
+				std::string body = row.size() > 2 ? row.substr(2) : row;
+				std::string label = body, val;
+				size_t c = body.find(" : ");
+				if (c != std::string::npos) {
+					label = body.substr(0, c);
+					val = body.substr(c + 3);
+				}
+				float lr = isSel ? 1.0f : 0.88f, lg = isSel ? 1.0f : 0.92f,
+					  lb = isSel ? 1.0f : 0.95f;
+				renderer.DrawText2D(px + 30, ry + 4,
+					(std::string(isSel ? "> " : "  ") + label).c_str(), 2, lr, lg, lb);
+				if (!val.empty()) {
+					bool conflict = false;
+					if (isKeyBind(i)) {
+						auto f = bindUse.find(val);
+						conflict = (f != bindUse.end() && f->second > 1);
+					}
+					// Binding pill behind the value for keybind rows.
+					if (isBind(i)) {
+						int vw = (int)val.size() * 12 + 16;
+						renderer.FillRect2D(px + pw - 24 - vw, ry + 2, vw, rowH - 4,
+							isSel ? 0.02f : 0.10f, isSel ? 0.25f : 0.16f,
+							isSel ? 0.42f : 0.26f, 1.0f);
+					}
+					int vx = px + pw - 28 - (int)val.size() * 12;
+					float vr = 1.0f, vg = 1.0f, vb = 1.0f;
+					if (conflict) {
+						vr = 1.0f;
+						vg = 0.6f;
+						vb = 0.2f;
+					} else if (!isSel) {
+						vr = 0.55f;
+						vg = 0.85f;
+						vb = 1.0f;
+					}
+					renderer.DrawText2D(vx, ry + 4, val.c_str(), 2, vr, vg, vb);
+				}
+			}
+			// Scrollbar.
+			if ((int)lines.size() > kRows + 1) {
+				float frac = float(first - 1) / float((int)lines.size() - 1);
+				float h = float(last - first) / float((int)lines.size() - 1);
+				int bx = px + pw - 8, by = py + topH;
+				int bh = (int)((ph - topH - footH - 14) * h);
+				int bo = (int)((ph - topH - footH - 14 - bh) * frac);
+				renderer.FillRect2D(bx, by + bo, 4, std::max(12, bh), 0.15f, 0.6f, 0.85f,
+					0.9f);
+			}
+			renderer.FillRect2D(px, py + ph - footH, pw, 2, 0.15f, 0.75f, 0.95f, 1.0f);
+			renderer.DrawText2D(px + 24, py + ph - footH + 8,
+				"Up/Down navigate   Enter rebind/adjust   Del unbind   Esc close", 1, 0.7f,
+				0.8f, 0.9f);
 		}
 		// HUD state line (always on).
 		{
@@ -1136,21 +1204,25 @@ int main(int argc, char** argv) {
 	rl::Renderer::Pacing pc = renderer.Stats();
 	rl::Renderer::Counters rc = renderer.Stats3D();
 	std::fprintf(stderr,
-		"[game] exit ticks=%llu drops=%llu frames=%llu wall=%.1fs p50=%.2fms p99=%.2fms avg=%.2fms unlimited=%d bot=%s audio_cb=%llu audio_frames=%llu tris_last=%llu draws_last=%llu tris_total=%llu draws_total=%llu glerr=%llu fennec_tris=%d fennec_verts=%d\n",
+		"[game] exit ticks=%llu drops=%llu frames=%llu wall=%.1fs p50=%.2fms p99=%.2fms avg=%.2fms frame_ms=%.2f unlimited=%d bot=%s audio_cb=%llu audio_frames=%llu tris_last=%llu draws_last=%llu tris_total=%llu draws_total=%llu glerr=%llu fennec_tris=%d fennec_verts=%d\n",
 		(unsigned long long)sim->tick(), (unsigned long long)sim->physicsDropCount(),
 		(unsigned long long)frames, double(NowMs() - t0) / 1000.0, pc.p50, pc.p99,
-		pc.avg, unlimitedBoost ? 1 : 0, rlbot::BotStub::modeName(bot.mode()),
+		pc.avg, (double)rc.frame_ms, unlimitedBoost ? 1 : 0, rlbot::BotStub::modeName(bot.mode()),
 		(unsigned long long)audio.callbacks(), (unsigned long long)audio.framesMixed(),
 		(unsigned long long)rc.tris, (unsigned long long)rc.drawCalls,
 		(unsigned long long)rc.trisTotal, (unsigned long long)rc.drawsTotal,
 		(unsigned long long)rc.glErrors, rl::FennecTriCount(), rl::FennecVertCount());
 
-	{
-		std::string err;
-		settings.camera.ballcam = camera.BallCam();
-		if (!rl::Settings::Save("config/settings.ini", settings, &err))
-			std::fprintf(stderr, "[game] settings save: %s\n", err.c_str());
-	}
+	// No exit-time settings save: the shipped config/settings.ini is the
+	// DEFAULTS contract (ROUNDTRIP asserts it), so silent persistence of
+	// live session state (a Space ballcam toggle, an unsaved menu tweak)
+	// would corrupt it on every run. Persist deliberately via the menu's
+	// "Save & close" action instead.
+	// Release the arena textures while the GL context is still live. This is
+	// the counterpart to the lazy Build*() uploads in ArenaTextures.cpp; it is
+	// a real teardown step, not decoration (the Fennec VBO path does the same
+	// in FennecShutdown()).
+	rl::FreeArenaTextures();
 	delete sim;
 	return 0;
 }

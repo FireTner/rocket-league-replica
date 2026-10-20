@@ -21,8 +21,23 @@ BULLET_OBJS := $(patsubst %.cpp,build/obj/%.o,$(BULLET_SRCS))
 SIM_SRCS = src/sim/Sim.cpp
 HEADLESS_SRCS = tools/headless_sim/main.cpp
 
-.PHONY: all headless game render_stub tests tapes verify meshgen clean
+.PHONY: all binaries check check-touched headless game render_stub tests tapes verify meshgen clean
 all: build/headless_sim build/render_stub build/game tests /tmp/arena_test
+
+# Cheap no-op-friendly layer: binaries only (no test rebuilds — `tests` is
+# phony, so `make all` always recompiles+runs every suite; use this per-edit).
+binaries: build/headless_sim build/render_stub build/game
+
+# End-of-work bar (headless-safe only; visual gates stay explicit because
+# they need gamescope/GL: `python3 tools/verify/visual_gates.py`).
+check: all
+	python3 tools/verify/measured.py
+	python3 tools/verify/mesh_gates.py || true
+	python3 src/physics/verify_vs_rocketsim.py
+
+# Advisory owner-based selector (prints, never runs): docs/GATE_POLICY.md.
+check-touched:
+	python3 tools/verify/check_touched.py
 
 build/librocketsim.a: $(RS_OBJS) $(BULLET_OBJS)
 	mkdir -p $(dir $@)
@@ -49,11 +64,11 @@ build/headless_sim: $(HEADLESS_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $(RS_INC) $^ -o $@
 
-build/render_stub: src/render/Renderer.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/Fennec.cpp src/render/stub_main.cpp
+build/render_stub: src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/settings/Settings.cpp src/render/stub_main.cpp
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@
 
-GAME_SRCS = src/game/main.cpp src/render/Renderer.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
+GAME_SRCS = src/game/main.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
 
 build/game: $(GAME_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
 	mkdir -p build
@@ -68,14 +83,22 @@ game: build/game
 headless: build/headless_sim
 render_stub: build/render_stub
 
-tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp
+tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex
 /tmp/t_rt: tests/test_settings_roundtrip.cpp src/settings/Settings.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -o $@ && $@
 /tmp/t_kb: tests/test_keyboard_menu.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -o $@ && $@
+# A4 camera dynamics contract test (stiffness/transition/swivel; headless,
+# no GL context — Update/Eye/Center never touch GL, -lGL only for linking).
+/tmp/t_cam: tests/test_camera_dynamics.cpp src/camera/Camera.cpp
+	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -lGL -o $@ && $@
 # A5 gamepad contract test (deadzone math, sign table, hot-plug, names).
 /tmp/t_gp: tests/test_gamepad.cpp src/input/Gamepad.cpp src/settings/Settings.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -o $@ && $@
+# A4 arena texture mapping test (pure generation + UV math; headless, no GL
+# context — Fill*/UV helpers never touch GL, -lGL only for linking).
+/tmp/t_atex: tests/test_arena_textures.cpp src/models/ArenaTextures.cpp
+	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -lGL -o $@ && $@
 
 # A6 frozen tapes through the real sim (MODE=MEASURED).
 tapes: build/headless_sim
@@ -99,4 +122,4 @@ meshgen: build/make_soccar_mesh
 	./build/make_soccar_mesh collision_meshes/soccar/soccar_cleanroom.cmf
 
 clean:
-	rm -rf build /tmp/t_rt /tmp/t_kb /tmp/t_gp
+	rm -rf build /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/arena_test

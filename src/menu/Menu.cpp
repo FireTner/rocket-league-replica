@@ -122,12 +122,16 @@ void Menu::BuildItems() {
     items_.push_back(Item{"version.schema", info, ItemKind::Info, nullptr, nullptr, nullptr});
 
     AddHeader("CAMERA (RL 1:1 ranges)");
-    AddFloat("camera.fov", "FOV", settings_.camera.fov, 60, 130, 1);
+    AddFloat("camera.fov", "FOV", settings_.camera.fov, 60, 110, 1);
     AddFloat("camera.distance", "Distance", settings_.camera.distance, 100, 400, 5);
     AddFloat("camera.height", "Height", settings_.camera.height, 40, 200, 5);
     AddFloat("camera.angle", "Angle", settings_.camera.angle, -30, 15, 1);
     AddFloat("camera.stiffness", "Stiffness", settings_.camera.stiffness, 0, 1, 0.05f);
-    AddBool("camera.ballcam", "Ball cam (C)", settings_.camera.ballcam);
+    AddBool("camera.ballcam", "Ball cam (Space)", settings_.camera.ballcam);
+    AddFloat("camera.transition_speed", "Transition speed", settings_.camera.transitionSpeed, 1, 2, 0.1f);
+    AddFloat("camera.swivel_speed", "Swivel speed", settings_.camera.swivelSpeed, 1, 10, 0.5f);
+    AddBool("camera.shake", "Camera shake", settings_.camera.shake);
+    AddBool("camera.invert_swivel", "Invert swivel", settings_.camera.invertSwivel);
 
     AddHeader("INPUT");
     AddAxisBinding("input.throttle", "Throttle fwd/back", settings_.input.throttle);
@@ -197,10 +201,10 @@ void Menu::BuildItems() {
     AddHeader("FREE PLAY");
     AddAction("Reset car (R)", [this]() { actions_.resetCar(); });
     AddAction("Reset ball (B)", [this]() { actions_.resetBall(); });
-    AddAction("Spawn kickoff (F1..F5 = current)", [this]() {
+    AddAction("Spawn drill (1..5 = current)", [this]() {
         actions_.spawnKickoff(settings_.game.kickoffIndex);
     });
-    AddAction("Toggle ballcam (C)", [this]() {
+    AddAction("Toggle ballcam (Space)", [this]() {
         settings_.camera.ballcam = !settings_.camera.ballcam;
         actions_.toggleBallcam();
     });
@@ -209,6 +213,18 @@ void Menu::BuildItems() {
         actions_.toggleUnlimitedBoost();
     });
     AddAction("Close menu (Esc)", [this]() { Close(); });
+    AddAction("Reset all to defaults", [this]() {
+        capturing_ = false;
+        captureTarget_ = nullptr;
+        capturePadTarget_ = nullptr;
+        settings_ = Settings::Defaults();
+        // Selection may now sit past the end; clamp to a selectable row.
+        MoveSelection(0);
+    });
+    AddAction("Save & close", [this]() {
+        actions_.saveSettings();
+        Close();
+    });
 }
 
 void Menu::MoveSelection(int dir) {
@@ -267,6 +283,11 @@ bool Menu::HandleKey(SDL_Keycode key) {
             return true;
         }
         if (captureIsPad_) return true;  // waiting for a pad button, not a key
+        if ((key == SDLK_DELETE || key == SDLK_BACKSPACE) && captureTarget_) {
+            captureTarget_->clear();  // unbind (Delete/Backspace clears)
+            capturing_ = false;
+            return true;
+        }
         SDL_Scancode sc = SDL_GetScancodeFromKey(key);
         if (sc != SDL_SCANCODE_UNKNOWN && captureTarget_) {
             *captureTarget_ = {KeyNameForScancode(sc)};
@@ -296,11 +317,11 @@ bool Menu::HandleKey(SDL_Keycode key) {
         actions_.resetCar();
         return true;
     }
-    if (key == SDLK_b) {
+    if (key == SDLK_c) {
         actions_.resetBall();
         return true;
     }
-    if (key == SDLK_c) {
+    if (key == SDLK_SPACE) {
         settings_.camera.ballcam = !settings_.camera.ballcam;
         actions_.toggleBallcam();
         return true;
@@ -310,8 +331,8 @@ bool Menu::HandleKey(SDL_Keycode key) {
         actions_.toggleUnlimitedBoost();
         return true;
     }
-    if (key >= SDLK_F1 && key <= SDLK_F5) {
-        int idx = (int)(key - SDLK_F1);
+    if (key >= SDLK_1 && key <= SDLK_5) {
+        int idx = (int)(key - SDLK_1);
         settings_.game.kickoffIndex = idx;
         actions_.spawnKickoff(idx);
         return true;

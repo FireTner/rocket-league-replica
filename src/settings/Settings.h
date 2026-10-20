@@ -16,6 +16,12 @@ struct CameraSettings {
     float angle = -3.0f;
     float stiffness = 0.45f;
     bool ballcam = true;
+    // RL profile sliders (BakkesModSDK ProfileCameraSettings field list;
+    // ranges/defaults per CarBaller's Liquipedia/v1.74 notes + Thespike best).
+    float transitionSpeed = 1.2f;  // 1..2 ballcam<->car-cam blend rate
+    float swivelSpeed = 5.0f;      // 1..10 right-stick look rate
+    bool shake = true;             // RL ships with camera shake ON
+    bool invertSwivel = false;     // flip swivel pitch (CameraSave)
 };
 
 // Each binding is a list of physical key names (SDL key names, e.g. "W",
@@ -33,15 +39,15 @@ struct InputBindings {
                            // Keyboard negates to sim pitch (W -> pitch -1 = nose DOWN)
     AxisBinding yaw;       // A=left     B=right; reuses steer keys
     AxisBinding roll;      // A=roll-left (Q) B=roll-right (E)
-    std::vector<std::string> jump = {"Space"};
-    std::vector<std::string> boost = {"LeftShift"};
-    std::vector<std::string> handbrake = {"S", "LeftCtrl"};
-    std::vector<std::string> ballcamToggle = {"C"};
+    std::vector<std::string> jump = {"L"};
+    std::vector<std::string> boost = {"K"};
+    std::vector<std::string> handbrake = {"LeftShift", "RightShift"};
+    std::vector<std::string> ballcamToggle = {"Space"};
     std::vector<std::string> resetCar = {"R"};
-    std::vector<std::string> resetBall = {"B"};
+    std::vector<std::string> resetBall = {"C"};
     std::vector<std::string> unlimited = {"U"};
     std::vector<std::string> menu = {"Escape"};
-    std::vector<std::string> kickoff[5];  // kickoff[i] spawns kickoff_index i
+    std::vector<std::string> kickoff[5];  // kickoff[i] = ball drill i (keys 1..5)
 };
 
 // Gamepad bindings, SDL_GameControllerButton names ("A", "LeftShoulder",
@@ -88,6 +94,23 @@ struct GameSettings {
     int kickoffIndex = 0;  // 0=center 1=left 2=right 3=back-left 4=back-right
 };
 
+// GRAPHICS45 G2/G5: render presentation knobs (schema v1 additive, defaults
+// keep gated captures on the existing fixed-function path). msaa=0/off is the
+// shipped single-sample path; >0 requests MSAA samples via SDL_GL attrs.
+// maxFps=0/off keeps the shipped present pacing (vsync, or uncapped with
+// --no-vsync); >0 caps the frame rate via clamp+sleep in EndFrame, but ONLY
+// when vsync is off. pacingLog=false keeps render_pacing.log out of the CWD
+// (V9); true re-enables the append for soak analysis.
+struct RenderSettings {
+    int msaa = 0;  // 0=off, else 2/4/8/16 samples (clamped 0..16)
+    int maxFps = 0;     // 0=off, else capped fps (clamped 15..1000, --no-vsync only)
+    bool pacingLog = false;  // true = append render_pacing.log (soak analysis)
+    // G6a PBR-lite (GRAPHICS45 §5/G6 step 1, schema v1 additive): false keeps
+    // the shipped fixed-function path byte-identical; true enables the
+    // specular + roughness + IBL-lift car/ball material (src/render/PbrGl.*).
+    bool pbr = false;
+};
+
 struct Settings {
     static constexpr int kSchemaVersion = 1;
 
@@ -98,6 +121,7 @@ struct Settings {
     BoostSettings boost;
     ArenaSettings arena;
     GameSettings game;
+    RenderSettings render;
 
     // Canonical defaults (== shipped config/settings.ini).
     static Settings Defaults();

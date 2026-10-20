@@ -93,3 +93,8 @@ all nine gamepad schema rows are listed. `make tests` -> `KEYBOARD+MENU PASS`.
   source) — see `docs/INI_SCHEMA.md`. The TODO above (tapes for the full
   jump/flip timing ladder beyond G3/G4/G7) remains the only open input item;
   it is not part of the §2 acceptance bar, which is met.
+- 2026-10-16: user keymap — jump L, boost K, handbrake Shift (both), ballcam
+  Space, reset ball C, drills 1..5 (ball-only: front/on-car/pass/launch/defend
+  via Sim::SetBall, cars stay put). J held = look-behind (Camera::SetLookBehind
+  mirrors the behind-axis). Menu shortcuts + tests + INI_SCHEMA updated to match.
+  Physics gates 19/19, KEYBOARD+MENU/GAMEPAD/ROUNDTRIP PASS.

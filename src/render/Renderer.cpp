@@ -1,6 +1,11 @@
-// Renderer.cpp — SDL2 + OpenGL 2.1 fixed-function minimal renderer.
+// Renderer.cpp — SDL2 + OpenGL 4.5 Compatibility fixed-function renderer.
+// GRAPHICS45 §2.4: GL 4.5-compat hard-target (fixed-function keeps running,
+// VBOs/FBOs/GLSL 4.50-compat first-class). No fallback, no core-only code.
 #include "Renderer.h"
 #include "Font.h"
+#include "models/ArenaShell.h"
+#include "render/PbrGl.h"
+#include "settings/Settings.h"
 #include <GL/gl.h>
 #include <algorithm>
 #include <cmath>
@@ -22,11 +27,46 @@ bool Renderer::Init(int w, int h, bool vsync) {
             return false;
         }
     }
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, 0); // compat / fixed fn
+    // GRAPHICS45 G2: hard-target GL 4.5 Compatibility, no fallback.
+    // Fixed-function (glBegin/glEnd, GL_NORMALIZE) keeps running under 4.5-compat;
+    // VBOs/FBOs/GLSL 4.50-compat are first-class. No core-profile-only code.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
+    // [render] msaa/max_fps/pacing_log (schema v1 additive, defaults keep the
+    // shipped behavior). msaa must be set before SDL_CreateWindow. msaa<=0
+    // keeps gated captures pixel-stable.
+    vsync_ = vsync;
+    {
+        int msaa = 0;
+        Settings tmp = Settings::Defaults();
+        std::string err;
+        if (Settings::Load("config/settings.ini", tmp, &err)) {
+            msaa = tmp.render.msaa;
+            // G5: same tolerant load — missing keys keep shipped behavior
+            // (limiter off, no CWD log spray). Clamped below / in Migrate.
+            maxFps_ = tmp.render.maxFps;
+            pacingLog_ = tmp.render.pacingLog;
+            // G6a: PBR-lite opt-in (default OFF keeps gated captures stable).
+            pbr_ = tmp.render.pbr;
+        } else if (tmp.render.msaa != 0) {
+            msaa = tmp.render.msaa;
+        }
+        if (msaa < 0) msaa = 0;
+        if (msaa > 16) msaa = 16;
+        if (maxFps_ < 0) maxFps_ = 0;
+        if (maxFps_ > 0 && maxFps_ < 15) maxFps_ = 15;
+        if (maxFps_ > 1000) maxFps_ = 1000;
+        if (msaa > 0) {
+            SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+            SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, msaa);
+        } else {
+            SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+            SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+        }
+    }
 
     window_ = SDL_CreateWindow("RL Free-Play Clone (A4 render stub)",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, w_, h_,
@@ -42,12 +82,33 @@ bool Renderer::Init(int w, int h, bool vsync) {
         return false;
     }
     int ok = SDL_GL_SetSwapInterval(vsync ? 1 : 0);
-    std::fprintf(stderr, "[render] GL2.1 ctx ok, vsync=%s (swapInterval rc=%d)\n",
+    const char* vendor = (const char*)glGetString(GL_VENDOR);
+    const char* rendererStr = (const char*)glGetString(GL_RENDERER);
+    const char* versionStr = (const char*)glGetString(GL_VERSION);
+    if (!vendor) vendor = "unknown";
+    if (!rendererStr) rendererStr = "unknown";
+    if (!versionStr) versionStr = "unknown";
+    std::fprintf(stderr, "[render] GL4.5-compat ctx ok, vsync=%s (swapInterval rc=%d)\n",
         vsync ? "ON" : "OFF", ok);
     std::fprintf(stderr, "[render] GL_VENDOR=%s RENDERER=%s VERSION=%s\n",
-        (const char*)glGetString(GL_VENDOR),
-        (const char*)glGetString(GL_RENDERER),
-        (const char*)glGetString(GL_VERSION));
+        vendor, rendererStr, versionStr);
+    // G6a: report the PBR-lite path so captures/soaks are attributable.
+    std::fprintf(stderr, "[render] pbr=%s (PBR-lite car/ball material)\n",
+        pbr_ ? "ON" : "OFF");
+    // Hard-target gate: abort loudly when GL < 4.5. No 2.1/3.3 fallback,
+    // no llvmpipe path. Parse leading "major.minor" from VERSION.
+    {
+        int major = 0, minor = 0;
+        std::sscanf(versionStr, "%d.%d", &major, &minor);
+        if (major < 4 || (major == 4 && minor < 5)) {
+            std::fprintf(stderr,
+                "[render] FATAL: GL 4.5 compatibility profile required, got VERSION=%s "
+                "(VENDOR=%s RENDERER=%s) — aborting with no fallback\n",
+                versionStr, vendor, rendererStr);
+            Shutdown();
+            return false;
+        }
+    }
 
     glViewport(0, 0, w_, h_);
     glEnable(GL_DEPTH_TEST);
@@ -109,6 +170,7 @@ bool Renderer::Init(int w, int h, bool vsync) {
 }
 
 void Renderer::Shutdown() {
+    ArenaShell::ShutdownArenaBuckets(); // needs live GL context; no-op if unbuilt
     if (ctx_) { SDL_GL_DeleteContext(ctx_); ctx_ = nullptr; }
     if (window_) { SDL_DestroyWindow(window_); window_ = nullptr; }
 }
@@ -129,6 +191,16 @@ void Renderer::BeginFrame(float r, float g, float b) {
     glDepthFunc(GL_LEQUAL);
     glDisable(GL_TEXTURE_2D);
     if (!lightOn_) glDisable(GL_LIGHTING); else glEnable(GL_LIGHTING);
+    // G6a: PBR-lite branch. OFF = zero extra GL calls (byte-identical
+    // shipped path); ON = fixed-function specular + roughness + IBL lift
+    // (PbrGl, no shaders, no draws, idempotent per frame).
+    if (pbr_) {
+        double t0 = NowMs();
+        pbr::ApplyFrameState();
+        pbrApplyMs_ = NowMs() - t0;
+    } else {
+        pbrApplyMs_ = 0.0;
+    }
     glClearColor(r, g, b, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 }
@@ -143,6 +215,13 @@ void Renderer::EndFrame() {
     counters_.trisTotal += frameTris_;
     counters_.drawsTotal += frameDraws_;
     counters_.frames++;
+    // G6a: fill the G5 forward-compat stub from the PBR-lite path. The path
+    // is state-only (no extra draws/tris), so draws/tris stay 0 and ms is
+    // the measured BeginFrame apply cost (SDL ms clock: usually 0.00).
+    // Stays zero with pbr=false.
+    counters_.flagCost.ms = pbr_ ? pbrApplyMs_ : 0.0;
+    counters_.flagCost.draws = 0;
+    counters_.flagCost.tris = 0;
     for (;;) {
         GLenum e = glGetError();
         if (e == GL_NO_ERROR) break;
@@ -150,10 +229,22 @@ void Renderer::EndFrame() {
     }
     SDL_GL_SwapWindow(window_); // vsync-paced present; never waits on physics
     double dt = NowMs() - frameStart_;
+    counters_.frame_ms = dt; // G5: CPU wall-clock for the soak exit line
     hist_[histI_] = dt; histI_ = (histI_ + 1) % kHist;
     if (histN_ < kHist) histN_++;
     frames_++;
     LogPacingIfDue();
+    // G5 max_fps limiter (bevy_framepace thinking): clamp + sleep, never tick
+    // loss. Engages ONLY when vsync is off — vsync-on keeps the shipped
+    // vsync-paced present untouched. The sleep only delays the present; the
+    // sim accumulator absorbs it as ordinary wall dt (backlog kept, only a
+    // >1 s backlog is dropped), so pacing never costs a physics tick.
+    if (!vsync_ && maxFps_ > 0) {
+        double target = 1000.0 / (double)maxFps_;
+        double elapsed = NowMs() - frameStart_;
+        if (elapsed < target)
+            SDL_Delay((Uint32)(target - elapsed));
+    }
 }
 
 Renderer::Pacing Renderer::Stats() const {
@@ -179,8 +270,13 @@ void Renderer::LogPacingIfDue() {
         "[pacing] frames=%llu avg=%.2fms p50=%.2fms p99=%.2fms (vsync 720p60 target 16.67ms)\n",
         (unsigned long long)cached_.frames, cached_.avg, cached_.p50, cached_.p99);
     std::fputs(line, stderr);
-    FILE* f = std::fopen("render_pacing.log", "a");
-    if (f) { std::fputs(line, f); std::fclose(f); }
+    // V9: the CWD append below used to spray render_pacing.log on EVERY run
+    // (play, capture, soak — every pacing print). Now gated on [render]
+    // pacing_log (default OFF); opt in for soak analysis. stderr is unchanged.
+    if (pacingLog_) {
+        FILE* f = std::fopen("render_pacing.log", "a");
+        if (f) { std::fputs(line, f); std::fclose(f); }
+    }
 }
 
 void Renderer::DrawBox(float cx, float cy, float cz,
@@ -414,6 +510,111 @@ void Renderer::DrawHexNet(float cx, float cy, float cz, float halfW, float halfH
     if (lightOn_) glEnable(GL_LIGHTING);
 }
 
+// ---- arena-accurate texture mapping (A4) ---------------------------------
+// A textured quad is a pure state sandwich: bind the texture, save whatever
+// GL_TEXTURE_2D / blend state the caller had, draw one GL_QUADS, restore.
+// Restoring matters because the frame state must stay a pure function of the
+// current frame's draws (the bug class that once made every translucent
+// surface opaque from frame 2 onward).
+namespace {
+struct TextureScope {
+    TextureScope(unsigned tex, bool blend) {
+        wasTex_ = glIsEnabled(GL_TEXTURE_2D) != 0;
+        wasBlend_ = glIsEnabled(GL_BLEND) != 0;
+        glEnable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        if (blend) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+    }
+    ~TextureScope() {
+        if (!wasBlend_) glDisable(GL_BLEND);
+        if (!wasTex_) glDisable(GL_TEXTURE_2D);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    bool wasTex_, wasBlend_;
+};
+} // namespace
+
+void Renderer::DrawTexturedQuadXZ(float cx, float cy, float z, float sx, float sy,
+                                  float yaw, unsigned tex, float uRep, float vRep,
+                                  float r, float g, float b, float a, bool faceDown) {
+    TextureScope ts(tex, a < 0.999f);
+    glPushMatrix();
+    glTranslatef(cx, cy, z);
+    glRotatef(yaw * 180.0f / (float)M_PI, 0, 0, 1);
+    // Modulate the sheet with the caller's color so one texture serves several
+    // tints (the goal weave is shared by both team goals).
+    glColor4f(r, g, b, a);
+    const float hx = sx * 0.5f, hy = sy * 0.5f;
+    // Normal sign matters: the key/fill model shades by the normal, so a
+    // ceiling panel must face DOWN (normal -Z) to be lit from inside the arena.
+    // A +Z normal would leave the visible underside ambient-only and the ceiling
+    // would read near-black, which is the bug VISUAL_BUGS_TODO V5 fixed.
+    const float nz = faceDown ? -1.0f : 1.0f;
+    glNormal3f(0, 0, nz);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0, 0);     glVertex3f(-hx, -hy, 0);
+    glTexCoord2f(uRep, 0);  glVertex3f( hx, -hy, 0);
+    glTexCoord2f(uRep, vRep); glVertex3f( hx,  hy, 0);
+    glTexCoord2f(0, vRep);  glVertex3f(-hx,  hy, 0);
+    glEnd();
+    glPopMatrix();
+    CountTris(2);
+}
+
+void Renderer::DrawTexturedQuadWall(float cx, float cy, float cz, float sx, float sy,
+                                    float yaw, unsigned tex, float uRep, float vRep,
+                                    float r, float g, float b, float a,
+                                    float uOff, float vOff) {
+    TextureScope ts(tex, a < 0.999f);
+    glPushMatrix();
+    glTranslatef(cx, cy, cz);
+    glRotatef(yaw * 180.0f / (float)M_PI, 0, 0, 1);
+    glColor4f(r, g, b, a);
+    const float hx = sx * 0.5f, hz = sy * 0.5f;
+    // Local +x runs along the wall, +z up, so the quad's normal is local +y —
+    // the arena's documented "local +y points OUTWARD" convention. Lighting
+    // therefore shades the wall face the camera sees from inside the arena.
+    glNormal3f(0, 1, 0);
+    glBegin(GL_QUADS);
+    glTexCoord2f(uOff, vOff);            glVertex3f(-hx, 0, -hz);
+    glTexCoord2f(uOff + uRep, vOff);     glVertex3f( hx, 0, -hz);
+    glTexCoord2f(uOff + uRep, vOff + vRep); glVertex3f( hx, 0,  hz);
+    glTexCoord2f(uOff, vOff + vRep);     glVertex3f(-hx, 0,  hz);
+    glEnd();
+    glPopMatrix();
+    CountTris(2);
+}
+
+void Renderer::DrawTexturedOverlayXZ(float cx, float cy, float z, float sx, float sy,
+                                     float yaw, unsigned tex, float uRep, float vRep,
+                                     float r, float g, float b, float a) {
+    // Overlay: never writes depth, so it composites onto whatever it covers
+    // without ordering artifacts against the surface beneath it.
+    GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
+    glDisable(GL_DEPTH_TEST);
+    {
+        TextureScope ts(tex, true);
+        glPushMatrix();
+        glTranslatef(cx, cy, z);
+        glRotatef(yaw * 180.0f / (float)M_PI, 0, 0, 1);
+        glColor4f(r, g, b, a);
+        const float hx = sx * 0.5f, hy = sy * 0.5f;
+        glNormal3f(0, 0, 1);
+        glBegin(GL_QUADS);
+        glTexCoord2f(0, 0);      glVertex3f(-hx, -hy, 0);
+        glTexCoord2f(uRep, 0);   glVertex3f( hx, -hy, 0);
+        glTexCoord2f(uRep, vRep); glVertex3f( hx,  hy, 0);
+        glTexCoord2f(0, vRep);   glVertex3f(-hx,  hy, 0);
+        glEnd();
+        glPopMatrix();
+    }
+    if (depthWas) glEnable(GL_DEPTH_TEST);
+    CountTris(2);
+}
+
 // ---- screen-space 2D helpers (ortho like FillRect2D; y down) -------------
 namespace {
 struct OrthoScope {
@@ -580,6 +781,15 @@ void Renderer::DrawText2D(int px, int py, const char* text, int scale, float r, 
     glPopMatrix();
     glMatrixMode(GL_MODELVIEW);
     CountTris(uint64_t(2 * glyphQuads));
+}
+
+// ---- arena bucket VBOs (G3b; bake lives in src/models/ArenaShell.cpp) ----
+void Renderer::DrawArenaBuckets(bool meshMode, bool noHexNet) {
+    ArenaShell::DrawArenaBuckets(*this, meshMode, noHexNet);
+}
+
+void Renderer::DrawArenaGoalInteriors(bool meshMode) {
+    ArenaShell::DrawArenaGoalInteriors(*this, meshMode);
 }
 
 bool Renderer::SaveScreenshot(const char* path) const {

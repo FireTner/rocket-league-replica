@@ -84,6 +84,15 @@ class Gamepad {
     // Same mapping over an injected state (headless tests + synthetic tapes).
     void PollFromState(const State& st, Controls& controls, InputEvents& events);
 
+    // Right-stick look (camera swivel). Abstract State convention: +X = right,
+    // +Y = up (same convention as the left stick). Updated by both Poll()
+    // (live hardware) and PollFromState() (headless). Pure addition: the
+    // Controls passthrough above is untouched.
+    void RightStick(float& x, float& y) const {
+        x = lastRightX_;
+        y = lastRightY_;
+    }
+
     // Buttons that went down THIS poll (edge). Used by the menu to capture a
     // pad rebinding; the driving path consumes edges through InputEvents.
     // Returns a count; fills `out` with up to `max` button ids.
@@ -106,6 +115,8 @@ class Gamepad {
     GamepadBindings bindings_;
     BoundButtons bound_;
     State state_;
+    float lastRightX_ = 0.0f;  // swivel look, abstract convention (+X right)
+    float lastRightY_ = 0.0f;  // (+Y up); refreshed every poll, both paths
     SDL_GameController* controllers_[4] = {nullptr, nullptr, nullptr, nullptr};
     int openCount_ = 0;
     // Previous button state for edge detection (toggle events).

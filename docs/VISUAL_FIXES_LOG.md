@@ -343,3 +343,81 @@ $ /tmp/arena_test
 RESULT PASS: 46 passed, 0 failed
 $ make tests                # ROUNDTRIP + KEYBOARD+MENU + GAMEPAD PASS
 ```
+## 2026-10-17 — corner-round shell work, step 1 (infra; user: curves missing at wall/chamfer junctions)
+
+Measurement first: the dumped collision mesh (hashMatched=1) carries an ~8-facet
+round at every straight<->chamfer junction (inward normals 45° -> ~2°), cutting
+~110 uu inside the analytic sharp vertex (4096,3968). Back junctions symmetric.
+So the sharp octagon is the approximation, not the round.
+
+- `planRound` sweep added (main.cpp arena block): plan-view faceted strip,
+  one flat inward normal per surveyed facet, arc-length U, V over z0..z1.
+- `TestPlanRoundUV` added: `ARENA_TEXTURES PASS (88 checks, 0 failed)`.
+- `make game` clean. Metrology (tangent points, all 8 junctions, z-extent,
+  goal joints) delegated to a subagent; softening design (goal spheres,
+  bevel/stripe package, +624 tris) received and fact-checked.
+
+## 2026-10-17 — rounded shell pass, steps 2-4 (user: curves missing at wall/chamfer junctions)
+
+Survey first: parsed collision_meshes/soccar/*.cmf (1 unit = 50 uu; dumped mesh,
+hashMatched=1). Every straight<->chamfer junction carries an R=705 bowl round
+wedged in the 135° corner: vertical faces fan 0°->45° in ~5.6° steps (side) and
+45°->90° (back), tangent length T=R*tan(pi/8)=292, flat chamfer middle 1045.2.
+The sharp octagon vertex sits ~110 uu outside the real surface. (A single-circle
+Kasa fit over all verts diverges — mixed inner/outer shells; the wedged-arc
+construction verifies tangent distances to exactly R on both planes.)
+
+- Mode branch per user decision: `roundCorners = sim->usingRealSoccar()` —
+  mesh mode draws tangent-shortened runs + 8 planRound junctions (all 3 courses)
+  + relocated TC trim; fallback keeps the legacy sharp shell.
+- One global UV field per wall in BOTH modes (mesh runs sample subranges):
+  a mesh-anchored re-zeroing once shifted the lattice 292 uu and flipped the
+  VG6 full-patch autocorrelation 91->46; the unified field restored 91
+  deterministically (band analysis: rows with signal read exactly 91/92).
+- Column parity (alternate hex columns x0.82): panel variation + breaks VG6's
+  half-period tie structurally. Dim parity stays blue-dominant.
+- Softening package (subagent design, fact-checked, bevel-box idea dropped —
+  a 10x10 diamond sits entirely inside the 28-wide bar footprint): 4 goal
+  post-cap spheres (mouth pixel-identical), 16 beam + 4 cove shadow stripes,
+  4 diagonal cove connectors, outer skirt band z 2048..2120 (closes the void
+  pocket over wall tops), TC trim sunk to 24 wide darker steel.
+- Ceiling: full footprint at z=2046 (2 uu below crown tangent — no z-fight,
+  covers round-top slivers that read as black wedges).
+- `ARENA_TEXTURES PASS (108 checks, 0 failed)` (new: TestPlanRoundUV,
+  TestRoundTable, TestMeshField, column parity).
+- Gate-metric replication offscreen, mesh mode: VG6 pitch 91 (exp 91.5),
+  blue 0.998; VG15 all patches L>24 (min 24.1), asymmetry 1.09, frame ratio
+  0.54; VG11 base 66; ceiling L=60; fallback probes all OK.
+- KNOWN (harness, pre-existing, documented in ledger): VG6 full-patch AC ties
+  46 vs 91 px at ±1% — uniform-honeycomb vertical seams repeat every half
+  period, and 2 rows of HUD tick text (shot-tick race: screenshots land on
+  tick 120-129) decide the winner nondeterministically. Wall bands with
+  signal read exactly 91/92 on every build; reference exposure identical.
+- Full bar on rebuilt binaries: make all (ROUNDTRIP/GAMEPAD/CAMERA/
+  KEYBOARD+MENU/ARENA_TEXTURES 108/ARENA 55) PASS, measured 19/19, mesh 13/13,
+  verify_vs_rocketsim ALL PASSED, visual 1 PASS/0 FAIL/15 SKIP (no gamescope;
+  VG1 re-baseline on the reference machine still pending from the A4 line).
+
+## 2026-10-17 — playtest defects: mouth base slit + car hidden in net (surgical)
+
+Two defects from live playtest screenshots (CARCAM, real match):
+1. A black slit in the base curb at the goal-mouth cutout edge.
+2. A blue car inside the goal rendering embedded in the dark net box.
+Both reproduced offscreen on gate cameras before touching code.
+
+1. Slit: the mouth cutout leaves the base sweep as an open tube; the hollow
+   shows as a black slit at grazing angles. Fix (narrowest): opt-in end caps
+   on arcSweep (triangle fan from the arc centre over the rim, same texture/
+   state machine), enabled only on the 4 mouth-facing cut ends. Probe: 0
+   void-dark pixels in the cut band (was a visible slit); capture shows solid
+   concrete ends.
+2. Hidden car: the goal interior box + weave drew BEFORE cars/ball WITH depth
+   write, culling anything inside/behind the net (ball at (0,5213,91.5): 0
+   visible pixels). Fix (narrowest): opaque trim/posts stay early; the two
+   translucent pieces moved after DrawBall with depth test on + depth write
+   off (mask saved/restored around the pass). Ball now renders veiled through
+   the interior (359 vs 78 neutral-bright mouth pixels; image confirms).
+   Side benefit: FX after the pass no longer get culled by net depth.
+   Step detail: --ballpos (0,5500,100) scores+resets (empty goallog check lies
+   unless placed at (0,5213,91.5), inside the mouth but short of the 5215.5
+   threshold); veiled-ball pixels are warm-neutral, not blue-dominant.

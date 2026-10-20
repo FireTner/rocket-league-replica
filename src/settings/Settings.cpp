@@ -217,19 +217,19 @@ Settings Settings::Defaults() {
     s.input.pitch = ax({"W", "Up"}, {"S", "Down"});
     s.input.yaw = ax({"A", "Left"}, {"D", "Right"});
     s.input.roll = ax({"Q"}, {"E"});
-    s.input.jump = {"Space"};
-    s.input.boost = {"LeftShift"};
-    s.input.handbrake = {"S", "LeftCtrl"};
-    s.input.ballcamToggle = {"C"};
+    s.input.jump = {"L"};
+    s.input.boost = {"K"};
+    s.input.handbrake = {"LeftShift", "RightShift"};
+    s.input.ballcamToggle = {"Space"};
     s.input.resetCar = {"R"};
-    s.input.resetBall = {"B"};
+    s.input.resetBall = {"C"};
     s.input.unlimited = {"U"};
     s.input.menu = {"Escape"};
-    s.input.kickoff[0] = {"F1"};
-    s.input.kickoff[1] = {"F2"};
-    s.input.kickoff[2] = {"F3"};
-    s.input.kickoff[3] = {"F4"};
-    s.input.kickoff[4] = {"F5"};
+    s.input.kickoff[0] = {"1"};
+    s.input.kickoff[1] = {"2"};
+    s.input.kickoff[2] = {"3"};
+    s.input.kickoff[3] = {"4"};
+    s.input.kickoff[4] = {"5"};
     const char* pdef[5] = {"DPadUp", "DPadDown", "DPadLeft", "DPadRight", ""};
     for (int i = 0; i < 5; ++i) s.gamepad.kickoff[i] = pdef[i];
     return s;
@@ -259,15 +259,26 @@ void Settings::Migrate(Settings& s, int fileSchema) {
     fixKeys(s.input.menu, d.input.menu);
     for (int i = 0; i < 5; ++i) fixKeys(s.input.kickoff[i], d.input.kickoff[i]);
     // Range clamps (see INI_SCHEMA.md for authoritative ranges).
-    s.camera.fov = ClampF(s.camera.fov, 60.0f, 130.0f);
-    s.camera.distance = ClampF(s.camera.distance, 100.0f, 500.0f);
-    s.camera.height = ClampF(s.camera.height, 30.0f, 250.0f);
-    s.camera.angle = ClampF(s.camera.angle, -30.0f, 30.0f);
+    // FOV cap is 110 (RL slider max; Rocket Science #2 + Liquipedia 60..110),
+    // distance/height/angle match the RL menu ranges (Camera.cpp enforces the
+    // same, so the two owners never disagree).
+    s.camera.fov = ClampF(s.camera.fov, 60.0f, 110.0f);
+    s.camera.distance = ClampF(s.camera.distance, 100.0f, 400.0f);
+    s.camera.height = ClampF(s.camera.height, 40.0f, 200.0f);
+    s.camera.angle = ClampF(s.camera.angle, -30.0f, 15.0f);
     s.camera.stiffness = ClampF(s.camera.stiffness, 0.0f, 1.0f);
+    s.camera.transitionSpeed = ClampF(s.camera.transitionSpeed, 1.0f, 2.0f);
+    s.camera.swivelSpeed = ClampF(s.camera.swivelSpeed, 1.0f, 10.0f);
     s.physics.tick = ClampI(s.physics.tick, 30, 240);
     s.boost.drain = ClampF(s.boost.drain, 0.0f, 100.0f);
     s.boost.recharge = ClampF(s.boost.recharge, 0.0f, 100.0f);
     s.game.kickoffIndex = ClampI(s.game.kickoffIndex, 0, 4);
+    // GRAPHICS45 G2/G5 [render]: msaa 0=off (shipped path), clamp 0..16;
+    // max_fps 0=off (shipped pacing), else clamp 15..1000 (limiter only
+    // engages with --no-vsync; vsync-on behavior unchanged).
+    s.render.msaa = ClampI(s.render.msaa, 0, 16);
+    s.render.maxFps = ClampI(s.render.maxFps, 0, 1000);
+    if (s.render.maxFps > 0 && s.render.maxFps < 15) s.render.maxFps = 15;
     // Gamepad: deadzone range documented in INI_SCHEMA.md; empty button names
     // fall back to the default binding (an empty name is a misconfiguration,
     // not a valid unbind).
@@ -357,6 +368,10 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
     getF("camera", "angle", out.camera.angle);
     getF("camera", "stiffness", out.camera.stiffness);
     getB("camera", "ballcam", out.camera.ballcam);
+    getF("camera", "transition_speed", out.camera.transitionSpeed);
+    getF("camera", "swivel_speed", out.camera.swivelSpeed);
+    getB("camera", "shake", out.camera.shake);
+    getB("camera", "invert_swivel", out.camera.invertSwivel);
 
     auto getA = [&](const char* key, AxisBinding& dst) {
         const std::string* v = ini.get("input", key);
@@ -411,6 +426,10 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
         if (v) out.arena.meshDir = *v;  // free text; empty = built-in default
     }
     getI("game", "kickoff_index", out.game.kickoffIndex);
+    getI("render", "msaa", out.render.msaa);
+    getI("render", "max_fps", out.render.maxFps);
+    getB("render", "pacing_log", out.render.pacingLog);
+    getB("render", "pbr", out.render.pbr);  // G6a PBR-lite, default OFF
 
     if (!ok) {
         if (err) *err = errors;
@@ -441,6 +460,10 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "angle = " << f(s.camera.angle) << "\n"
         << "stiffness = " << f(s.camera.stiffness) << "\n"
         << "ballcam = " << (s.camera.ballcam ? "true" : "false") << "\n"
+        << "transition_speed = " << f(s.camera.transitionSpeed) << "\n"
+        << "swivel_speed = " << f(s.camera.swivelSpeed) << "\n"
+        << "shake = " << (s.camera.shake ? "true" : "false") << "\n"
+        << "invert_swivel = " << (s.camera.invertSwivel ? "true" : "false") << "\n"
         << "\n[input]\n"
         << "throttle = " << AxisToString(s.input.throttle) << "\n"
         << "steer = " << AxisToString(s.input.steer) << "\n"
@@ -479,7 +502,11 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "recharge = " << f(s.boost.recharge) << "\n"
         << "\n[arena]\nsoccar = " << (s.arena.soccar ? "true" : "false") << "\n"
         << "mesh_dir = " << s.arena.meshDir << "\n"
-        << "\n[game]\nkickoff_index = " << s.game.kickoffIndex << "\n";
+        << "\n[game]\nkickoff_index = " << s.game.kickoffIndex << "\n"
+        << "\n[render]\nmsaa = " << s.render.msaa << "\n"
+        << "max_fps = " << s.render.maxFps << "\n"
+        << "pacing_log = " << (s.render.pacingLog ? "true" : "false") << "\n"
+        << "pbr = " << (s.render.pbr ? "true" : "false") << "\n";
     if (!out) {
         if (err) *err = "write failed for " + path;
         return false;

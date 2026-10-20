@@ -143,12 +143,16 @@ bool Gamepad::HandleDeviceEvent(const SDL_Event& e) {
 
 bool Gamepad::Poll(Controls& controls, InputEvents& events) {
     RefreshState();
+    lastRightX_ = state_.rightX;
+    lastRightY_ = state_.rightY;
     PollFromState(state_, controls, events);
     return state_.connected;
 }
 
 void Gamepad::PollFromState(const State& st, Controls& controls, InputEvents& events) {
     Controls c;
+    lastRightX_ = st.rightX;
+    lastRightY_ = st.rightY;
     if (!st.connected) {
         // No device: neutral controls. The caller decides whether the keyboard
         // or the pad owns the frame (device selection is additive).

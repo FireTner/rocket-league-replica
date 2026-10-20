@@ -1,7 +1,7 @@
 # Interface Contracts (coordinator-owned, v2 — Round 12; physics work order closed at M6, 2026-10-10)
 
 All streams code against these paths. Owner-only writes; others shim + file failing contract test before requesting change.
-Rule-1 log (coordinator cross-owner fixes, all with failing tests): Sim zero-hitbox default, kickoff facing, Keyboard roll sign + test, Menu camera ranges, A2 fillet-quadrant/pad-order/tangency (arena_test 31→46 PASS). Visual pass (Round 36): the blend-state leak (Renderer.cpp), the 90°-off wall curbs/hex nets and the quadratic boost-gauge arc (main.cpp) and the FX lighting re-enable (FX.cpp) were each reproduced by a FAILING visual gate (VG4/VG6/VG5) before the fix; no physics gate, gate value or frozen tape was touched.
+Rule-1 log (coordinator cross-owner fixes, all with failing tests): Sim zero-hitbox default, kickoff facing, Keyboard roll sign + test, Menu camera ranges, A2 fillet-quadrant/pad-order/tangency (arena_test 31→46 PASS). Camera settings round (A4+A5): shipped ini shipped car-cam/0.5 stiffness (ROUNDTRIP FAIL `camera.ballcam == true`), Settings.cpp clamps wider than Camera.cpp/Menu (dist 500/h 30-250/angle +30), FOV cap 130 vs RL 110 — fixed with the extended roundtrip test + new `tests/test_camera_dynamics.cpp` (7 checks) failing first; added transition_speed/swivel_speed/shake/invert_swivel (schema v1 additive, both directions safe) + Rocket-Science stiffness dynamics; no physics gate, gate value or frozen tape touched. Visual pass (Round 36): the blend-state leak (Renderer.cpp), the 90°-off wall curbs/hex nets and the quadratic boost-gauge arc (main.cpp) and the FX lighting re-enable (FX.cpp) were each reproduced by a FAILING visual gate (VG4/VG6/VG5) before the fix; no physics gate, gate value or frozen tape was touched.
 
 ## Layout + owners
 - `third_party/RocketSim/` — A1 (MIT ZealanL 2022, record hash; vendor pristine)
@@ -35,5 +35,5 @@ Rule-1 log (coordinator cross-owner fixes, all with failing tests): Sim zero-hit
 1. No cross-owner rewrites without a failing contract test.
 2. Each stream ships `BUILD_NOTES.md` with exact build commands + real output.
 3. Every reused constant cites source file + line; single-source constants flagged UNVERIFIED.
-4. MIT/Apache-2.0/CC0 only; every dep logged for `THIRD_PARTY.md`; no Psyonix assets ever.
+4. MIT/Apache-2.0/CC0 only; every dep logged for `THIRD_PARTY.md`; no Psyonix assets in the repo ever (user-local runtime inputs only, per AGENTS.md Rule 1).
 5. Physics 120Hz never drops; renderer may repeat a frame rather than stall physics.

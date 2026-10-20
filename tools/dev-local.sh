@@ -6,6 +6,14 @@
 export CC="ccache gcc"
 export CXX="ccache g++"
 
+# ccache is only a speedup if it actually caches: history showed 0 hits /
+# 0.0 GiB (cold /tmp + wiped cache), so every `make all` paid full price.
+# Pin a persistent dir and warn once when ccache is missing or cold.
+export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
+if ! command -v ccache >/dev/null 2>&1; then
+  echo "dev-local WARN: ccache not on PATH — builds will be full price" >&2
+fi
+
 # Parallel builds by default: `make all` -> `make -j$(nproc) all`
 make() {
   if [[ "$*" != *"-j"* ]]; then

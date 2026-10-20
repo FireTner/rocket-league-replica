@@ -40,9 +40,18 @@ Goal: 1:1 replication of RL freeplay — physics first, then visuals/features.
 
 ## Non-negotiable rules
 
-1. **No Psyonix assets.** No game meshes, textures, sounds, dumps. Arena
-   collision meshes are user-provided at runtime only (`--meshdir`), never
-   vendored. Every dependency logged in `docs/THIRD_PARTY.md`.
+1. **No Psyonix assets in the repo — user-local runtime inputs allowed.**
+   Nothing Psyonix-owned is ever vendored, committed, or redistributed: no
+   game meshes, textures, sounds, or dumps in the tree, ever. The shipped,
+   gated visuals stay 100% clean-room (procedural + the CC-BY-4.0 Fennec).
+   What IS allowed, following the existing `--meshdir` precedent: the game
+   may load extracted assets at runtime from the user's OWN install and
+   machine only (collision dumps today; stadium/car/texture packs tomorrow
+   via an asset-dir flag), gitignored like `collision_meshes/`, never
+   committed, never re-uploaded. Rationale (2026-10-17): RLViser-style
+   accuracy comes from real assets; this machine can use them locally while
+   the repository stays MIT-clean and redistributable. Gates always run the
+   clean-room path. Every dependency logged in `docs/THIRD_PARTY.md`.
 2. **RocketSim stays pristine.** Wrapper-only changes in `src/sim/Sim.cpp`.
    Anything sim-engine-level needs a failing contract test first.
 3. **Physics determinism.** 120 Hz fixed tick, never drops a tick;

@@ -83,7 +83,8 @@ Ours = vendored RocketSim `RLConst.h` + `measured.py` MEASURED (16/16 green).
 | Demolitions + auto-respawn | rl-opus, CarBaller(n/a), car-soccer.com | **ADDED this round** (G10/G10b, game FX + boom + log) |
 | Goal explosion w/ car blast + slow-mo beat | rl-opus | partial (FX goal beat + horn + reset; no car-blast impulse) — candidate |
 | Supersonic wheel embers | rl-opus | we have a position trail (FX::DrawTrail) — visual polish candidate |
-| Camera settings ranges (Liquipedia) + v1.74 defaults | CarBaller | already 1:1 (CAMERA_NOTES.md: FOV 110, dist 270, h 100, angle −3, stiffness 0.45) |
+| Camera settings ranges (Liquipedia) + v1.74 defaults | CarBaller | 1:1 defaults kept (FOV 110, dist 270, h 100, angle −3, stiffness 0.45); ADDED this round: swivel 1..10 d5.0, transition 1..2 d1.2, shake dON, invert dOFF + Rocket-Science stiffness dynamics (see §8) |
+| Ball-arrow / indicator / flip-reset disc | CarBaller (documents as RL features) | not present — candidates |
 | Wall opacity slider | CarBaller | our walls are fixed 0.30 alpha — candidate |
 | Ball launch any angle / shot presets | CarBaller | we have `--shot-at-tick/--shot-path` + F1–F5; interactive launcher is a candidate |
 | Flip-reset indicator | CarBaller | not present (needs wall/ceiling reset detection) — candidate |
@@ -100,8 +101,36 @@ Ours = vendored RocketSim `RLConst.h` + `measured.py` MEASURED (16/16 green).
 - car-soccer.com was only used through rl-like's published measurements; no
   scraping of game data.
 
-## 7. Re-verification recipe
+## 7. Camera sources (real, consulted read-only — no code copied)
 
+Two sources with genuine RL provenance were used for the missing camera
+settings (numbers/behavior facts only; every line of our implementation is
+original, per §6 hygiene):
+
+- **BakkesModSDK** ([CameraWrapper.h](https://github.com/bakkesmodorg/BakkesModSDK/blob/master/include/bakkesmod/wrappers/GameObject/CameraWrapper.h),
+  [wrapperstructs.h](https://github.com/bakkesmodorg/BakkesModSDK/blob/master/include/bakkesmod/wrappers/wrapperstructs.h)):
+  `ProfileCameraSettings` = FOV/Height/Pitch/Distance/Stiffness/SwivelSpeed/
+  TransitionSpeed and `CameraSave` = InvertSwivelPitch/CameraShake (mirrors
+  Psyonix `FProfileCameraSettings` — the authoritative FIELD SET, no values).
+  `CameraWrapper` confirms the runtime model: swivel state + die rate +
+  `GetDesiredSwivel(LookUp, LookRight)` + `UpdateSwivel`, dynamic FOV offsets
+  (`UpdateFOV`), state blender for transitions.
+- **Rocket Science #2** ([camera settings explained](https://rocketscience.fyi/know/videos/camera-settings),
+  HalfwayDead, rev. 2023): FOV slider 60..110 drawn as a horizontal cone;
+  dynamic FOV +5 with speed +5 at supersonic; stiffness = dynamic distance
+  (+100 max at 0; supersonic formula `(1-stiffness)*114.7`) + dynamic angle
+  (+2 max at 0) + smoothing with ballcam OFF only; swivel 90°/1.3 s at 1.0,
+  linear; shake fires on boost/dodge/hits.
+- **CarBaller** ([settings.h](https://github.com/Prankiman/CarBaller/blob/master/src/settings/settings.h),
+  sibling clean-room C++/RocketSim project, same vendored commit `c2baacb8`):
+  RL ranges fov 60..110 (horizontal), distance 100..400, height 40..200,
+  stiffness 0..1, swivel 1..10, transition 1..2; defaults swivel 5.0,
+  transition 1.2, shake ON. Adopted RANGES + swivel/transition/shake
+  defaults. Two conflicts logged UNVERIFIED (not adopted): CarBaller's angle
+  default −4.0 (ours stays −3.0, Zen/Thespike side) and stiffness default 0.5
+  "v1.74" (ours stays 0.45, guide-consensus side).
+
+## 8. Re-verification recipe
 ```sh
 make build/headless_sim && python3 tools/verify/measured.py   # 16/16 incl. G10/G10b
 ./build/headless_sim --tape tools/tas/tapes/demo_supersonic_600.csv \

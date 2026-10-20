@@ -27,6 +27,7 @@ struct FreePlayActions {
     std::function<void(int)> spawnKickoff = [](int) {};
     std::function<void()> toggleBallcam = [] {};
     std::function<void()> toggleUnlimitedBoost = [] {};
+    std::function<void()> saveSettings = [] {};
 };
 
 class Menu {
@@ -62,7 +63,7 @@ class Menu {
 
     // Feed one SDL key-down (keycode, e.g. SDLK_UP). Returns true while the
     // menu stays open. Handles: Up/Down navigate, Left/Right adjust,
-    // Enter/Space activate, Esc close/cancel-capture, R/B/U/C/F1..F5
+    // Enter/Space activate, Esc close/cancel-capture, R/C/U/Space/1..5
     // free-play shortcuts, and binding capture (next key becomes the binding).
     bool HandleKey(SDL_Keycode key);
 

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 
 namespace rl {
 
@@ -193,6 +194,32 @@ static void HexSeam(unsigned char* img, float cx, float cy, float R,
     }
 }
 
+// G4 texture chains (GRAPHICS45 §5/G4): full mip chain generated ONCE at
+// upload, trilinear minification, aniso when the driver offers it. Same
+// treatment as ArenaTextures.cpp; kept file-local so no header decl changes.
+// glGenerateMipmap is GL 3.0+ core, our context is 4.5-compat — no loader.
+extern "C" void glGenerateMipmap(unsigned int target);
+#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
+#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
+#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
+#endif
+
+static void FinishBallUpload() {
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    const char* exts = (const char*)glGetString(GL_EXTENSIONS);
+    if (exts && std::strstr(exts, "GL_EXT_texture_filter_anisotropic")) {
+        GLfloat maxAniso = 1.0f;
+        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
+        const GLfloat kAnisoCap = 4.0f;  // G4: R4-class cap
+        GLfloat chosen = maxAniso < kAnisoCap ? maxAniso : kAnisoCap;
+        if (chosen < 1.0f) chosen = 1.0f;
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, chosen);
+    }
+}
+
 static unsigned BuildBallTexture() {
     static unsigned tex = 0;
     if (tex) return tex;
@@ -232,10 +259,9 @@ static unsigned BuildBallTexture() {
             fclose(df);
         }
     }
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    FinishBallUpload();  // G4: wrap preserved, filters upgraded to chained
     return tex;
 }
 

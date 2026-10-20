@@ -52,7 +52,7 @@ int main() {
     k.set("S");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
     CHECK(c.throttle == -1.0f, "S -> throttle -1");
-    CHECK(c.handbrake == true, "S -> handbrake held (powerslide double-use)");
+    CHECK(c.handbrake == false, "S no longer handbrake (Shift is powerslide)");
     k.clear();
     k.set("A");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
@@ -71,33 +71,41 @@ int main() {
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
     CHECK(c.roll == -1.0f, "E -> roll -1 (roll-right)");
     k.clear();
-    k.set("Space");
+    k.set("L");
+    k.set("K");
+    kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
+    CHECK(c.jump && c.boost, "L+K -> jump+boost held");
+    CHECK(!c.handbrake, "handbrake released");
+    k.clear();
     k.set("LeftShift");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
-    CHECK(c.jump && c.boost, "Space+LeftShift -> jump+boost held");
-    CHECK(!c.handbrake, "handbrake released");
+    CHECK(c.handbrake, "Shift -> handbrake held (powerslide)");
 
     std::printf("[2] air-roll modifier (handbrake mirrors steer onto roll)\n");
     k.clear();
-    k.set("LeftCtrl");
+    k.set("LeftShift");
     k.set("D");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
     CHECK(c.handbrake && c.steer == -1.0f && c.roll == -1.0f,
-          "LeftCtrl+D -> handbrake + steer -1 (right) + roll -1 (roll follows steer sign)");
+          "Shift+D -> handbrake + steer -1 (right) + roll -1 (roll follows steer sign)");
 
     std::printf("[3] edge-triggered events\n");
     k.clear();
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);  // settle: nothing pressed
     CHECK(!e.toggleBallcam && e.kickoffIndex == -1, "no press -> no events");
+    k.set("Space");
+    kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
+    CHECK(e.toggleBallcam, "Space press -> toggleBallcam");
+    kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
+    CHECK(!e.toggleBallcam, "Space held -> no repeat event");
+    k.clear();
     k.set("C");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
-    CHECK(e.toggleBallcam, "C press -> toggleBallcam");
-    kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
-    CHECK(!e.toggleBallcam, "C held -> no repeat event");
+    CHECK(e.resetBall && !e.resetCar, "C press -> resetBall only");
     k.clear();
-    k.set("F3");
+    k.set("3");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
-    CHECK(e.kickoffIndex == 2, "F3 press -> kickoffIndex 2");
+    CHECK(e.kickoffIndex == 2, "3 press -> kickoffIndex 2 (ball drill)");
     k.clear();
     k.set("R");
     kb.PollFromState(k.st, SDL_NUM_SCANCODES, c, e);
@@ -113,9 +121,9 @@ int main() {
 
     std::printf("[4] ScancodeForName coverage of default bindings\n");
     const char* names[] = {"W", "A",   "S",   "D",   "Q",     "E",  "Up",   "Down",
-                           "Left",     "Right", "Space", "LeftShift", "LeftCtrl", "C",
-                           "R",        "B",   "U",   "Escape", "F1", "F2",  "F3", "F4",
-                           "F5"};
+                           "Left",     "Right", "Space", "LeftShift", "RightShift", "C",
+                           "R",        "K",   "L",   "U",   "J",   "Escape", "1", "2",  "3", "4",
+                           "5"};
     bool allKnown = true;
     for (auto n : names) {
         if (rl::Keyboard::ScancodeForName(n) == SDL_NUM_SCANCODES) {
@@ -123,10 +131,11 @@ int main() {
             allKnown = false;
         }
     }
-    CHECK(allKnown, "all 23 default key names resolve to scancodes");
+    CHECK(allKnown, "all default key names resolve to scancodes");
 
     std::printf("[5] menu: navigation + bool toggle + float adjust\n");
     rl::Settings ms = rl::Settings::Defaults();
+    ms.camera.fov = 100.0f;  // mid-range: FOV max is the RL-correct 110
     int resets = 0, spawns = -1;
     rl::FreePlayActions acts;
     acts.resetCar = [&]() { ++resets; };
@@ -159,11 +168,20 @@ int main() {
     std::printf("[6] menu: free-play shortcuts + capture mode\n");
     menu.HandleKey(SDLK_r);
     CHECK(resets == 1, "R in menu -> resetCar action");
-    menu.HandleKey(SDLK_F4);
-    CHECK(spawns == 3 && ms.game.kickoffIndex == 3, "F4 in menu -> spawn 3 + kickoff_index=3");
+    menu.HandleKey(SDLK_4);
+    CHECK(spawns == 3 && ms.game.kickoffIndex == 3, "4 in menu -> drill 3 + kickoff_index=3");
     bool ballBefore = ms.camera.ballcam;
-    menu.HandleKey(SDLK_c);
-    CHECK(ms.camera.ballcam == !ballBefore, "C in menu flips settings ballcam");
+    // Space is the menu ACTIVATE key, so the ballcam bool row is toggled
+    // via activation (gameplay Space-toggle is handled with menu closed).
+    for (int i = 0; i < 60; ++i) {
+        bool onBall = false;
+        for (auto& l : menu.RenderText())
+            if (l.rfind("> ", 0) == 0 && l.find("Ball cam") != std::string::npos) onBall = true;
+        if (onBall) break;
+        menu.HandleKey(SDLK_DOWN);
+    }
+    menu.HandleKey(SDLK_SPACE);
+    CHECK(ms.camera.ballcam == !ballBefore, "Space on Ball-cam row flips settings ballcam");
     // Navigate to a Binding row (Jump) and capture a new key.
     // Walk: find "Jump" row by moving down until value line matches.
     for (int i = 0; i < 60; ++i) {

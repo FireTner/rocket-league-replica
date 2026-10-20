@@ -22,9 +22,14 @@ never vendored).
 |---|---|---|---|
 | `RLArenaCollisionDumper.exe` v1.0.0 | [ZealanL/RLArenaCollisionDumper](https://github.com/ZealanL/RLArenaCollisionDumper), MIT | `91a40fc8d705a4c44b692c534f826253cf7b60b34bfacd4b90c6f6029875e5c5` | Dumps Rocket League's arena collision meshes |
 | `collision_meshes/soccar/*.cmf` | **Psyonix-owned geometry** | — | Runtime arena collision input, produced by the dumper above from the user's own game install |
+| visual asset packs, if/when supported (stadium/car/texture extracts) | **Psyonix-owned art, user-extracted** | — | Opt-in local-only render layer (RLViser-style accuracy on the user's own machine); loaded from a gitignored asset dir, gated visuals always use the clean-room path |
 
 Neither is in this repository. `collision_meshes/` is gitignored, and the dumper
 lives in the game's Wine prefix. See `docs/MESH_SETUP.md` for the procedure.
+Any future visual-asset loader follows the same split: read the user's files at
+runtime, never copy their bytes into this tree, never redistribute them. Facts
+learned from third-party viewers (camera numbers, layout dims, algorithms) are
+treated like any other cited source; their asset BYTES are not.
 
 ## Local tooling (not dependencies of the build)
 

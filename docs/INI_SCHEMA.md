@@ -34,14 +34,22 @@ provisional key name + meaning, extended only: arrow alternates, `LeftShift` /
 
 ## [camera]
 
-| key       | type  | default | range       | notes                                    |
-|-----------|-------|---------|-------------|------------------------------------------|
-| fov       | float | 110     | 60..130     | Vertical field of view, degrees.         |
-| distance  | float | 270     | 100..400    | Chase-cam distance (uu). RL 1:1 range.   |
-| height    | float | 100     | 40..200     | Chase-cam height (uu). RL 1:1 range.     |
-| angle     | float | -3      | -30..15     | Pitch-down angle, degrees. RL 1:1 range. |
-| stiffness | float | 0.45    | 0..1        | 0 = loose, 1 = rigid follow. RL default. |
-| ballcam   | bool  | true    | —           | Start tracking ball; `C` toggles live.   |
+| key             | type  | default | range       | notes                                    |
+|-----------------|-------|---------|-------------|------------------------------------------|
+| fov             | float | 110     | 60..110     | Horizontal field of view, degrees (RL slider max is 110). |
+| distance        | float | 270     | 100..400    | Chase-cam distance (uu). RL 1:1 range.   |
+| height          | float | 100     | 40..200     | Chase-cam height (uu). RL 1:1 range.     |
+| angle           | float | -3      | -30..15     | Pitch-down angle, degrees. RL 1:1 range. |
+| stiffness       | float | 0.45    | 0..1        | 0 = loose, 1 = rigid follow. RL default. |
+| ballcam         | bool  | true    | —           | Start tracking ball; `C` toggles live.   |
+| transition_speed| float | 1.2     | 1..2        | Ballcam<->car-cam blend rate (RL slider).|
+| swivel_speed    | float | 5.0     | 1..10       | Right-stick look rate (RL slider).       |
+| shake           | bool  | true    | —           | Camera shake FX (RL ships with it ON).   |
+| invert_swivel   | bool  | false   | —           | Flip swivel pitch (RL CameraSave).       |
+
+Extended in v1 (additive, schema stays 1): the last four keys are missing
+from older files and fall back to the defaults above; older binaries ignore
+the unknown keys. Both directions are safe, so no migration bump.
 
 ## [input]
 
@@ -69,15 +77,15 @@ Single actions (one slot, comma = alternates):
 
 | key            | type | default        | notes                                              |
 |----------------|------|----------------|----------------------------------------------------|
-| jump           | keys | `Space`        | Held state in `Controls.jump`; sim detects edge.   |
-| boost          | keys | `LeftShift`    | Hold to boost (drains per `[boost]`).              |
-| handbrake      | keys | `S,LeftCtrl`   | Ground = powerslide; air = roll modifier. `S` doubles as reverse+slide (common keyboard setup); `LeftCtrl` is the dedicated modifier. |
-| ballcam_toggle | keys | `C`            | Press → toggle ballcam (edge event).               |
+| jump           | keys | `L`            | Held state in `Controls.jump`; sim detects edge.   |
+| boost          | keys | `K`            | Hold to boost (drains per `[boost]`).              |
+| handbrake      | keys | `LeftShift,RightShift` | Ground = powerslide; air = roll modifier (either Shift key). |
+| ballcam_toggle | keys | `Space`        | Press → toggle ballcam (edge event).               |
 | reset_car      | keys | `R`            | Press → respawn car at `game.kickoff_index`.       |
-| reset_ball     | keys | `B`            | Press → ball to center, zero velocity.             |
+| reset_ball     | keys | `C`            | Press → ball to center, zero velocity.             |
 | unlimited      | keys | `U`            | Press → toggle `[boost] unlimited` live.           |
 | menu           | keys | `Escape`       | Press → open/close settings menu.                  |
-| kickoff_0..4   | keys | `F1`…`F5`      | Press → spawn kickoff 0=center 1=left 2=right 3=back-left 4=back-right; also sets `game.kickoff_index`. |
+| kickoff_0..4   | keys | `1`…`5`        | Press → ball drill 0=front 1=on-car 2=pass 3=launch 4=defend (ball-only, cars stay put); also sets `game.kickoff_index`. |
 
 ### Gamepad keys (`[input]`, same section, `pad_`-prefixed)
 
@@ -113,15 +121,16 @@ stub — see `src/input/BUILD_NOTES.md`):
 |---------------------|------------|-----------|
 | drive fwd/back      | W / S      | Up / Down |
 | steer left/right    | A / D      | Left / Right |
-| jump                | Space      | — |
-| boost               | LeftShift  | — |
-| powerslide/air-roll | LeftCtrl   | S (held with steer) |
+| jump                | L          | — |
+| boost               | K          | — |
+| powerslide/air-roll | Shift      | — |
 | discrete roll L/R   | Q / E      | — |
-| ballcam             | C          | — |
-| reset car / ball    | R / B      | — |
+| ballcam             | Space      | — |
+| look behind         | J (held)   | — |
+| reset car / ball    | R / C      | — |
 | unlimited boost     | U          | — |
 | menu                | Esc        | — |
-| kickoff spawns      | F1–F5      | — |
+| ball drills         | 1–5        | — |
 
 ## [physics]
 
@@ -148,6 +157,19 @@ stub — see `src/input/BUILD_NOTES.md`):
 | key           | type | default | range | notes                                                        |
 |---------------|------|---------|-------|--------------------------------------------------------------|
 | kickoff_index | int  | 0       | 0..4  | Spawn slot: 0=center 1=left 2=right 3=back-left 4=back-right. |
+
+## [render]
+
+| key  | type | default | range  | notes                                                        |
+|------|------|---------|--------|--------------------------------------------------------------|
+| msaa | int  | 0       | 0..16  | MSAA samples: 0=off (shipped single-sample path, gated captures stay pixel-stable); 2/4/8/16 request multisample via SDL_GL attrs. Applied at context creation; needs restart. |
+| max_fps | int | 0    | 0..1000 | Frame-rate cap: 0=off (shipped pacing — vsync, or uncapped with `--no-vsync`). >0 clamps to 15..1000 and sleeps the remainder in `EndFrame`, but ONLY when vsync is off (`--no-vsync`); vsync-on behavior is unchanged. Clamp + sleep only — never drops a physics tick. Needs restart (read at context creation). |
+| pacing_log | bool | false | —   | `true` = append `render_pacing.log` in the CWD on every pacing print (soak analysis); `false` = stderr only, no CWD file (V9 fix). |
+| pbr | bool | false | — | G6a PBR-lite: `false` = shipped fixed-function path (gated captures stay pixel-stable); `true` = specular highlight + roughness factor + IBL ambient lift on the car/ball material (`src/render/PbrGl.*`). Applied at frame start; needs restart (read at context creation). |
+
+Extended in v1 (additive, schema stays 1): missing `[render]` falls back to
+the defaults above; older binaries ignore the unknown section. Both
+directions are safe, so no migration bump.
 
 ## Migration policy
 

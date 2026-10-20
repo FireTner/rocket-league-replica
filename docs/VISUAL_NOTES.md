@@ -26,12 +26,15 @@ render recipes (measured values, ported as numbers — no assets copied).
   radii (big ≈116 / small ≈66 plate), emissive gold trim ring, ground halo,
   floating orb (54/28) with hot core; respawn = dim + spin-up growth (G9
   cooldowns drive it).
-- **Glass walls** — 1:1 shell dims (±4096 / ±5120 / ceiling 2044, corner
-  planes |x|+|y|=8064) as low-alpha glass + white hex net (420 uu cells) on
-  the inner surface; corner panels rotated 45°.
-- **Curbs** — the physics wall fillet made visible: quarter-round sweeps
-  (side 256, back 160, corners 208) in cool blue-gray; ceiling lip band +
-  emissive trim.
+- **Glass walls** — 1:1 shell dims (±4096 / ±5120 / ceiling 2048, corner
+  planes |x|+|y|=8064): flat glass z 256..1792 plus R 256 base/crown fillets
+  (the collision profile, textured), hex net (420 uu cells) in one global UV
+  field per wall with phase-matched chamfers, trim bars at the 8 junctions,
+  goal-mouth cutouts on the backs.
+- **Curbs** — the physics wall fillet made visible: R 256 quarter-round sweeps
+  on all 8 runs (unified from side 256 / back 160 / corners 208 to match the
+  collision shell) in textured concrete with arc-length UVs; cove glow strips
+  at the crown/ceiling joint; ceiling panel + hanging beams.
 - **Goals** — dark interior + glowing team trim frame (orange/blue) + white
   posts/crossbar at the exact mouth dims (±892.755, 642.775).
 - **Boost gauge** — RL-style circular gauge bottom-right: blue layered dial,
@@ -188,3 +191,52 @@ glerr=0`, plus the VG7 60 s scripted run `ticks=7200 drops=0 glerr=0`.
   needs a read-only `Sim` accessor + Rule-1 test).
 - Per-map turf palettes once a mesh is present.
 - Audio: doppler/distance/crowd (see `docs/AUDIO_NOTES.md`).
+
+## G1 baseline (2026-10-17) — GRAPHICS45 §5/G1, record-only (no code touched)
+
+Two-machine table (A probed live this round; B cited from the repo record,
+not re-probed — this box is NOT machine B, so B is SKIP by rule):
+
+| Machine | GPU / driver | GL strings (probed or recorded) | VG1 / VG7 this round |
+|---|---|---|---|
+| A (this box, live probe) | AMD Radeon R4 (radeonsi, stoney, ACO, DRM 3.64), Mesa 26.2.4-arch1.1, SDL 2.32.74 | `GL_VENDOR=AMD RENDERER=AMD Radeon R4 Graphics (radeonsi, stoney, ACO, DRM 3.64, 7.2.9-arch1-1) VERSION=4.5 (Compatibility Profile) Mesa 26.2.4-arch1.1` | VG1 PASS, VG7 PASS (see exact lines below) |
+| B (not this box — UNREACHABLE/SKIP) | RTX 4060 Laptop, NVIDIA 615.71.09, GL 4.6 (recorded in `docs/VISUAL_VERDICT.md:14`, `docs/PHYSICS_1TO1_LOG.md:607`: `GL_VENDOR=NVIDIA Corporation RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2 VERSION=4.6.0 NVIDIA 615.71.09`) | cited, not re-probed | SKIP (not this machine; never stall) |
+
+Build + harness mapping (this box, 2026-10-17):
+
+- `build/game` sha256 `d759826a8bb5401811830f6e839fca6ac87cdb9cba7463e757ec081453631e64`
+  (1353216 bytes, mtime 2026-10-17 12:45:57 +0200; built via `source
+  tools/dev-local.sh && make build/game` — Makefile rule `build/game:
+  $(GAME_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a`).
+- `python3 tools/verify/check_touched.py` → advisory [15 files incl.
+  `config/settings.ini`, `src/camera/Camera.cpp/.h`, `src/game/main.cpp`,
+  `src/render/Renderer.cpp/.h`, `src/menu/*`, `src/models/ArenaTextures.*`,
+  `src/input/Gamepad.*`, `src/settings/*`], harness [Makefile, 4 tests,
+  `tools/dev-local.sh`, `tools/verify/check_touched.py`], docs [12 files incl.
+  `docs/VISUAL_NOTES.md`]; prints `run: make build/game &&
+  python3 tools/verify/visual_gates.py --only VG<int> --diag`.
+
+Gate output (this box, `timeout 120 python3 tools/verify/visual_gates.py
+--only VG1,VG7` → 2 PASS, 0 FAIL, 0 SKIP, no gamescope recipe needed):
+
+- `VG1  PASS  capture determinism                byte-compare differs; 512 probes max|d|=2 (tol 8) driver=GL_VENDOR=AMD RENDERER=AMD Radeon R4 Graphics (radeonsi, stoney, ACO, DRM 3.64, 7.2.9-arch1-1) VERSION=4.5 (Compatibility Profile) Mesa 26.2.4-arch1.1`
+- `VG7  PASS  budget + GL errors (60s run)       ticks=7201 drops=0 glerr=0 tris_last=189126 (cap 240000) draws_last=325 fennec_tris=84823`
+- `# summary: 2 PASS, 0 FAIL, 0 SKIP`
+
+Cited, not re-run (per G1 rule — extend, never re-run):
+
+- `measured.py` 19/19: `docs/VISUAL_FIXES_LOG.md:397`, `docs/VISUAL_BUGS_TODO.md:348`,
+  `docs/PHYSICS_1TO1_LOG.md:578`, `docs/VISUAL_VERDICT.md` §Physics.
+- `arena_test` 46/46: `docs/VISUAL_VERDICT.md:71,150`, `docs/PHYSICS_1TO1_LOG.md:16,780`.
+- VG7 reference `tris_last=187982 draws_last=268`: `docs/VISUAL_FIXES_LOG.md:241`
+  (B-machine record); budget table `189,292 tris / 325 draws` (kickoff wide) and
+  `187,982 / 268` (60 s scripted): `docs/VISUAL_PARITY_LEDGER.md:138-140`.
+  This round's A-box VG7 (`tris_last=189126 draws_last=325`) lands on the
+  ledger's kickoff-wide row, within `TRI_CAP = 240000`
+  (`tools/verify/visual_gates.py:77`; predicate `:623-626`).
+- Counter semantics: `Renderer::Stats3D` returns `Counters{tris, lines,
+  drawCalls, trisTotal, drawsTotal, glErrors, frames}` — last-frame values
+  (`src/render/Renderer.h:164-180`, `CountTris` `:192-194`); per-frame publish
+  `counters_.tris = frameTris_; counters_.drawCalls = frameDraws_`
+  (`src/render/Renderer.cpp:140-144`). VG7 reads them off the `[game] exit`
+  line (`tools/verify/visual_gates.py:613-626`).
