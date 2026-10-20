@@ -30,6 +30,7 @@ int main() {
     CHECK(s.camera.swivelSpeed == 5.0f, "camera.swivel_speed == 5.0");
     CHECK(s.camera.shake == true, "camera.shake == true");
     CHECK(s.camera.invertSwivel == false, "camera.invert_swivel == false");
+    CHECK(s.camera.snap == true, "camera.snap == true");
     CHECK(s.input.throttle.slotA.size() == 2 && s.input.throttle.slotA[0] == "W" &&
               s.input.throttle.slotA[1] == "Up",
           "throttle slotA == {W,Up}");
@@ -52,6 +53,7 @@ int main() {
     s.camera.swivelSpeed = 7.0f;
     s.camera.shake = false;
     s.camera.invertSwivel = true;
+    s.camera.snap = false;
     s.input.throttle.slotA = {"T"};
     s.input.jump = {"J", "Space"};
     s.physics.tick = 60;
@@ -72,6 +74,7 @@ int main() {
     CHECK(r.camera.swivelSpeed == 7.0f, "swivel_speed mutation survived (7)");
     CHECK(r.camera.shake == false, "shake mutation survived (false)");
     CHECK(r.camera.invertSwivel == true, "invert_swivel mutation survived (true)");
+    CHECK(r.camera.snap == false, "snap mutation survived (false)");
     CHECK(r.camera.distance == 270.0f, "untouched camera.distance intact (270)");
     CHECK(r.input.throttle.slotA.size() == 1 && r.input.throttle.slotA[0] == "T",
           "throttle.slotA mutation survived ({T})");

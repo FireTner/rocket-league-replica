@@ -372,6 +372,7 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
     getF("camera", "swivel_speed", out.camera.swivelSpeed);
     getB("camera", "shake", out.camera.shake);
     getB("camera", "invert_swivel", out.camera.invertSwivel);
+    getB("camera", "snap", out.camera.snap);
 
     auto getA = [&](const char* key, AxisBinding& dst) {
         const std::string* v = ini.get("input", key);
@@ -464,6 +465,7 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "swivel_speed = " << f(s.camera.swivelSpeed) << "\n"
         << "shake = " << (s.camera.shake ? "true" : "false") << "\n"
         << "invert_swivel = " << (s.camera.invertSwivel ? "true" : "false") << "\n"
+        << "snap = " << (s.camera.snap ? "true" : "false") << "\n"
         << "\n[input]\n"
         << "throttle = " << AxisToString(s.input.throttle) << "\n"
         << "steer = " << AxisToString(s.input.steer) << "\n"

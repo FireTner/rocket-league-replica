@@ -6,21 +6,34 @@ schema v1, editable live in the menu AND applied every frame — no restart).
 
 - **Ball-cam** (RL default ON): eye sits on the car→ball horizontal axis,
   behind the car at Distance, raised by Height, pitched by Angle; looks at the
-  ball (locked, no smoothing on the target). If the ball is nearly under the
-  car (< 50 uu horizontal), the axis falls back to car facing (no flip).
-  The rig is RIGID: stiffness only breathes distance/angle/FOV with speed
-  (Rocket Science #2) — the eye never lags the ball rig.
+  ball through the slewed aim (#1). If the ball is nearly under the car
+  (< 5 uu horizontal), the aim holds instead of flipping. The mixed ideal eye
+  passes through the stiffness lag (#3) in every mode, ballcam included:
+  followRate 1.5+14×stiffness, vertical halved airborne, rig-speed saturation
+  caps the boost-run trail at 40 uu, and the swivel's own vertical orbit is
+  split off via rig-relative height so jumps/aerials keep the slow linger.
+  At rest the follower converges exactly, so static captures are
+  pixel-identical to the pre-lag build.
 - **Car-cam**: eye behind car facing at Distance/Height/Angle; looks at a
-  point 400 uu ahead, 40 uu up. The eye AND target smooth with the stiffness
-  lag (rate 2..20/s).
+  point 400 uu ahead, 40 uu up. The eye AND target ride the same stiffness
+  follower as ballcam (horizontal kx / vertical kz); low-speed recentering
+  keeps the stiffness response. Air heading (#2): on the ground the facing is rigid;
+  airborne it eases onto the velocity heading (blend 200→900 uu/s, rate
+  2.5+7×stiffness), pitch-immune w/ half-turn continuity.
 - **Transition**: toggling ballcam blends eye+target between the two rigs at
-  `transition_speed` units/s (1.2 swings in ~0.83 s).
-- **Swivel**: the right stick orbits the rig around the car (yaw) and tilts
-  the eye on the rig sphere (pitch) at 90 deg / 1.3 s per swivel unit of 1.0
-  (linear in the slider). Release dies back to zero. `invert_swivel` flips
-  pitch. Keyboard has no swivel binding (gap, see below).
-- Smoothing: exponential `k = 1-exp(-rate*dt)`, `rate = 2 + stiffness*18`.
-  Applies to car-cam and to any in-flight transition blend only.
+  `0.5+2.5×transition_speed` units/s (1.2 swings in ~0.29 s).
+- **Swivel**: the right stick orbits the rig around the car (yaw) and on
+  the rig sphere (pitch) at 90 deg / 1.3 s per swivel unit of 1.0
+  (linear in the slider). Pitch clamps asymmetrically at −0.8/+0.7; past
+  0.05 s idle the offsets snap back linearly at 2× swivel rate (6 rad/s
+  floor) while `snap` is true. `invert_swivel` flips pitch. Keyboard has
+  no swivel binding (gap, see below).
+- Smoothing (#3): exponential `kx/kz = 1-exp(-rate*dt)` on the mixed ideal
+  eye in every mode; `followRate = 1.5 + stiffness*14`, vertical halved in
+  air, plus `rigSpeed/40uu` (horizontal) and `|rigVz|/40uu` rig-relative
+  (vertical) saturation. Car-cam target rode the same follower before #5;
+  since #5 every mode's look target goes through the one-euro filter
+  instead — ballcam keeps the 1.2 Hz floor, car-cam the 3.0 Hz floor.
 - Dynamics (Rocket Science #2, speed fraction over the G8 2200 threshold):
   `dynamicDist = (1-stiffness)*(100*frac + 14.7 supersonic)`,
   `dynamicAngle = (1-stiffness)*2*frac` (degrees, toward zero),
@@ -40,6 +53,7 @@ schema v1, editable live in the menu AND applied every frame — no restart).
 | swivel_speed | 5.0 | 1–10 | CarBaller RL range; Thespike best 5.5 |
 | shake | true | — | RL ships with shake ON (CarBaller) |
 | invert_swivel | false | — | BakkesModSDK CameraSave field |
+| snap | true | — | CarBaller `CameraSettings.snap` (RL "Snap Camera to Default"); INI-only, no menu slider |
 
 FOV slider is treated as horizontal FOV at 16:9 and converted to vertical for
 the GL frustum (keeps horizontal extent constant on 16:9).
@@ -60,8 +74,77 @@ runtime model: swivel state + die rate + `GetDesiredSwivel(LookUp, LookRight)`
 transitions. Our INI key names are our own; the field SET is RL's.
 
 ## Known approximations (not hidden)
-- Swivel pitch clamp (±1.0 rad), die-back rate (6/s), transition blend shape
-  (linear) and floor clamp (40 uu) are TUNED — no published source.
+- Ported 2026-10-20 (#6 transition re-time, `docs/carballer-facts/camera.md`
+  #6): the toggle blend advances at `0.5+2.5×transition_speed` units/s
+  (`rl_camera.cpp:398-403`), so 1.2 swings in ~0.29 s (was the flat
+  `transition_speed` units/s, ~0.83 s — floaty). The blend SHAPE stays
+  linear (upstream is linear too — a constant per-frame step toward the
+  target mode). No INI key, no speed/FOV dynamics change
+  (`src/camera/Camera.{h,cpp}`). R1 probe
+  `tools/probe_camera_transition.cpp` went step 0.0200 → 0.0583, swing
+  51 frames/0.85 s → 18 frames/0.30 s at 1.2; rest geometry unchanged
+  (VG4 PASS, `/tmp/t_cam` CAMERA PASS incl. re-timed [5]).
+- Ported 2026-10-20 (#1 ball-aim slew, `docs/carballer-facts/camera.md` #1):
+  unwrapped `ballYaw_/measYaw_` chased at 20 rad/s, hold when ball horiz
+  < 5 uu, vertical `ballPitch_` slewed too (`src/camera/Camera.{h,cpp}`).
+  R1 probe `tools/probe_camera.cpp` went 539.3 uu/173.4° → 89.5 uu/19.1°
+  (overhead), 539.3/163.0 → 0.0/4.5 (dribble), 381.3/79.3 → 89.5/17.3
+  (drift); rest geometry unchanged (VG4 PASS, `/tmp/t_cam` CAMERA PASS).
+  Ours keeps the angle slider in the eye placement (not the view pitch).
+- Ported 2026-10-20 (#2 car-cam air heading, `docs/carballer-facts/camera.md`
+  #2): ground = rigid facing (12/s ease); air = eased onto the horizontal
+  velocity heading, smoothstep blend 200→900 uu/s, rate 2.5+7×stiffness;
+  facing axis kept pitch-immune w/ half-turn continuity (air-only; ground
+  re-reads the raw bearing every frame, healing at landing)
+  (`src/camera/Camera.{h,cpp}`, wired in `src/game/main.cpp` from the
+  existing `snap.carForward/carVel/airborne` — no new Sim API, no INI key).
+  R1 probe `tools/probe_camera.cpp` went 90.0° off → 0.0° (air flip),
+  399 uu → 0 uu travel (pitch through vertical); legacy callers keep
+  ground-on-nose behavior, rest geometry unchanged (VG4 PASS, `/tmp/t_cam`
+  CAMERA PASS).
+- Ported 2026-10-20 (#3 stiffness world-space lag,
+  `docs/carballer-facts/camera.md` #3): mixed ideal eye through the stiffness
+  follower in every mode (ballcam included) — `followRate = 1.5+14×stiffness`,
+  vertical halved in air, rig-speed saturation (`kRigLagCap = 40 uu`),
+  swivel-vertical split via rig-relative Z (`src/camera/Camera.{h,cpp}`;
+  `src/game/main.cpp` already passed stiffness/velocity/airborne — no new
+  Sim API, no INI key, dynamics/FOV untouched). R1 probe
+  `tools/probe_camera_stiffness.cpp` went trail 209.1 → 19.5 uu (boost run),
+  jump dz 250.0 → 15.7 uu (jump linger); rest geometry unchanged (VG4 PASS,
+  `/tmp/t_cam` CAMERA PASS after re-baselining [3] chord-inside-sphere and
+  [7] saturation/nudge/settle). Ballcam target stays on the slewed aim (#1);
+  its one-euro filter went in as #5 below.
+- Ported 2026-10-20 (#5 one-euro target filter,
+`docs/carballer-facts/camera.md` #5): the mixed look target passes
+through `fc = 1.2+1.8*(1-blend)+0.01*derivS` Hz (`derivS` = 3 Hz EMA of
+target speed, `rl_camera.cpp:466-489`) in every mode — ballcam keeps
+the 1.2 Hz floor (kills dribble micro-chatter), car-cam the 3.0 Hz
+floor (stays tight through maneuvers), fast motion opens the cutoff
+via `derivS` (`src/camera/Camera.{h,cpp}`; no new Sim API, no INI key,
+speed/FOV dynamics untouched). The pre-#5 ballcam rigid lock and the
+car-cam stiffness-follower target are superseded. R1 probe
+`tools/probe_camera_target.cpp` went ratio 1.000 → 0.311 (micro-step),
+chatter swing 10.41 → 4.32 uu; rest geometry unchanged (VG4 PASS,
+`/tmp/t_cam` CAMERA PASS).
+- Ported 2026-10-20 (#4 sphere-orbit swivel + snap,
+  `docs/carballer-facts/camera.md` #4): asymmetric pitch clamp −0.8/+0.7,
+  snap-back linear at 2× swivel rate (6 rad/s floor) past 0.05 s idle gated
+  by the additive `snap` key (default true, INI-only — no menu slider),
+  elevation floor clamp (ground: carZ−17 ride height; air: 16 uu floor) with
+  the unabsorbed pitch reaching the view as tilt in both rigs
+  (`src/camera/Camera.{h,cpp}`; `src/settings/Settings.{h,cpp}` +
+  `src/game/main.cpp` sync + `config/settings.ini` + `docs/INI_SCHEMA.md`).
+  Kept ours: swivel RATE (Rocket Science 90 deg/1.3 s — cited; upstream's
+  0.7× is tuned), speed/FOV dynamics, angle slider in the eye placement
+  (tilt only reaches the view pitch, clamped ±1.4), car-cam 400/40
+  look-ahead (rebuilt on the same ray, identical with tilt = 0). The old
+  flat 40 uu eye clamp and exponential 6/s die-back are superseded. R1 probe
+  `tools/probe_camera_swivel.cpp` went 6 FAIL (offsets 0.027/0.164 rad after
+  release, clamp ±1.0, eye flat at 40, no tilt) → 8/8 PASS (exact-0 snap,
+  −0.8/+0.7, eye rides 16.0, view +0.35 rad); rest geometry unchanged
+  (VG4 PASS, `/tmp/t_cam` CAMERA PASS incl. new [8]). t_cam [8] mirrors the
+  probe thresholds, so it fails on the pre-#4 behavior by the same numbers;
+  only its `snap=false` gate is new-API by construction.
 - Camera shake: an amplitude overlay now exists (`FX::ShakeOffset`, 7 uu at
   61/53 Hz, 2/s decay, set by goal/demo) gated by the `[camera] shake`
   setting (default ON = RL factory) plus `--no-shake`. It is applied by the

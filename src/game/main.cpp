@@ -318,6 +318,7 @@ int main(int argc, char** argv) {
 	camera.Params().swivelSpeed = settings.camera.swivelSpeed;
 	camera.Params().shake = settings.camera.shake;
 	camera.Params().invertSwivel = settings.camera.invertSwivel;
+	camera.Params().snap = settings.camera.snap;
 	if (!settings.camera.ballcam && camera.BallCam())
 		camera.ToggleBallCam();
 	if (settings.camera.ballcam && !camera.BallCam())
@@ -783,6 +784,7 @@ int main(int argc, char** argv) {
 		camera.Params().swivelSpeed = settings.camera.swivelSpeed;
 		camera.Params().shake = settings.camera.shake;
 		camera.Params().invertSwivel = settings.camera.invertSwivel;
+		camera.Params().snap = settings.camera.snap;
 		if (freeCam) {
 			// Free flight: throttle dolly, steer orbit, jump/boost height.
 			float fvx = freeCenter[0] - freeEye[0], fvy = freeCenter[1] - freeEye[1],
@@ -817,10 +819,13 @@ int main(int argc, char** argv) {
 			camera.SetFreeView(freeEye, freeCenter);
 		} else {
 			// Supersonic threshold 2200 (G8 MEASURED) selects the extra
-			// dynamic distance/FOV kick (Rocket Science #2).
+			// dynamic distance/FOV kick (Rocket Science #2). #2 air heading:
+			// nose vector + velocity + airborne heuristic select the air
+			// branch (presentation-only; filled render-only above, no sim).
 			camera.Update(dtf, snap.carPos, snap.carYaw, snap.ballPos,
 				camera.BallCam(), snap.carSpeed, snap.carSpeed >= 2200.0f,
-				swivelX, swivelY);
+				swivelX, swivelY, snap.carForward, snap.carVel,
+				snap.airborne);
 		}
 		// Camera collision (1:1 feel): RL pulls the eye in when a wall would
 		// block it. Clamp the smoothed eye inside the shell so translucent

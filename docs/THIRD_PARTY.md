@@ -8,6 +8,7 @@
 | OpenGL / Mesa (system) | GL 2.1 fixed-function | MIT/X11 | rendering | no (system lib) |
 | 5x7 bitmap font (`src/render/Font.h`) | authored in-tree | MIT (this project) | on-screen menu/HUD text | n/a (ours) |
 | Fennec body mesh (`assets/models/fennec.bin`, converted from `fennec.glb` via `tools/convert_fennec.py`) | "Fennec - Rocket League Car" by Jako (sketchfab.com/fairlight51) — community recreation, **not** extracted game geometry | **CC-BY-4.0** (full text: `assets/models/fennec.LICENSE.txt`; attribution REQUIRED and given here + loader startup log) | player/bot car visual (Octane hitbox; physics unaffected) | yes (converted binary + license) |
+| CarBaller camera reference (`docs/carballer-facts/rl_camera.{h,cpp}`) | master `e11180e51c88e01acf598e85525d86c171894b49` (2026-10-13), [Prankiman/CarBaller](https://github.com/Prankiman/CarBaller) | MIT © 2026 Arvid Kolsmyr (attribution in `docs/carballer-facts/README.md`) | camera feel reference only (ball-aim slew, air-velocity heading, stiffness lag, swivel orbit); never built, never shipped | yes (reference-only, off build path) |
 
 Procedural: ball texture, turf/markings, glass hex-net, curbs, goal trims,
 boost gauge, and all audio are generated in code. The single external

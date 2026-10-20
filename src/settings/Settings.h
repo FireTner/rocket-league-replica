@@ -22,6 +22,9 @@ struct CameraSettings {
     float swivelSpeed = 5.0f;      // 1..10 right-stick look rate
     bool shake = true;             // RL ships with camera shake ON
     bool invertSwivel = false;     // flip swivel pitch (CameraSave)
+    bool snap = true;              // snap swivel back to default on release
+                                   // (RL "Snap Camera to Default"; schema v1
+                                   // additive, INI-only — no menu slider)
 };
 
 // Each binding is a list of physical key names (SDL key names, e.g. "W",

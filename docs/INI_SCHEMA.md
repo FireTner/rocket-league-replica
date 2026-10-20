@@ -46,8 +46,9 @@ provisional key name + meaning, extended only: arrow alternates, `LeftShift` /
 | swivel_speed    | float | 5.0     | 1..10       | Right-stick look rate (RL slider).       |
 | shake           | bool  | true    | —           | Camera shake FX (RL ships with it ON).   |
 | invert_swivel   | bool  | false   | —           | Flip swivel pitch (RL CameraSave).       |
+| snap            | bool  | true    | —           | Snap swivel back to default on release (RL "Snap Camera to Default"). INI-only, no menu slider. |
 
-Extended in v1 (additive, schema stays 1): the last four keys are missing
+Extended in v1 (additive, schema stays 1): the last five keys are missing
 from older files and fall back to the defaults above; older binaries ignore
 the unknown keys. Both directions are safe, so no migration bump.
 
