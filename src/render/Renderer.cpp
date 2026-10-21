@@ -829,14 +829,19 @@ constexpr float kArenaFallback[3] = {0.55f, 0.55f, 0.55f};
 // Vertex layout: pos(3) normal(3) uv(2) = 8 floats.
 constexpr int kArenaStride = 8;
 
-// Bucket key: (texture id, spatial cell). The pack's materials carry no
-// colour, only a diffuse texture, so the TEXTURE is the material id for
-// rendering purposes; -1 is the neutral fallback bucket.
+// Bucket key: (transparency, texture id, spatial cell). The pack's materials
+// carry no colour, only a diffuse texture, so the TEXTURE is the material id
+// for rendering purposes; -1 is the neutral fallback bucket. Transparency is
+// part of the key so glass/force-field sections never merge with opaque ones
+// (they need a blended, depth-write-off pass; opaque needs blend off to keep
+// the DXT5 grass mask-alpha opaque).
 struct ArenaKey {
     int tex = -1;
     int tint = 0;  // fallback colour category when tex == -1 (0 = neutral)
     int cx = 0, cy = 0, cz = 0;
+    bool transparent = false;
     bool operator<(const ArenaKey& o) const {
+        if (transparent != o.transparent) return transparent < o.transparent;
         if (tex != o.tex) return tex < o.tex;
         if (tint != o.tint) return tint < o.tint;
         if (cx != o.cx) return cx < o.cx;
@@ -844,6 +849,44 @@ struct ArenaKey {
         return cz < o.cz;
     }
 };
+
+// Transparent (in-game blended) arena sections: the force-field cage/glass
+// that reads as a faint blue veil with thin hex lines in RL (see the second
+// reference capture: buildings visible through it). The pack's materials
+// carry no blend flag, so this is a name join — the only materials/meshes
+// with these substrings are the 6 glass/cage materials and the 11 FF_*/glass
+// meshes (verified against the DFH Stadium day manifest: no opaque material
+// or mesh matches). Matched sections draw in the blended pass; everything
+// else stays in the opaque pass.
+inline bool ArenaSectionTransparent(const std::string& meshName,
+                                    const std::string& matName) {
+    auto has = [](const std::string& hay, const char* needle) {
+        if (hay.empty()) return false;
+        std::string n = hay;
+        for (char& c : n) c = char(std::tolower((unsigned char)c));
+        return n.find(needle) != std::string::npos;
+    };
+    // Mesh side: FF_Roof/FF_Side/FF_Goal/FFCage + *Glass* (covers the 11
+    // transparent meshes; null-slot glass placements are caught here even
+    // though they bind no material).
+    if (has(meshName, "glass") || has(meshName, "cage") ||
+        has(meshName, "fence") || has(meshName, "force") ||
+        (meshName.size() >= 3 && (meshName[0] == 'F' || meshName[0] == 'f') &&
+         (meshName[1] == 'F' || meshName[1] == 'f') && meshName[2] == '_'))
+        return true;
+    // Material side: Beach_NetFence, ForceField_HexGage, Glass_*, HexGlass_*.
+    if (has(matName, "glass") || has(matName, "force") ||
+        has(matName, "cage") || has(matName, "fence") ||
+        has(matName, "netfence") || has(matName, "hexglass"))
+        return true;
+    return false;
+}
+
+// Pale ice-blue veil for untextured glass (matches the fallbackTint "glass"
+// bucket 0.45/0.55/0.60) and its draw alpha: faint enough to see buildings
+// through, strong enough to read as a wall. Drawn blended, depth-write off.
+constexpr float kArenaGlass[3] = {0.45f, 0.55f, 0.60f};
+constexpr float kArenaGlassAlpha = 0.18f;
 
 struct ArenaCpuBucket {
     std::vector<float> v;       // kArenaStride floats per vertex
@@ -1121,9 +1164,11 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             float tintRgb[3] = {kArenaFallback[0], kArenaFallback[1],
                                 kArenaFallback[2]};
             int tint = 0;
+            std::string secMatName;
             if (matIdx >= 0 && size_t(matIdx) < pack.materials.size()) {
                 const std::string& matName =
                     pack.materials[size_t(matIdx)].name;
+                secMatName = matName;
                 // Invisible collision proxies: the pack binds Collision_Mat to
                 // kill planes (Plane32768, one hung at z=2048 as a dark false
                 // ceiling), goal/side/corner collision halves and the
@@ -1145,10 +1190,23 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 if (texId < 0)
                     tint = fallbackTint(matName, tintRgb);
             }
+            // Force-field/glass transparency (no blend flag in the pack, so a
+            // name join — see ArenaSectionTransparent). Transparent sections
+            // get their own buckets (key.transparent) and untextured ones
+            // share the pale glass veil instead of the neutral grey.
+            const bool secTransparent =
+                ArenaSectionTransparent(mesh->name, secMatName);
+            if (secTransparent && texId < 0) {
+                tintRgb[0] = kArenaGlass[0];
+                tintRgb[1] = kArenaGlass[1];
+                tintRgb[2] = kArenaGlass[2];
+                tint = 6;  // glass-veil bucket (opaque grey stays tint 0..5)
+            }
 
             ArenaKey key;
             key.tex = texId;
             key.tint = (texId < 0) ? tint : 0;
+            key.transparent = secTransparent;
             key.cx = cell[0]; key.cy = cell[1]; key.cz = cell[2];
             size_t bi;
             auto it = bucketIndex.find(key);
@@ -1213,12 +1271,35 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     for (size_t ti = 0; ti < pack.textures.size(); ++ti) {
         const ArenaTexture& t = pack.textures[ti];
         if (!t.valid || t.rgba.empty() || t.width <= 0 || t.height <= 0) continue;
+        const uint8_t* px = t.rgba.data();
+        std::vector<uint8_t> converted;  // only for the hex-mask texture below
+        // The force-field hex texture is a packed UE3 shader mask, NOT albedo:
+        // raw it is black centres + saturated green/blue/red rings (the rainbow
+        // in the bug report). The green channel is the hex-line mask (27% of
+        // texels at full strength + antialiased edges; blue-only glow and red
+        // edges carry G=0). Convert once at upload to a faint ice-blue net on
+        // transparent: RGB = veil, A = G scaled to ~31% max, so the blended
+        // pass draws thin pale lines and shows the sky through elsewhere.
+        // Mips are generated from the converted bytes, so distant minification
+        // stays a stable faint mean (G4 precedent).
+        if (t.name == "Hexagons_Pack_01_T") {
+            converted.resize(t.rgba.size());
+            for (size_t p = 0; p < t.rgba.size() / 4; ++p) {
+                const uint8_t g = t.rgba[p * 4 + 1];
+                converted[p * 4 + 0] = 175;
+                converted[p * 4 + 1] = 205;
+                converted[p * 4 + 2] = 235;
+                converted[p * 4 + 3] =
+                    (uint8_t)((unsigned)g * 80u / 255u);  // 0..80 (0..0.31)
+            }
+            px = converted.data();
+        }
         GLuint tex = 0;
         glGenTextures(1, &tex);
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.width, t.height, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, t.rgba.data());
+                     GL_UNSIGNED_BYTE, px);
         // G4 precedent: build the mip chain ONCE at upload, trilinear min.
         glGenerateMipmap(GL_TEXTURE_2D);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
@@ -1245,6 +1326,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.tintRgb[1] = b.tintRgb[1];
         g.tintRgb[2] = b.tintRgb[2];
         g.unlit = (key.tint == 5);  // trim-light glow ignores scene lighting
+        g.transparent = key.transparent;
         g.tag = b.tag;
         g.cell[0] = key.cx; g.cell[1] = key.cy; g.cell[2] = key.cz;
         g.idxCount = uint32_t(b.idx.size());
@@ -1272,13 +1354,16 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     for (const ArenaBucket& g : arenaBuckets_) {
         if (g.texId >= 0) ++arenaStats_.texturedBuckets;
         else ++arenaStats_.untexturedBuckets;
+        if (g.transparent) ++arenaStats_.transparentBuckets;
     }
     arenaReady_ = !arenaBuckets_.empty();
     std::fprintf(stderr,
-                 "[arena] pack uploaded: buckets=%u (textured=%u fallback=%u) "
+                 "[arena] pack uploaded: buckets=%u (textured=%u fallback=%u "
+                 "transparent=%u) "
                  "textures=%u placements=%u skipped=%u slots=%u tris=%llu\n",
                  arenaStats_.buckets, arenaStats_.texturedBuckets,
-                 arenaStats_.untexturedBuckets, arenaStats_.textures,
+                 arenaStats_.untexturedBuckets, arenaStats_.transparentBuckets,
+                 arenaStats_.textures,
                  arenaStats_.placements, arenaStats_.skippedPlacements,
                  arenaStats_.sectionSlots, (unsigned long long)arenaStats_.tris);
     return arenaReady_;
@@ -1292,24 +1377,23 @@ void Renderer::DrawArenaPack() {
     const GLboolean texWas = glIsEnabled(GL_TEXTURE_2D);
     const GLboolean blendWas = glIsEnabled(GL_BLEND);
     const GLboolean lightWas = glIsEnabled(GL_LIGHTING);
-    // The pack's DXT5 diffuses (grass) carry a near-zero alpha channel that
-    // is NOT opacity (UE3 mask); with the frame's default SRC_ALPHA blending
-    // the floor went fully transparent and only the grey behind showed.
-    // The arena is opaque: draw it unblended so texture alpha is ignored.
-    glDisable(GL_BLEND);
-    uint32_t visible = 0, culled = 0;
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_NORMAL_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    for (const ArenaBucket& bk : arenaBuckets_) {
-        if (!ArenaAabbVisible(bk.lo, bk.hi, f)) { ++culled; continue; }
+    GLboolean maskWas = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &maskWas);
+    auto drawBucket = [&](const ArenaBucket& bk, bool transparentPass) {
+        if (!ArenaAabbVisible(bk.lo, bk.hi, f)) return false;
         if (bk.texId >= 0) {
             glEnable(GL_TEXTURE_2D);
             glBindTexture(GL_TEXTURE_2D, GLuint(bk.texId));
+            // Textured glass samples the converted hex net (alpha in the
+            // texture); opaque diffuses ignore their mask alpha via blend off.
             glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
         } else {
             glDisable(GL_TEXTURE_2D);
-            glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2], 1.0f);
+            if (transparentPass)
+                glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2],
+                          kArenaGlassAlpha);
+            else
+                glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2], 1.0f);
         }
         // Emissive trim-light buckets render unlit (they ARE the lights);
         // shaded they would go dark on their shadow side and read as ridges.
@@ -1325,13 +1409,40 @@ void Renderer::DrawArenaPack() {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         NoteExternalDraw(bk.tris, 0);
-        ++visible;
+        return true;
+    };
+    uint32_t visible = 0, culled = 0;
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_NORMAL_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    // Pass 1 — opaque: the pack's DXT5 diffuses (grass) carry a near-zero
+    // alpha channel that is NOT opacity (UE3 mask); with the frame's default
+    // SRC_ALPHA blending the floor went fully transparent and only the grey
+    // behind showed. Draw unblended so texture alpha is ignored.
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
+    for (const ArenaBucket& bk : arenaBuckets_) {
+        if (bk.transparent) continue;
+        if (drawBucket(bk, false)) ++visible; else ++culled;
+    }
+    // Pass 2 — force-field/glass: blended veil, no depth write (so cars/ball
+    // behind it still draw over it — the goal-interior C5/C6 sandwich uses
+    // the same rule). Converted hex net carries its own alpha; untextured
+    // glass uses kArenaGlassAlpha. Depth test stays ON (LEQUAL) so the veil
+    // behind the opaque field is still occluded.
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);
+    for (const ArenaBucket& bk : arenaBuckets_) {
+        if (!bk.transparent) continue;
+        if (drawBucket(bk, true)) ++visible; else ++culled;
     }
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_NORMAL_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
+    glDepthMask(maskWas ? GL_TRUE : GL_FALSE);
     if (texWas) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
-    if (blendWas) glEnable(GL_BLEND);
+    if (blendWas) glEnable(GL_BLEND); else glDisable(GL_BLEND);
     if (lightWas) glEnable(GL_LIGHTING); else glDisable(GL_LIGHTING);
     glBindTexture(GL_TEXTURE_2D, 0);
     arenaStats_.visible = visible;

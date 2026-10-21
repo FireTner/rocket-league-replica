@@ -208,6 +208,7 @@ public:
         uint32_t buckets = 0;            // buckets built
         uint32_t texturedBuckets = 0;    // buckets bound to a diffuse texture
         uint32_t untexturedBuckets = 0;  // buckets on the neutral fallback
+        uint32_t transparentBuckets = 0; // force-field/glass buckets (blended pass)
         uint32_t textures = 0;           // GL textures uploaded
         uint32_t placements = 0;         // placements baked into buckets
         uint32_t skippedPlacements = 0;  // placements dropped (see the log)
@@ -347,6 +348,7 @@ private:
         int texId = -1;      // -1 = a tinted fallback material (see tintRgb)
         float tintRgb[3] = {0.55f, 0.55f, 0.55f};
         bool unlit = false;  // emissive trim-light sections ignore scene lighting
+        bool transparent = false;  // force-field/glass: blended pass, no depth write
         std::string tag;   // first (mesh, material) baked here (diagnostics)
         int cell[3] = {0, 0, 0};
         float lo[3] = {0, 0, 0};  // world AABB (culling)

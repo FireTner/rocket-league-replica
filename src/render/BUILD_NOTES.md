@@ -591,7 +591,6 @@ into merged world-space buckets and drawn with ONE fixed-function
 Root-caused the three midfield artifacts at triangle level against the pack
 bytes (transforming indexed verts with the placement's column-major doubles,
 never by reasoning about the math):
-
 * **Dark N–S/E–W cross bands are authored, kept.** The grass slab
   `Field_STD_Floor_Thick` (top z=10) has exact slots where it contributes 0
   triangles (measured: none at x=0, covered again from x≈233); the slots are
@@ -623,3 +622,61 @@ never by reasoning about the math):
   buckets=123 (48 textured / 75 fallback), tris=569941, draws=278,
   glerr=0; fixed-camera captures low/top/elevated show grass wall to wall,
   the glowing center ring, orange pads and white goal frames.
+
+## A6b-glass (2026-10-21) — force-field/glass transparency (opaque rainbow fix)
+
+Bug (playtest capture with `--arenadir arena_assets/stadium_day`): the whole
+dome (walls + ceiling) rendered as an opaque black/green/purple honeycomb.
+Two roots, both in the pack path (`src/render/Renderer.cpp`, default path
+untouched):
+
+1. `DrawArenaPack` drew every bucket with `glDisable(GL_BLEND)` (the DXT5
+   grass mask-alpha fix). Glass/force-field sections therefore drew opaque,
+   and their vertex alpha was ignored.
+2. `Beach_NetFence_MIC`'s diffuse `Hexagons_Pack_01_T` (DXT1 512x512) is a
+   packed UE3 shader mask, not albedo — measured 499 distinct RGB values:
+   black centres (29%), saturated green rings (27%), blue glow (13%),
+   red edges (<1%). Drawn raw as albedo it is the rainbow in the report.
+
+Fix (pack path only, fixed-function, upload-time cost, zero per-frame
+handles):
+
+* `ArenaSectionTransparent(mesh, mat)` name join: mesh has `glass`/`cage`/
+  `fence`/`force`/`FF_*`, or material has `glass`/`force`/`cage`/`fence`/
+  `netfence`/`hexglass`. Verified against the DFH manifest: exactly the 6
+  glass/cage materials and the 11 `FF_*`/`*Glass*` meshes match, nothing
+  opaque does. Null-slot glass placements (no material) are caught by the
+  mesh side.
+* Transparency is part of `ArenaKey`, so glass never merges with opaque
+  buckets; untextured glass shares one veil bucket (`tint 6`,
+  `0.45/0.55/0.60`, the existing glass fallback colour).
+* The hex mask is converted ONCE at upload to a faint ice-blue net on
+  transparent (`RGB 175/205/235`, `A = G*80/255`, i.e. 0..0.31; green is the
+  line mask, black/blue-only/red go fully transparent). Mips generate from
+  the converted bytes (G4 precedent).
+* `DrawArenaPack` is two passes: opaque buckets blend-off/depth-write-on
+  (grass mask-alpha still ignored), then transparent buckets blend-on
+  (`SRC_ALPHA/ONE_MINUS_SRC_ALPHA`) with depth-write OFF and depth-test ON —
+  the goal-interior C5/C6 sandwich rule, so cars/ball behind the veil still
+  draw over it. Restores blend + depth-mask exactly (frame stays a pure
+  function of its draws). `ArenaPackStats` gains `transparentBuckets`,
+  printed in the `[arena] pack uploaded` line.
+* No sky is added: behind the veil is the dark clear colour, while the RL
+  reference shows bright sky + buildings — the pack's sky sphere and
+  billboards are the deliberately skipped `externalInstances` (grey-dome
+  rationale, A6b). Sky scenery is a separate visual pass, not this bug.
+
+MEASURED (machine B, `GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`; same seed-7 tick-120 recipe
+`--cam 0,-4000,800,0,0,200`):
+
+* `[arena] pack uploaded: buckets=119 (textured=48 fallback=71
+  transparent=14) textures=13 placements=405 skipped=74 slots=532
+  tris=569941` (bucket count moves 123 -> 119: glass splits out of the
+  opaque buckets into 14 veil/net buckets).
+* Capture `/tmp/fix_glass2.ppm`: rainbow gone; dome is a dark transparent
+  veil with a faint pale hex net (converted texture, alpha <= 80), field/
+  stands/pads unchanged (grass still opaque, no grey floor regression).
+* Default-path proof (fix touches only pack code): `--only VG1` PASS
+  byte-identical `md5=5326135d54b86d53532d32d78670030d` (== V11 record).
