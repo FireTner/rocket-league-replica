@@ -14,13 +14,20 @@
 //  - CarBaller settings.h (RL ranges only): swivel 1..10, transition 1..2.
 #pragma once
 
+#include "TruthPov.h"
+
 namespace rl {
 
 struct CameraParams {
     float fov = 110.0f;      // degrees, RL default 110 (range 60-110)
     float distance = 270.0f; // uu behind car (RL default 270, range 100-400)
     float height = 100.0f;   // uu above car (RL default 100, range 40-200)
-    float angle = -3.0f;     // degrees pitch down (RL default -3, range -30..15)
+    // degrees pitch down. RL default -3. Our accept range is -30..15, which is
+    // NOT RL's slider: `AngleLimits` is -15..0 (decomp: TAGame.Camera_TA.
+    // AngleLimits, docs/CAMERA_EXACT_LOG.md Round 8). The range is shared with
+    // src/settings/Settings.cpp (A5), so narrowing it is a cross-owner schema
+    // change, not a camera one; the -3 default is legal either way.
+    float angle = -3.0f;
     float stiffness = 0.45f; // 0..1 response smoothing (RL default 0.45)
     bool ballCam = true;
     float transitionSpeed = 1.2f; // 1..2 ballcam<->car-cam blend rate (RL 1.2)
@@ -80,6 +87,25 @@ public:
     float SwivelPitch() const { return pitchOff_; }
     // Slider FOV plus the RL dynamic kick (+5 with speed, +5 supersonic).
     float EffFov() const { return effFov_; }
+    // RL-shaped POV of the LAST evaluation (P3, Round 14 finding): RL's
+    // `Distance` is the rig distance (slider + dynamics, ~270 uu), which the
+    // public GL pair cannot express — `|Eye() - Center()|` is the distance to
+    // the LOOK TARGET (~1600 uu in ballcam, and `Center()` sits on the aim ray
+    // at max(|target - Eye|, 1000) uu, so Focus carries a ray-length term).
+    // This is the accessor a trace recorder / the trace gate compares against.
+    // It is anchored on the published eye, so
+    //   eye_from_pov(Pov()) == Eye()        (exact up to float32)
+    // holds unconditionally (measured 9.8e-4 uu over 600 frames).
+    // `Rotation` agrees with `Center() - Eye()`'s direction in STEADY STATE
+    // only (measured 1.25 deg — that is the one-euro target filter lagging the
+    // aim by design). Mid-transition they can disagree far more (measured up to
+    // 103.9 deg): BlendCameraState interpolates the rotation rotator AND the
+    // focus point independently, so as the blended Center() sweeps near the eye
+    // the look distance collapses and the two stop naming the same fact.
+    // Consequence for consumers: read Focus/Distance and Rotation as SEPARATE
+    // fields (the trace tools score them separately); never derive one from the
+    // other. Purely additive: Eye()/Center()/EffFov() are untouched.
+    const TruthPov& Pov() const { return pov_; }
 
     const CameraParams& Params() const { return params_; }
     CameraParams& Params() { return params_; }
@@ -87,6 +113,46 @@ public:
     void Center(float out[3]) const { out[0]=center_[0]; out[1]=center_[1]; out[2]=center_[2]; }
 
 private:
+    // ── §3 layer pipeline (MASTER_PROMPT_CAMERA_EXACT.md; P0 = refactor only) ─
+    // One camera evaluation runs these in order, each with a single job:
+    //   UpdateSwivel        §3.3  free-look/swivel offset state (+ snap-back)
+    //   UpdateTransition    §3.2  Transition alpha (RemainingTime/InterpRate)
+    //   UpdateDynamics      §3.1  distance/FOV interp (UpdateDistance/UpdateFOV)
+    //   UpdateCarFacing     §3.1  air/ground branch + air-velocity heading
+    //   UpdateBallAim       §3.1  ball-cam focus slew (UpdateFocus)
+    //   ClampPov            §3.3+4 orbit admission: eye floor + elevation stop
+    //   BallCamPov/CarPov   §3.1  each state writes its DESIRED POV snapshot
+    //   BlendCameraState    §3.2  blend whole snapshots across the Transition
+    //   SnapTransition      §3.2  first frame / `snap`: skip the blend
+    //   FollowPov           §3.1  our InterpTo stand-ins (#3 lag, #5 target)
+    // Apply() is §3.5 — the only place GL sees the eye/center pair.
+    // The per-frame structs live in Camera.cpp: this TU is the single owner.
+    struct Frame;        // inputs + the values one layer derives for a later one
+    struct Dynamics;     // §3.1 distance/FOV interp output
+    struct Orbit;        // §3.3/4 admitted eye orbit (clamp + offset output)
+    struct PovSnapshot;  // one POV snapshot (RL TruthPov + our GL eye/center)
+    void UpdateSwivel(const Frame& f);
+    void UpdateTransition(const Frame& f);
+    void UpdateDynamics(const Frame& f, Dynamics& d);
+    void UpdateCarFacing(Frame& f);
+    void UpdateBallAim(Frame& f);
+    void ClampPov(const Frame& f, const Dynamics& d, Orbit& o) const;
+    void BallCamPov(const Frame& f, const Dynamics& d, const Orbit& o,
+                    PovSnapshot& out);
+    void CarPov(const Frame& f, const Dynamics& d, const Orbit& o,
+                PovSnapshot& out) const;
+    void RearViewPov(const Frame& f, const Dynamics& d,
+                     PovSnapshot& out) const;
+    void BlendCameraState(const PovSnapshot& carPov, const PovSnapshot& ballPov,
+                          PovSnapshot& out) const;
+    void SnapTransition(const Frame& f, const PovSnapshot& p);
+    void FollowPov(const Frame& f, PovSnapshot& p);
+    // §3.5 publish — the ONLY writer of pov_. Re-anchors the blended snapshot's
+    // rotator aim + rig Distance on the eye this frame actually publishes, so
+    // Pov() always describes the pair Eye()/Center() returned (see the public
+    // comment). No GL, no behavior: it only fills the accessor's view.
+    void PublishPov(const PovSnapshot& p);
+
     CameraParams params_;
     float eye_[3] = { -270, 0, 200 };
     float center_[3] = {0, 0, 100};
@@ -97,6 +163,12 @@ private:
     float pitchOff_ = 0.0f;// swivel orbit pitch (radians, clamped -0.8/+0.7)
     float swivelIdle_ = 0.0f; // s since last swivel input (snap-back timer)
     float effFov_ = 110.0f;// slider FOV + dynamic kick
+    // §3.5 published POV (see Pov()). Written once per evaluation by
+    // PublishPov; `distance` is RL's RIG distance, not |Eye()-Center()|.
+    TruthPov pov_{};
+    // §3 POV clock: RL keeps one Time per camera state; ours is a single
+    // evaluation clock shared by both states (P3 may split it per state).
+    float povTime_ = 0.0f; // s, accumulated clamped dt
     // #1 ball-aim slew (port of CarBaller RLCamera ballYaw_/measYaw_/
     // ballPitch_, rl_camera.cpp:47,74,138-179): unwrapped bearing chased at
     // 20 rad/s, hold when ball horiz < 5 uu, vertical aim slewed too.

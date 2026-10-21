@@ -4,12 +4,16 @@
 #include "Renderer.h"
 #include "Font.h"
 #include "models/ArenaShell.h"
+#include "models/ArenaRip.h"
 #include "render/PbrGl.h"
 #include "settings/Settings.h"
 #include <GL/gl.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <map>
 #include <vector>
 
 namespace rl {
@@ -171,6 +175,7 @@ bool Renderer::Init(int w, int h, bool vsync) {
 
 void Renderer::Shutdown() {
     ArenaShell::ShutdownArenaBuckets(); // needs live GL context; no-op if unbuilt
+    ShutdownArenaPack(); // A6b: no-op (no GL call) when no pack was built
     if (ctx_) { SDL_GL_DeleteContext(ctx_); ctx_ = nullptr; }
     if (window_) { SDL_DestroyWindow(window_); window_ = nullptr; }
 }
@@ -790,6 +795,560 @@ void Renderer::DrawArenaBuckets(bool meshMode, bool noHexNet) {
 
 void Renderer::DrawArenaGoalInteriors(bool meshMode) {
     ArenaShell::DrawArenaGoalInteriors(*this, meshMode);
+}
+
+// ---- A6b: the ripped arena (the engine half of --arenadir) -----------------
+//
+// The pack itself is read by src/models/ArenaRip.h (A6a, read-only here). This
+// block owns the GL side:
+//
+//   * ONE merged world-space VBO + EBO per bucket, uploaded ONCE with
+//     GL_STATIC_DRAW (nothing is re-uploaded per frame).
+//   * The bucket key is (texture/material id, spatial cell); the cell is the
+//     8192 uu grid cell of the placement's world AABB centre. One draw call
+//     per VISIBLE bucket per frame — the 119 meshes x 451 placements of the
+//     real map never become a per-mesh glBegin storm.
+//   * Per frame the buckets are frustum-culled by their world AABB (the
+//     planes come from the matrix the camera just installed) and the
+//     survivors are drawn with one fixed-function glDrawElements.
+//   * Fixed-function only: GL_TEXTURE_2D + the repo's key+fill+ambient
+//     lighting with GL_NORMALIZE (installed in Init) + the G4 mipmap
+//     precedent. No GLSL, no VAO, no per-frame compile, no readback.
+//
+// The pack is a Psyonix-owned RUNTIME input (gitignored `arena_assets/`); it
+// never enters the repository. With no pack the renderer creates NO GL
+// objects, issues NO extra calls and the default path is byte-identical.
+namespace {
+
+// Spatial cell edge in uu (A6b contract).
+constexpr int kArenaCell = 8192;
+// Neutral fallback material for the sections that carry NO diffuse texture
+// (392 of the 640 used section slots in the DFH Stadium day pack). A mid
+// grey: it reads as "unpainted" without competing with the textured parts.
+constexpr float kArenaFallback[3] = {0.55f, 0.55f, 0.55f};
+// Vertex layout: pos(3) normal(3) uv(2) = 8 floats.
+constexpr int kArenaStride = 8;
+
+// Bucket key: (texture id, spatial cell). The pack's materials carry no
+// colour, only a diffuse texture, so the TEXTURE is the material id for
+// rendering purposes; -1 is the neutral fallback bucket.
+struct ArenaKey {
+    int tex = -1;
+    int tint = 0;  // fallback colour category when tex == -1 (0 = neutral)
+    int cx = 0, cy = 0, cz = 0;
+    bool operator<(const ArenaKey& o) const {
+        if (tex != o.tex) return tex < o.tex;
+        if (tint != o.tint) return tint < o.tint;
+        if (cx != o.cx) return cx < o.cx;
+        if (cy != o.cy) return cy < o.cy;
+        return cz < o.cz;
+    }
+};
+
+struct ArenaCpuBucket {
+    std::vector<float> v;       // kArenaStride floats per vertex
+    std::vector<uint32_t> idx;  // 3 per triangle
+    float lo[3] = {1e30f, 1e30f, 1e30f};
+    float hi[3] = {-1e30f, -1e30f, -1e30f};
+    float tintRgb[3] = {0.55f, 0.55f, 0.55f};  // fallback colour (tex == -1)
+    std::string tag;  // first (mesh, material) baked here (diagnostics)
+};
+
+// Normal matrix = transpose(inverse(upper-left 3x3 of the column-major
+// matrix)). Returns false for a singular matrix.
+bool ArenaNormalMatrix(const float m[16], float out[9]) {
+    const double a00 = m[0], a01 = m[4], a02 = m[8];
+    const double a10 = m[1], a11 = m[5], a12 = m[9];
+    const double a20 = m[2], a21 = m[6], a22 = m[10];
+    const double c00 = a11 * a22 - a12 * a21;
+    const double c01 = a12 * a20 - a10 * a22;
+    const double c02 = a10 * a21 - a11 * a20;
+    const double det = a00 * c00 + a01 * c01 + a02 * c02;
+    if (std::fabs(det) < 1e-12) return false;
+    const double id = 1.0 / det;
+    out[0] = float(c00 * id);
+    out[1] = float((a02 * a21 - a01 * a22) * id);
+    out[2] = float((a01 * a12 - a02 * a11) * id);
+    out[3] = float(c01 * id);
+    out[4] = float((a00 * a22 - a02 * a20) * id);
+    out[5] = float((a02 * a10 - a00 * a12) * id);
+    out[6] = float(c02 * id);
+    out[7] = float((a01 * a20 - a00 * a21) * id);
+    out[8] = float((a00 * a11 - a01 * a10) * id);
+    return true;
+}
+
+// The six frustum planes, extracted from the matrices the camera installed
+// (client-side matrix state — no pipeline flush, no readback).
+struct ArenaFrustum {
+    double p[6][4];  // a*x+b*y+c*z+d >= 0 == inside
+};
+
+ArenaFrustum ExtractArenaFrustum() {
+    double mv[16], pr[16];
+    glGetDoublev(GL_MODELVIEW_MATRIX, mv);
+    glGetDoublev(GL_PROJECTION_MATRIX, pr);
+    // clip = P * V, read row-wise out of the column-major arrays.
+    double row[4][4];
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) {
+            double s = 0.0;
+            for (int k = 0; k < 4; ++k) s += pr[k * 4 + i] * mv[j * 4 + k];
+            row[i][j] = s;
+        }
+    ArenaFrustum f;
+    // left, right, bottom, top, near, far (Gribb-Hartmann).
+    const int src[6] = {0, 0, 1, 1, 2, 2};
+    const double sgn[6] = {1.0, -1.0, 1.0, -1.0, 1.0, -1.0};
+    for (int i = 0; i < 6; ++i) {
+        const int r = src[i];
+        const double s = sgn[i];
+        f.p[i][0] = row[3][0] + s * row[r][0];
+        f.p[i][1] = row[3][1] + s * row[r][1];
+        f.p[i][2] = row[3][2] + s * row[r][2];
+        f.p[i][3] = row[3][3] + s * row[r][3];
+    }
+    return f;
+}
+
+// AABB vs frustum: the box is culled when it lies entirely behind any plane.
+bool ArenaAabbVisible(const float lo[3], const float hi[3],
+                      const ArenaFrustum& f) {
+    for (int i = 0; i < 6; ++i) {
+        const double a = f.p[i][0], b = f.p[i][1], c = f.p[i][2], d = f.p[i][3];
+        const double x = a > 0.0 ? hi[0] : lo[0];
+        const double y = b > 0.0 ? hi[1] : lo[1];
+        const double z = c > 0.0 ? hi[2] : lo[2];
+        if (a * x + b * y + c * z + d < 0.0) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+// GL 1.5 / 3.0 entry points (VBO + mipmap). Their prototypes live in Mesa's
+// glext.h behind GL_GLEXT_PROTOTYPES, which SDL's opengl header suppresses —
+// so they are declared here (the same pattern as
+// src/models/ArenaTextures.cpp). The context is 4.5-compat; libGL exports
+// them; no loader is needed.
+extern "C" void glGenBuffers(GLsizei n, GLuint* buffers);
+extern "C" void glBindBuffer(GLenum target, GLuint buffer);
+extern "C" void glBufferData(GLenum target, GLsizeiptr size, const void* data,
+                             GLenum usage);
+extern "C" void glDeleteBuffers(GLsizei n, const GLuint* buffers);
+extern "C" void glGenerateMipmap(unsigned int target);
+
+bool Renderer::BuildArenaPack(const ArenaPack& pack) {
+    ShutdownArenaPack();
+    arenaStats_ = ArenaPackStats();
+
+    // ---- CPU bake: one merged bucket per (texture/material, cell) ----------
+    std::map<ArenaKey, size_t> bucketIndex;
+    std::vector<ArenaCpuBucket> cpu;
+    std::vector<int32_t> remap;    // vertex -> local index in the bucket
+    std::vector<uint32_t> stamp;   // vertex -> bucket/section stamp
+    uint32_t stampCounter = 0;
+    uint32_t skipped = 0;
+    uint64_t tris = 0;
+    uint32_t placements = 0, slots = 0;
+
+    // A mesh NAME is not unique in a UE3 package: the Stadium_Day pack holds
+    // EIGHT exports called "Grass" (distinct ground tiles). The pack's
+    // instance rows name their mesh, not its export index, so the name join
+    // is ambiguous for them. The loader keeps the FIRST mesh of a name; here
+    // identical (name, matrix) placements are dealt round-robin across every
+    // same-named mesh: 32 identical "Grass" placements at 4 mirror transforms
+    // are 8 tiles x 4 mirrors, so placement k of a group takes tile k % 8.
+    // Non-duplicated names hold exactly one mesh and behave as before.
+    std::map<std::string, std::vector<const ArenaMesh*>> meshesByName;
+    for (const ArenaMesh& m : pack.meshes) meshesByName[m.name].push_back(&m);
+    std::map<std::string, size_t> dupCounter;
+
+    // Untextured materials are NOT one grey: the pack's untextured majority
+    // spans white field lines, green reflective floor panels, dark trim and
+    // pale force-field glass. Tint the fallback bucket by material name so
+    // the lines read as lines and the floor reads as turf.
+    auto fallbackTint = [](const std::string& name, float rgb[3]) -> int {
+        std::string n = name;
+        for (char& c : n) c = char(std::tolower((unsigned char)c));
+        auto has = [&](const char* s) { return n.find(s) != std::string::npos; };
+        // Emissive fixtures first: TrimLight/glow names also contain "trim",
+        // which would otherwise land them in the dark-metal bucket. In game
+        // these are additive glow strips (center rings, side trim, goal and
+        // stadium lights); drawn shaded-dark they read as extrusion ridges.
+        // Tint 5 renders unlit near-white (see DrawArenaPack).
+        if (has("trimlight") || has("glow") || has("emiss") || has("light")) {
+            rgb[0] = 1.0f; rgb[1] = 0.97f; rgb[2] = 0.90f; return 5;
+        }
+        if (has("line") || has("paint") || has("white") || has("stripe")) {
+            rgb[0] = 0.85f; rgb[1] = 0.85f; rgb[2] = 0.85f; return 1;
+        }
+        if (has("grass") || has("turf") || has("field") || has("floor") ||
+            has("reflect") || has("pitch") || has("groomed")) {
+            rgb[0] = 0.28f; rgb[1] = 0.36f; rgb[2] = 0.26f; return 2;
+        }
+        if (has("frame") || has("trim") || has("grate") || has("dark") ||
+            has("cross") || has("beam") || has("steel") || has("metal") ||
+            has("collision")) {
+            rgb[0] = 0.18f; rgb[1] = 0.18f; rgb[2] = 0.20f; return 3;
+        }
+        if (has("glass") || has("force") || has("cage") || has("hex") ||
+            has("energy")) {
+            rgb[0] = 0.45f; rgb[1] = 0.55f; rgb[2] = 0.60f; return 4;
+        }
+        rgb[0] = kArenaFallback[0]; rgb[1] = kArenaFallback[1];
+        rgb[2] = kArenaFallback[2];
+        return 0;
+    };
+
+    // The 451 placements of the package itself. The 26 IMPORTED placements
+    // (externalInstances) are deliberately NOT drawn: none of them carries a
+    // diffuse (the pack records 0 resolved diffuses for them) and they are
+    // the sky sphere / billboard sprites of the sibling package, which the
+    // neutral fallback material would render as a grey dome around the
+    // camera. They are counted and reported, never silently dropped.
+    for (const ArenaInstance& inst : pack.instances) {
+        // Invisible gameplay helpers: decal blockers (full-field invisible
+        // planes), particle/FX actors and warmup effects are never visible
+        // geometry. Drawing them would bury the field under opaque planes.
+        if (inst.owner == "DecalBlockingActor_TA" || inst.owner == "FXActor_TA" ||
+            inst.owner == "BoostPill_WarmUp_FXActor") {
+            ++skipped;
+            continue;
+        }
+        // Volumetric light shafts, fog cards and glow sprites (light-cone
+        // meshes, fog materials, sprite cards) are translucent/additive FX in
+        // game; drawn opaque they become giant slabs crossing the field (the
+        // dark X bands over midfield). Skip them, never silently: counted.
+        if (inst.mesh.rfind("Sprite", 0) == 0 ||
+            inst.mesh.rfind("FogMesh", 0) == 0 ||
+            inst.mesh.rfind("FieldSpotLights", 0) == 0) {
+            ++skipped;
+            continue;
+        }
+        const auto candIt = meshesByName.find(inst.mesh);
+        const ArenaMesh* mesh = (candIt != meshesByName.end() && !candIt->second.empty())
+            ? candIt->second[dupCounter[inst.mesh + "|" + std::string(
+                reinterpret_cast<const char*>(inst.matrix),
+                sizeof(inst.matrix))]++ % candIt->second.size()]
+            : FindArenaMesh(pack, inst.mesh);
+        if (!mesh || mesh->positions.size() < 3 || mesh->indices.empty() ||
+            mesh->sections.empty()) {
+            ++skipped;
+            continue;
+        }
+        float nm[9];
+        if (!ArenaNormalMatrix(inst.matrix, nm)) {
+            ++skipped;
+            continue;
+        }
+        // Mirror check: placements with a negative-determinant upper 3x3
+        // (mirrored tiles: half the Grass placements) reverse the triangle
+        // winding, so single-sided fixed-function lighting would shade them
+        // as if their normals pointed down. Emitting those triangles with
+        // swapped winding restores outward faces.
+        const double m0 = inst.matrix[0], m1 = inst.matrix[1],
+                     m2 = inst.matrix[2];
+        const double m4 = inst.matrix[4], m5 = inst.matrix[5],
+                     m6 = inst.matrix[6];
+        const double m8 = inst.matrix[8], m9 = inst.matrix[9],
+                     m10 = inst.matrix[10];
+        const double det = m0 * (m5 * m10 - m6 * m9) -
+                           m4 * (m1 * m10 - m2 * m9) +
+                           m8 * (m1 * m6 - m2 * m5);
+        const bool mirrored = (det < 0.0);
+        const size_t nv = mesh->positions.size() / 3;
+        const bool hasN = mesh->normals.size() >= nv * 3;
+        const bool hasUv = mesh->uvs.size() >= nv * 2;
+        // Transform the mesh into world space once (positions + normals).
+        std::vector<float> wp(nv * 3), wn(nv * 3);
+        double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
+        for (size_t v = 0; v < nv; ++v) {
+            const double x = mesh->positions[v * 3 + 0];
+            const double y = mesh->positions[v * 3 + 1];
+            const double z = mesh->positions[v * 3 + 2];
+            const double px = inst.matrix[0] * x + inst.matrix[4] * y +
+                              inst.matrix[8] * z + inst.matrix[12];
+            const double py = inst.matrix[1] * x + inst.matrix[5] * y +
+                              inst.matrix[9] * z + inst.matrix[13];
+            const double pz = inst.matrix[2] * x + inst.matrix[6] * y +
+                              inst.matrix[10] * z + inst.matrix[14];
+            wp[v * 3 + 0] = float(px);
+            wp[v * 3 + 1] = float(py);
+            wp[v * 3 + 2] = float(pz);
+            for (int c = 0; c < 3; ++c) {
+                const double p = c == 0 ? px : (c == 1 ? py : pz);
+                if (p < lo[c]) lo[c] = p;
+                if (p > hi[c]) hi[c] = p;
+            }
+            float nx = hasN ? mesh->normals[v * 3 + 0] : 0.0f;
+            float ny = hasN ? mesh->normals[v * 3 + 1] : 0.0f;
+            float nz = hasN ? mesh->normals[v * 3 + 2] : 1.0f;
+            float tx = nm[0] * nx + nm[1] * ny + nm[2] * nz;
+            float ty = nm[3] * nx + nm[4] * ny + nm[5] * nz;
+            float tz = nm[6] * nx + nm[7] * ny + nm[8] * nz;
+            const float len = std::sqrt(tx * tx + ty * ty + tz * tz);
+            if (len > 1e-8f) {
+                tx /= len; ty /= len; tz /= len;
+            } else {
+                tx = 0.0f; ty = 0.0f; tz = 1.0f;
+            }
+            wn[v * 3 + 0] = tx;
+            wn[v * 3 + 1] = ty;
+            wn[v * 3 + 2] = tz;
+        }
+        // The spatial cell: the 8192 uu grid cell of the placement's world
+        // AABB centre.
+        int cell[3];
+        for (int c = 0; c < 3; ++c)
+            cell[c] = int(std::floor(((lo[c] + hi[c]) * 0.5) / double(kArenaCell)));
+
+        remap.assign(nv, -1);
+        stamp.assign(nv, 0u);
+        for (const ArenaSection& sec : mesh->sections) {
+            if (sec.numTriangles == 0) continue;
+            const uint32_t first = sec.firstIndex;
+            const size_t count = size_t(sec.numTriangles) * 3u;
+            if (size_t(first) + count > mesh->indices.size()) continue;
+            // The section's material: the instance's per-slot material, and
+            // through it the diffuse texture (-1 = no diffuse -> the neutral
+            // fallback material).
+            int matIdx = -1;
+            if (sec.materialSlot >= 0 &&
+                size_t(sec.materialSlot) < inst.materialSlots.size())
+                matIdx = inst.materialSlots[size_t(sec.materialSlot)];
+            int texId = -1;
+            float tintRgb[3] = {kArenaFallback[0], kArenaFallback[1],
+                                kArenaFallback[2]};
+            int tint = 0;
+            if (matIdx >= 0 && size_t(matIdx) < pack.materials.size()) {
+                const std::string& matName =
+                    pack.materials[size_t(matIdx)].name;
+                // Invisible collision proxies: the pack binds Collision_Mat to
+                // kill planes (Plane32768, one hung at z=2048 as a dark false
+                // ceiling), goal/side/corner collision halves and the
+                // full-field decal blockers. They carry no diffuse and are
+                // never rendered in game; the dark fallback tint would draw
+                // them as opaque slabs. Skip, counted.
+                if (matName == "Collision_Mat") {
+                    ++skipped;
+                    continue;
+                }
+                // Light-shaft / fog sections that survive the placement
+                // filter (shared meshes): same skip, same counting.
+                if (matName.find("LightCone") != std::string::npos ||
+                    matName.find("StadiumFog") != std::string::npos) {
+                    ++skipped;
+                    continue;
+                }
+                texId = pack.materials[size_t(matIdx)].texture;
+                if (texId < 0)
+                    tint = fallbackTint(matName, tintRgb);
+            }
+
+            ArenaKey key;
+            key.tex = texId;
+            key.tint = (texId < 0) ? tint : 0;
+            key.cx = cell[0]; key.cy = cell[1]; key.cz = cell[2];
+            size_t bi;
+            auto it = bucketIndex.find(key);
+            if (it == bucketIndex.end()) {
+                bi = cpu.size();
+                bucketIndex[key] = bi;
+                cpu.emplace_back();
+                cpu.back().tintRgb[0] = tintRgb[0];
+                cpu.back().tintRgb[1] = tintRgb[1];
+                cpu.back().tintRgb[2] = tintRgb[2];
+                cpu.back().tag =
+                    std::string(mesh->name) + " / " +
+                    (matIdx >= 0 && size_t(matIdx) < pack.materials.size()
+                         ? pack.materials[size_t(matIdx)].name
+                         : std::string("(no material)"));
+            } else {
+                bi = it->second;
+            }
+            ArenaCpuBucket& b = cpu[bi];
+            ++stampCounter;
+            for (size_t k = 0; k < count; k += 3) {
+                const uint32_t i0 = mesh->indices[first + k];
+                const uint32_t i1 = mesh->indices[first + k + 1];
+                const uint32_t i2 = mesh->indices[first + k + 2];
+                if (i0 >= nv || i1 >= nv || i2 >= nv) continue;
+                // Mirrored placements reverse the winding: swap the last two
+                // corners so front faces stay outward (see the det check).
+                uint32_t corner[3];
+                corner[0] = i0;
+                corner[1] = mirrored ? i2 : i1;
+                corner[2] = mirrored ? i1 : i2;
+                for (int q = 0; q < 3; ++q) {
+                    const uint32_t vi = corner[q];
+                    if (stamp[vi] != stampCounter) {
+                        stamp[vi] = stampCounter;
+                        remap[vi] = int32_t(b.v.size() / kArenaStride);
+                        b.v.push_back(wp[vi * 3 + 0]);
+                        b.v.push_back(wp[vi * 3 + 1]);
+                        b.v.push_back(wp[vi * 3 + 2]);
+                        b.v.push_back(wn[vi * 3 + 0]);
+                        b.v.push_back(wn[vi * 3 + 1]);
+                        b.v.push_back(wn[vi * 3 + 2]);
+                        b.v.push_back(hasUv ? mesh->uvs[vi * 2 + 0] : 0.0f);
+                        b.v.push_back(hasUv ? mesh->uvs[vi * 2 + 1] : 0.0f);
+                        for (int c = 0; c < 3; ++c) {
+                            const float p = b.v[b.v.size() - kArenaStride + size_t(c)];
+                            if (p < b.lo[c]) b.lo[c] = p;
+                            if (p > b.hi[c]) b.hi[c] = p;
+                        }
+                    }
+                    b.idx.push_back(uint32_t(remap[vi]));
+                }
+                ++tris;
+            }
+            ++slots;
+        }
+        ++placements;
+    }
+
+    // ---- GL upload: the textures first (the buckets reference them) ------
+    std::vector<int> texGlId(pack.textures.size(), -1);
+    for (size_t ti = 0; ti < pack.textures.size(); ++ti) {
+        const ArenaTexture& t = pack.textures[ti];
+        if (!t.valid || t.rgba.empty() || t.width <= 0 || t.height <= 0) continue;
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.width, t.height, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, t.rgba.data());
+        // G4 precedent: build the mip chain ONCE at upload, trilinear min.
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        texGlId[ti] = int(tex);
+        arenaTextures_.push_back(tex);
+    }
+
+    // ---- GL upload: the buckets (GL_STATIC_DRAW, uploaded once) -----------
+    // The map is ordered by the bucket key, so the draw order is deterministic.
+    for (const auto& kv : bucketIndex) {
+        const ArenaKey& key = kv.first;
+        const ArenaCpuBucket& b = cpu[kv.second];
+        if (b.idx.empty()) continue;
+        ArenaBucket g;
+        g.texId = (key.tex >= 0 && size_t(key.tex) < texGlId.size())
+                      ? texGlId[size_t(key.tex)]
+                      : -1;
+        g.tintRgb[0] = b.tintRgb[0];
+        g.tintRgb[1] = b.tintRgb[1];
+        g.tintRgb[2] = b.tintRgb[2];
+        g.unlit = (key.tint == 5);  // trim-light glow ignores scene lighting
+        g.tag = b.tag;
+        g.cell[0] = key.cx; g.cell[1] = key.cy; g.cell[2] = key.cz;
+        g.idxCount = uint32_t(b.idx.size());
+        g.tris = b.idx.size() / 3;
+        for (int c = 0; c < 3; ++c) { g.lo[c] = b.lo[c]; g.hi[c] = b.hi[c]; }
+        glGenBuffers(1, &g.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, g.vbo);
+        glBufferData(GL_ARRAY_BUFFER, b.v.size() * sizeof(float), b.v.data(),
+                     GL_STATIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glGenBuffers(1, &g.ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g.ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, b.idx.size() * sizeof(uint32_t),
+                     b.idx.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        arenaBuckets_.push_back(g);
+    }
+
+    arenaStats_.buckets = uint32_t(arenaBuckets_.size());
+    arenaStats_.textures = uint32_t(arenaTextures_.size());
+    arenaStats_.placements = placements;
+    arenaStats_.skippedPlacements = skipped;
+    arenaStats_.sectionSlots = slots;
+    arenaStats_.tris = tris;
+    for (const ArenaBucket& g : arenaBuckets_) {
+        if (g.texId >= 0) ++arenaStats_.texturedBuckets;
+        else ++arenaStats_.untexturedBuckets;
+    }
+    arenaReady_ = !arenaBuckets_.empty();
+    std::fprintf(stderr,
+                 "[arena] pack uploaded: buckets=%u (textured=%u fallback=%u) "
+                 "textures=%u placements=%u skipped=%u slots=%u tris=%llu\n",
+                 arenaStats_.buckets, arenaStats_.texturedBuckets,
+                 arenaStats_.untexturedBuckets, arenaStats_.textures,
+                 arenaStats_.placements, arenaStats_.skippedPlacements,
+                 arenaStats_.sectionSlots, (unsigned long long)arenaStats_.tris);
+    return arenaReady_;
+}
+
+void Renderer::DrawArenaPack() {
+    // No pack -> no GL call at all (the default path stays byte-identical).
+    if (!arenaReady_) return;
+    const ArenaFrustum f = ExtractArenaFrustum();
+    const GLsizei stride = kArenaStride * int(sizeof(float));
+    const GLboolean texWas = glIsEnabled(GL_TEXTURE_2D);
+    const GLboolean blendWas = glIsEnabled(GL_BLEND);
+    const GLboolean lightWas = glIsEnabled(GL_LIGHTING);
+    // The pack's DXT5 diffuses (grass) carry a near-zero alpha channel that
+    // is NOT opacity (UE3 mask); with the frame's default SRC_ALPHA blending
+    // the floor went fully transparent and only the grey behind showed.
+    // The arena is opaque: draw it unblended so texture alpha is ignored.
+    glDisable(GL_BLEND);
+    uint32_t visible = 0, culled = 0;
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_NORMAL_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    for (const ArenaBucket& bk : arenaBuckets_) {
+        if (!ArenaAabbVisible(bk.lo, bk.hi, f)) { ++culled; continue; }
+        if (bk.texId >= 0) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, GLuint(bk.texId));
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        } else {
+            glDisable(GL_TEXTURE_2D);
+            glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2], 1.0f);
+        }
+        // Emissive trim-light buckets render unlit (they ARE the lights);
+        // shaded they would go dark on their shadow side and read as ridges.
+        if (bk.unlit) glDisable(GL_LIGHTING);
+        else if (lightWas) glEnable(GL_LIGHTING);
+        glBindBuffer(GL_ARRAY_BUFFER, bk.vbo);
+        glVertexPointer(3, GL_FLOAT, stride, (const void*)0);
+        glNormalPointer(GL_FLOAT, stride, (const void*)(3 * sizeof(float)));
+        glTexCoordPointer(2, GL_FLOAT, stride, (const void*)(6 * sizeof(float)));
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bk.ibo);
+        glDrawElements(GL_TRIANGLES, GLsizei(bk.idxCount), GL_UNSIGNED_INT,
+                       (const void*)0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        NoteExternalDraw(bk.tris, 0);
+        ++visible;
+    }
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+    if (texWas) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
+    if (blendWas) glEnable(GL_BLEND);
+    if (lightWas) glEnable(GL_LIGHTING); else glDisable(GL_LIGHTING);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    arenaStats_.visible = visible;
+    arenaStats_.culled = culled;
+}
+
+void Renderer::ShutdownArenaPack() {
+    for (ArenaBucket& bk : arenaBuckets_) {
+        if (bk.vbo) glDeleteBuffers(1, &bk.vbo);
+        if (bk.ibo) glDeleteBuffers(1, &bk.ibo);
+        bk.vbo = bk.ibo = 0;
+    }
+    arenaBuckets_.clear();
+    for (unsigned& t : arenaTextures_)
+        if (t) glDeleteTextures(1, &t);
+    arenaTextures_.clear();
+    arenaReady_ = false;
 }
 
 bool Renderer::SaveScreenshot(const char* path) const {

@@ -10,11 +10,36 @@ Owner: A4 (presentation). Peers: `src/sim` (read-only via `Snapshot`),
 make all                 # headless_sim, render_stub, game, tests, arena_test
 make build/game
 make build/render_stub
-python3 tools/verify/visual_gates.py     # VG1-VG12, offscreen, loud SKIP
+python3 tools/verify/visual_gates.py     # VG1-VG16, offscreen, loud SKIP
 ```
 
-## Renderer contract (GL 2.1 fixed-function, 720p60)
+## Renderer contract (GL 4.5 Compatibility hard target, fixed-function default, programmable permitted, 720p60)
 
+- **GL baseline (GRAPHICS45 G2, owner decision):** the context requests **4.5
+  Compatibility** and `Init` **aborts loudly** below it — no 2.1/3.3 fallback,
+  no llvmpipe, no core-profile *context*. Fixed-function draws
+  (`glBegin/glEnd`, `glPushMatrix`, `GL_NORMALIZE`) keep running under 4.5
+  compat; VBOs/FBOs/GLSL 4.50-compat are first-class. Supported machines are
+  only A = AMD Radeon R4 / Mesa 26.2.4 (GL 4.5 compat, the performance floor —
+  60 FPS there is the open question) and B = RTX 4060 / NVIDIA 615.71.09
+  (GL 4.6). See `docs/GATE_POLICY.md`.
+- **Fixed-function is the default, not the ceiling (rev 2026-10-20).** A
+  programmable VS+FS path (GLSL ≤ 4.50, VAOs/VBOs) is allowed *inside the same
+  compat context* under `docs/RENDER_POLICY.md`: entry points via the existing
+  `GL_GLEXT_PROTOTYPES` pattern, static uploads, compile/link at init only, and
+  the **PG1** bar (A ≥60 FPS, p99 ≤ 16.67 ms, ≤1.15× the default `avg`; B p99 ≤
+  8.33 ms; `drops=0`, `glerr=0`) green on A *and* B before it becomes default or
+  enters a gated capture. The default path stays byte-identical (`VG1`) until
+  that baseline is deliberately re-recorded with a full suite run per machine.
+- **Visual evidence is currently partial:** `tools/verify/gates_visual.json`
+  holds only the VG1 row (recorded on A, tolerance path) after the GRAPHICS45
+  pull; the VG2–VG16 rows were dropped there. The checker itself is unchanged
+  (VG1–VG16), so re-recording is the debt, not a re-implementation. Note the
+  writer **replaces** the file on every run, so an `--only VGx` pass erases the
+  other rows. Post-pull spot checks on B (2026-10-20): `VG1` PASS byte-identical
+  (`md5=0a2bbb529ea559daaf5c922efc3ba4b8`) and `VG7` PASS
+  `ticks=7200 drops=0 glerr=0 tris_last=189144 draws_last=189` — draws
+  268 → 189 from the merged buckets, tris +0.6%.
 - Draw state is reset every frame in `BeginFrame` (blend SRC_ALPHA/ONE_MINUS,
   depth LEQUAL, lighting per `lightOn_`). The 2D overlay helpers save/restore
   blend+depth instead of clobbering them. **This fixed a real bug:** before the
@@ -431,3 +456,170 @@ Roundtrip: `/tmp/t_rt` → `ROUNDTRIP PASS` (test file untouched);
 (shipped max_fps=0/pacing_log=false, mutations survive, clamps 5→15,
 5000→1000, 0 stays off). `check-touched` → advisory/harness/docs only, no
 `[hard]`/sim tier (G5 paths all under `[advisory]`/docs).
+
+## 2026-10-20 — V11 arena shell is one-sided (cull pass in the two arena draws)
+
+Owner report: "when a camera goes through a wall (intentionally) it is too
+opaque and stops rendering things inside of the arena". Reproduced with fixed
+captures, not by reasoning (`tools/verify/capture.sh`):
+
+```sh
+bash tools/verify/capture.sh /tmp/v11 outside --cam 4300,0,400,0,0,400
+bash tools/verify/capture.sh /tmp/v11 inside  --cam 3000,0,400,0,0,400
+```
+
+`4300,0,400` is 204 uu outside the +X wall plane (4096); the chase rig only
+clamps the eye's Z (`main.cpp:840-851`, `cz` 40..1928), and freecam clamps
+nothing, so an eye outside a wall is reachable in the shipped build.
+
+Two defects, one root (culling was never enabled for the shell, which is
+authored as an interior surface — wall/crown/skirt/weave normals all point INTO
+the room):
+
+1. Outer faces rasterise, so from outside you look at an opaque backside.
+2. The glass is blended (`kGlassA = 0.40`) but still writes depth, and the
+   buckets draw BEFORE pads/cars/ball: the wall's depth lands first, so every
+   interior object drawn afterwards was depth-rejected. Turf (drawn earlier)
+   survived tinted; cars and ball vanished. That is the "stops rendering"
+   half.
+
+Fix, `src/models/ArenaShell.cpp` only:
+
+- `fixWinding()` — after `bake()`, re-wind every triangle so its CCW front face
+  agrees with its own vertex normals. Measured flips: opaque 0/1056, turf 0/2,
+  wallbase 64/416, ceiling 2/2, skirt 80/144, markings 0/2, glass 152/472,
+  shell 0/24, weave 4/4 (the emitted winding was only self-consistent for the
+  `DrawBox`/sphere emitters). No vertex, UV, colour, normal or tri count
+  changes, so VG7 counters are untouched by construction.
+- `CullScope` — `GL_CULL_FACE` + `GL_BACK` + `GL_CCW` enabled for
+  `DrawArenaBuckets` and `DrawArenaGoalInteriors` only, with the previous
+  enable/mode/front-face saved and restored (same discipline as the existing
+  depth-test/depth-mask sandwiches). Culling stays OFF for cars/ball/pads/FX.
+- `RL_NOCULL=1` — debug lever (like `RL_NOTEX`) that restores the old
+  double-sided arena, so A/B captures can separate the re-wind from the cull
+  pass.
+
+Measured, pre-fix → post-fix (seed 7, tick 120, `--no-shake`, 1280x720):
+
+```
+eye 4300,0,400 outside +X wall : full green 0.079 -> 0.327
+                                 centre green 0.021 -> 0.429  (inside ref 0.432)
+                                 car crop (x480-800,y370-400) var 236 -> 1632,
+                                 max channel 122 -> 249 (Fennec detail visible)
+eye 4300,0,400 --nofennec vs Fennec: 66 px differ in rows 380-383 (cols
+                                 500-779) -> the cars ARE drawn now
+eye 3000,0,400 inside control  : 76309 px move, 64686 by 1-4/255, 2208 by >8
+                                 (max 87, the 1 px wide bright cove lines)
+RL_NOCULL=1 vs pre-fix build   : BYTE-IDENTICAL in both views (md5
+                                 9027bf5b… chase cam, b5f8a7bb… inside eye),
+                                 i.e. the re-wind alone is pixel-neutral and
+                                 every delta above is the cull pass alone
+default chase cam (in-arena)   : 53954 px move, 52662 by 1-4/255, 850 by >8
+                                 (max 118, isolated 1 px depth-tie seams)
+```
+
+The inside-frame deltas are the `a = 0.9` trim/beam/cove boxes: their front and
+back faces project onto the same pixels, and `GL_LEQUAL` let the far face
+blend a second time (visible as the double-bright thin glow lines). Culling
+removes that second layer — measured on the inside control, 76309 px move by
+1-4/255, 1396 px by more than 12 (the 1-px bright cove lines, max 87). No
+surface loses coverage: a culled *whole* surface would show up as a large area
+at 50-120, and the histogram has none.
+
+Verification:
+
+- `python3 tools/verify/visual_gates.py` → **15 PASS, 1 FAIL, 0 SKIP**.
+  `VG1` PASS byte-identical `md5=5326135d54b86d53532d32d78670030d` (NVIDIA
+  615.78.08); `VG7` PASS `ticks=7200 drops=0 glerr=0 tris_last=189144
+  draws_last=189 fennec_tris=84823` — tris/draws identical to the G3c record,
+  so the cull pass costs no geometry and no draw call;
+  `VG11` 66 wall-base samples / 0 centre, `VG14` 98.8% green,
+  `VG15` lit/flat 0.54 (need 0.45..1.25), ceiling L=57, walls 31/26.
+  `VG6` **FAIL** (hex x-pitch 46 px vs 92) — PRE-EXISTING and unrelated:
+  identical numbers on the stashed pre-fix binary and with `RL_NOCULL=1`.
+- `make all` exit 0 (only the pre-existing warnings); `/tmp/t_rt` ROUNDTRIP,
+  `/tmp/t_kb` KEYBOARD+MENU, `/tmp/t_gp` GAMEPAD, `/tmp/t_cam` CAMERA,
+  `/tmp/t_atex` ARENA_TEXTURES (108) all PASS; `/tmp/arena_test` 55/55;
+  `measured.py` **19 PASS, 0 FAIL**.
+- `check-touched`: `src/models/ArenaShell.cpp` → `[advisory]` tier only, no
+  sim tier.
+- `sha256 build/game = 0ca5fe7f94e711051b963d756aaba3cba2ab0f5f152dc7a44898bb1e17637a8a`.
+
+Behaviour note for the next visual pass: VG1–VG16 all capture an INSIDE eye, so
+they can only catch a cull regression indirectly. The outside-wall recipe above
+(`--cam 4300,0,400,0,0,400` → centre green ≈ 0.43) is the direct check until a
+gate is added for it.
+
+## A6b (2026-10-20) — the ripped-arena draw path (`--arenadir`)
+
+The engine half of the arena 1:1 order: a ripped arena pack
+(`rl-arena-pack/1`, read by `src/models/ArenaRip.h`, A6a) is uploaded ONCE
+into merged world-space buckets and drawn with ONE fixed-function
+`glDrawElements` per visible bucket per frame.
+
+* **Bucket key** = (texture/material id, 8192 uu spatial cell of the
+  placement's world AABB centre). The pack's materials carry no colour, only
+  a diffuse, so the texture IS the material id; `-1` is the neutral fallback
+  bucket.
+* **Upload**: one VBO + one EBO per bucket, `GL_STATIC_DRAW`, at load time
+  (`Renderer::BuildArenaPack`, called once after `Init`). Nothing is
+  re-uploaded per frame; no shader is compiled; nothing is read back.
+* **Draw** (`Renderer::DrawArenaPack`): the six frustum planes are extracted
+  from the matrices the camera just installed (`glGetDoublev` of the
+  modelview/projection — client-side matrix state, no pipeline flush); a
+  bucket whose world AABB lies behind any plane is culled, the survivors are
+  drawn one per call. Fixed-function only: `GL_TEXTURE_2D` + the repo's
+  key+fill+ambient lighting with `GL_NORMALIZE` + the G4 mipmap chain
+  (`glGenerateMipmap`, trilinear, aniso 4x). No GLSL, no VAO.
+* **Neutral fallback**: the sections with no diffuse (392 of the 640 used
+  section slots in the DFH Stadium day pack) get a mid grey
+  `(0.55, 0.55, 0.55)` in their own buckets; the value is logged at startup
+  (`fallback_material=neutral-grey(0.55,0.55,0.55)`) and lives in
+  `kArenaFallback` (`src/render/Renderer.cpp`).
+* **Default path untouched**: with no pack the renderer creates NO GL
+  object, issues NO extra call and the frame is byte-identical — MEASURED:
+  the VG1 capture md5 is `5326135d54b86d53532d32d78670030d` with AND without
+  the A6b change (identical binary-level A/B, same command line).
+* The 26 IMPORTED placements (`externalInstances`: the sky sphere and the
+  billboard sprites of the sibling package) are NOT drawn: none of them
+  carries a diffuse, and the neutral fallback would render the sky sphere as
+  a grey dome around the camera. They are counted and reported, never
+  silently dropped.
+
+## A6b-center (2026-10-21) — midfield trench, trim-light extrusion, collision planes
+
+Root-caused the three midfield artifacts at triangle level against the pack
+bytes (transforming indexed verts with the placement's column-major doubles,
+never by reasoning about the math):
+
+* **Dark N–S/E–W cross bands are authored, kept.** The grass slab
+  `Field_STD_Floor_Thick` (top z=10) has exact slots where it contributes 0
+  triangles (measured: none at x=0, covered again from x≈233); the slots are
+  floored by `Field_CenterField_Team1/2` (|x|<233) and `Field_Mid_A`
+  (|y|<269) `Frame_01` strips at z=0 — a 10 uu recessed metal inlay, not a
+  mapping bug. The `Field_Mid_A` debug skip was reverted (proven innocent:
+  no field-collector triangle sits above z=10 at x=0).
+* **"Extrusion" around the ball: trim-light rings drawn shaded-dark.**
+  `Field_Center_Trim` section 1 (`TrimLight_None_Mat`, param-mask, 350 tris)
+  is two concentric rings (r≈272 and r≈640–725) rising to z=64; in game they
+  are emissive. They now get fallback tint 5 (near-white `(1.0,0.97,0.90)`)
+  and per-bucket `unlit` (lighting disabled for those draws, state
+  saved/restored like blend). Same rule covers `TrimLight_Glow_*`,
+  `CityLights`, `StadiumLight`, `LightArray_Arrow` — all untextured lights
+  that the old "trim→dark metal" order caught via the "trim" substring.
+  Textured materials bypass the tint entirely, so e.g. the FakeLight grass
+  MICs are unaffected.
+* **`Collision_Mat` sections are skipped (counted).** Collision proxies are
+  invisible in game; the dark fallback drew them as slabs — most visibly
+  six `Plane32768` kill planes, one hung at z=2048 as a dark false ceiling
+  over the day stadium, plus the goal/side/corner collision halves.
+* **Kept as-is:** the `Sprite`/`FogMesh`/`FieldSpotLights` mesh skips and the
+  `LightCone`/`StadiumFog` material skip (translucent/additive FX, already
+  validated — the X bands are gone); double-sided rendering (no
+  `GL_CULL_FACE`: the pack's CW fronts were measured on the slab top, but
+  the skybox shells are viewed from inside and the pack carries no
+  per-material cull flag, so global culling would erase the sky).
+* MEASURED (`--arenadir arena_assets/stadium_day`, seed 7, tick 120):
+  buckets=123 (48 textured / 75 fallback), tris=569941, draws=278,
+  glerr=0; fixed-camera captures low/top/elevated show grass wall to wall,
+  the glowing center ring, orange pads and white goal frames.

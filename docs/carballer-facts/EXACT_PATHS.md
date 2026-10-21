@@ -11,6 +11,15 @@ public approximation remains the vendored CarBaller `RLCamera`
 ([`camera.md`](camera.md)). Two paths to actual exactness both run on THIS
 machine only, from the user's own install, never committed (repo Rule 1).
 
+**UPDATE 2026-10-20 — Path A has been attempted and is partly delivered.** The
+packages decrypt and parse (`tools/decomp/rlupk.py`), and the camera Symbol
+surface is extracted and gated (`docs/CAMERA_DECOMP.md`,
+`tools/verify/camera_surface_gate.py`, 98 symbols). Function **bodies** are still
+blocked: this build is `UE3 868 / licensee 34` while UELib tops out at licensee
+32, and licensee-34 object data stores tagged-property names as inline strings
+instead of FName indices. Read `docs/CAMERA_DECOMP.md` before re-searching for
+decompilers — it has the exact failure points and the two ways past them.
+
 ## What exists publicly (interface, not algorithm)
 
 - **BakkesModSDK auto-generated wrappers** —

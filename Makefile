@@ -64,11 +64,11 @@ build/headless_sim: $(HEADLESS_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $(RS_INC) $^ -o $@
 
-build/render_stub: src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/settings/Settings.cpp src/render/stub_main.cpp
+build/render_stub: src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp src/render/stub_main.cpp
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@
 
-GAME_SRCS = src/game/main.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
+GAME_SRCS = src/game/main.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/ArenaRip.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
 
 build/game: $(GAME_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
 	mkdir -p build
@@ -83,7 +83,7 @@ game: build/game
 headless: build/headless_sim
 render_stub: build/render_stub
 
-tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex
+tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir
 /tmp/t_rt: tests/test_settings_roundtrip.cpp src/settings/Settings.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -o $@ && $@
 /tmp/t_kb: tests/test_keyboard_menu.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp
@@ -99,6 +99,16 @@ tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex
 # context — Fill*/UV helpers never touch GL, -lGL only for linking).
 /tmp/t_atex: tests/test_arena_textures.cpp src/models/ArenaTextures.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -lGL -o $@ && $@
+# A6a arena pack reader contract test (headless, no GL context — the reader is
+# plain C++ + STL). The pack is a runtime input (gitignored arena_assets/), so
+# the test SKIPs loudly when it is absent.
+/tmp/t_rip: tests/test_arena_rip.cpp src/models/ArenaRip.cpp
+	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -o $@ && $@
+# A6b arena-dir contract test (the tolerant [arena] arena_dir INI reader; the
+# reader is inline in src/render/Renderer.h, so only the header is needed —
+# SDL2 for the header, no GL context).
+/tmp/t_adir: tests/test_arena_dir.cpp
+	$(CXX) $(STD) $(WARN) $(SRC_INC) $(SDL_CFLAGS) $< $(SDL_LIBS) -o $@ && $@
 
 # A6 frozen tapes through the real sim (MODE=MEASURED).
 tapes: build/headless_sim
@@ -122,4 +132,4 @@ meshgen: build/make_soccar_mesh
 	./build/make_soccar_mesh collision_meshes/soccar/soccar_cleanroom.cmf
 
 clean:
-	rm -rf build /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/arena_test
+	rm -rf build /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir /tmp/arena_test

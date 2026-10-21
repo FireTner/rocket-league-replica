@@ -24,6 +24,11 @@
 //   construction. The DrawBall/wheel uncounted-tris gap is NOT touched here.
 // - Mode: mesh vs fallback selected by meshMode (G3c passes
 //   sim->usingRealSoccar()); buffer sets are separate, never mixed.
+// - One-sided shell (V11): the bake is re-wound so each triangle's front face
+//   agrees with its own normals, and both arena draws run inside a CullScope
+//   (GL_CULL_FACE/GL_BACK). An eye outside a wall looks INTO the arena; the
+//   inside view keeps the same surfaces. Culling is off for every non-arena
+//   draw, and RL_NOCULL=1 restores the pre-V11 double-sided result.
 //
 // DEVIATION vs the G3a plan (docs/ARENA_BUCKETS.md §1), found while baking:
 // C1 is 8 glassSub quads = 16 tris, but the plan table says 24 tris / 8 draws
@@ -42,6 +47,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <vector>
 
 namespace rl {
@@ -329,6 +335,43 @@ void emitSphere(Bucket& bk, float cx, float cy, float cz, float radius,
             uint32_t A = base + 2 * j, B = A + 1, A2 = A + 2, B2 = A + 3;
             bk.tri(A, B, A2);
             bk.tri(B, B2, A2);
+        }
+    }
+}
+
+// ---- cull winding (V11) ----------------------------------------------------
+// Re-wind each baked triangle so its CCW front face points along the vertex
+// normals it was authored with. The shell is one-sided by nature — the inside
+// is the visible side — but it used to be drawn with culling OFF, so an eye
+// that passes THROUGH a wall (freecam, or the chase cam pushed into a wall;
+// RL does this too and UE culls) looked at the wall's backside: the glass
+// blended its tint over the interior AND wrote depth at the wall plane, so
+// everything drawn AFTER the buckets (pads, cars, ball) was depth-rejected —
+// "the arena stops rendering" (docs/VISUAL_BUGS_TODO.md V11). Matching the
+// winding to the normals lets one GL_CULL_FACE/GL_BACK pass in the two arena
+// draws hide exactly the outward faces: from outside you look INTO the arena,
+// from inside the same surfaces stay front-facing and nothing changes.
+// Culling stays OFF for every other draw (car/ball/pads/FX are double-sided
+// today), so this bake change is pixel-neutral outside the arena draws.
+void fixWinding(Bucket& bk) {
+    for (size_t t = 0; t + 2 < bk.idx.size(); t += 3) {
+        const float* a = &bk.v[(size_t)bk.idx[t] * kStrideFloats];
+        const float* b = &bk.v[(size_t)bk.idx[t + 1] * kStrideFloats];
+        const float* c = &bk.v[(size_t)bk.idx[t + 2] * kStrideFloats];
+        // Geometric normal of the triangle as wound (right-hand rule).
+        const float e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];
+        const float e2x = c[0] - a[0], e2y = c[1] - a[1], e2z = c[2] - a[2];
+        const float gx = e1y * e2z - e1z * e2y;
+        const float gy = e1z * e2x - e1x * e2z;
+        const float gz = e1x * e2y - e1y * e2x;
+        // ... vs the sum of the authored normals (pos 0-2, normal 3-5).
+        const float nx = a[3] + b[3] + c[3];
+        const float ny = a[4] + b[4] + c[4];
+        const float nz = a[5] + b[5] + c[5];
+        if (gx * nx + gy * ny + gz * nz < 0.0f) {
+            const uint32_t tmp = bk.idx[t + 1];
+            bk.idx[t + 1] = bk.idx[t + 2];
+            bk.idx[t + 2] = tmp;
         }
     }
 }
@@ -690,6 +733,8 @@ ModeSet g_mesh, g_fallback;
 void buildMode(ModeSet& ms, bool meshMode) {
     Bucket cpu[kDraws];
     bake(meshMode, cpu);
+    for (int d = 0; d < kDraws; d++)
+        fixWinding(cpu[d]); // V11: front faces follow the authored normals
     const uint64_t* plan = meshMode ? kPlanMesh : kPlanFallback;
     uint64_t bakedTotal = 0, planTotal = 0;
     for (int d = 0; d < kDraws; d++) {
@@ -733,6 +778,40 @@ void buildMode(ModeSet& ms, bool meshMode) {
 inline ModeSet& forMode(bool meshMode) {
     return meshMode ? g_mesh : g_fallback;
 }
+
+// Cull sandwich for the arena draws (V11, see fixWinding): back faces off for
+// the duration, prior state restored — same discipline as the depth-mask
+// sandwich below, so the frame stays a pure function of its draws.
+struct CullScope {
+    GLboolean was = GL_FALSE;
+    GLint mode = GL_BACK, face = GL_CCW;
+    // RL_NOCULL=1 restores the pre-V11 double-sided arena (debug lever like
+    // RL_NOTEX). With it set the bake re-wind is pixel-neutral, so a capture
+    // diff against an older build isolates the cull pass alone.
+    static bool off() {
+        static const bool s_off = std::getenv("RL_NOCULL") != nullptr;
+        return s_off;
+    }
+    bool active = false;
+    CullScope() {
+        if (off())
+            return;
+        active = true;
+        was = glIsEnabled(GL_CULL_FACE);
+        glGetIntegerv(GL_CULL_FACE_MODE, &mode);
+        glGetIntegerv(GL_FRONT_FACE, &face);
+        glEnable(GL_CULL_FACE);
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);
+    }
+    ~CullScope() {
+        if (!active)
+            return;
+        glCullFace((GLenum)mode);
+        glFrontFace((GLenum)face);
+        if (was) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    }
+};
 
 // One bucket draw, Fennec pattern (Fennec.cpp:152-186): client arrays over a
 // bound VBO + glDrawElements. Textured draws replicate the TextureScope
@@ -781,6 +860,7 @@ void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet) {
     if (!ms.built)
         buildMode(ms, meshMode);
     unsigned glassTex = noHexNet ? PlainGlassTexture() : HexNetTexture();
+    CullScope cull; // V11: one-sided shell — an eye outside looks INTO the arena
     // Emission order per plan §5: (a+d) -> turf -> wallbase -> ceiling ->
     // skirt -> B2 overlay -> glass. Untextured draws touch no GL state beyond
     // the arrays (exactly like DrawBox); textured draws add the bind sandwich.
@@ -807,6 +887,7 @@ void DrawArenaGoalInteriors(Renderer& r, bool meshMode) {
         buildMode(ms, meshMode);
     // C5+C6 (main.cpp:1568-1592): depth-TEST on, depth-WRITE off, restored
     // after — so cars/balls inside the net show through veiled.
+    CullScope cull; // V11: the shell box + weave quad are one-sided too
     GLboolean maskWas = GL_TRUE;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &maskWas);
     glDepthMask(GL_FALSE);

@@ -152,6 +152,8 @@ stub — see `src/input/BUILD_NOTES.md`):
 | key    | type | default | range | notes                                   |
 |--------|------|---------|-------|-----------------------------------------|
 | soccar | bool | true    | —     | Standard soccar map (only map this phase; 34 pads fixed by A2). |
+| mesh_dir | string | (empty) | — | Directory holding the dumped/generated arena COLLISION meshes, laid out as `<mesh_dir>/soccar/*.cmf` (RocketSim `COLLISION_MESH_BASE_PATH` convention). Empty = RocketSim's default `./collision_meshes/`. Psyonix-owned dumps are runtime-only and never committed (`docs/MESH_SETUP.md`). Overridden by the `--meshdir` flag. |
+| arena_dir | string | (empty) | — | Directory holding a ripped arena VISUAL pack (`arena.json` + `arena.bin`, format `rl-arena-pack/1`, see `docs/ARENA_PACK.md`). Empty = the analytic shell (no pack is read, no GL object is created, the default path is byte-identical). Overridden by the `--arenadir` flag (flag > INI). A directory with no loadable pack is a LOUD fatal error (stderr, non-zero exit) — never a silent fallback. The pack is Psyonix-owned runtime data: it lives outside the repository (gitignored `arena_assets/`) and is never committed (AGENTS.md rule 1). Read by the game's own tolerant INI reader (`rl::ReadIniKey`, `src/render/Renderer.h`) because the A5 `Settings` struct does not carry the key — **DEBT for the settings owner**: fold `arena_dir` into `ArenaSettings` so `Settings::Save` writes it back (until then a menu "Save & close" drops the key from this file). |
 
 ## [game]
 

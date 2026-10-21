@@ -4,7 +4,7 @@
    "id": "VG1",
    "gate": "capture determinism",
    "verdict": "PASS",
-   "detail": "byte-compare differs; 512 probes max|d|=0 (tol 8) driver=GL_VENDOR=AMD RENDERER=AMD Radeon R4 Graphics (radeonsi, stoney, ACO, DRM 3.64, 7.2.9-arch1-1) VERSION=4.5 (Compatibility Profile) Mesa 26.2.4-arch1.1"
+   "detail": "two captures byte-identical (GL_VENDOR=NVIDIA Corporation RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2 VERSION=4.6.0 NVIDIA 615.78.08) md5=5326135d54b86d53532d32d78670030d"
   }
  ],
  "diag": []

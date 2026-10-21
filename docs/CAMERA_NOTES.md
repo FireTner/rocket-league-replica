@@ -1,5 +1,9 @@
 # Camera notes — 1:1 RL replication (MIT)
 
+> Ground truth pulled from the real game (class/function/property surface, what
+> is gated, and what still needs the live-recording path) lives in
+> `docs/CAMERA_DECOMP.md`.
+
 ## Model
 Two modes, one shared RL setting set (`[camera]` in `config/settings.ini`,
 schema v1, editable live in the menu AND applied every frame — no restart).
@@ -40,20 +44,80 @@ schema v1, editable live in the menu AND applied every frame — no restart).
   `dynamicFov = 5*frac + 5 supersonic`. At rest every delta is exactly zero,
   so static captures are pixel-identical to the pre-dynamics build.
 
+## Layer architecture (P0, 2026-10-20 — refactor, NOT a retune)
+
+`Camera.cpp` was split from one long `Update()` into named layers, one job each,
+behind an **unchanged public API** (`Update`, `Apply`, `Eye`, `Center`, `EffFov`,
+`Blend`, `SwivelYaw/Pitch`, `Params`, `SetFreeView`, `SetLookBehind`). The split
+is proven behaviour-preserving, not asserted: a hex-float differential dump of
+`Eye/Center/EffFov/Blend/SwivelYaw/SwivelPitch` over 900 scripted frames (lead
+harness) and 4270 frames / 10 scenarios + fuzz (worker harness) is
+**byte-identical** to the pre-split code, and VG4's measured radii are unmoved.
+
+```
+UpdateSwivel    (§3.3)  swivel/free-look offset state
+UpdateTransition(§3.2)  transition alpha (RemainingTime/InterpRate)
+UpdateDynamics  (§3.1)  distance/FOV interp, dynamic angle
+UpdateCarFacing (§3.1)  air/ground branch + air-velocity heading
+UpdateBallAim   (§3.1)  ball-cam focus slew
+ClampPov        (§3.3+4) orbit admission / eye clamp
+BallCamPov      (§3.1)  ball-cam state writes its desired POV
+CarPov          (§3.1)  car-cam state writes its desired POV
+BlendCameraState(§3.2)  blend whole POV snapshots across the Transition
+SnapTransition  (§3.2)  first frame: anchor with no swing
+FollowPov       (§3.1)  stiffness lag + target filter on the mixed POV
+Apply           (§3.5)  the ONLY GL consumer
+```
+
+Each state writes a `PovSnapshot{TruthPov pov; float eye[3]; float center[3];}`.
+`TruthPov` (`src/camera/TruthPov.h`) is RL's own decomposition: `focus[3]`,
+`rotation[3]` in **UE rotator units (65536 = 360°)**, `distance`, `fov`, `time`.
+`rotation` is filled from angles the layers already compute, so the RL-shaped
+view costs no extra trig. `eye`/`center` are carried rather than re-derived from
+`focus − forward*distance`, because that round-trip would perturb the last bits —
+which is what keeps VG4 and `--shot`/`--cam` byte-stable.
+
+Units per layer: swivel/transition/dynamics in radians+degrees, the state and
+clamp layers in radians + world uu, the POV writers in **rotator units**, `Apply`
+in degrees + GL only. INI stays degrees (schema v1 unchanged).
+
+### What is still NOT RL (deliberately deferred)
+
+- **Ordering.** The pipeline above is the pre-split order, relabelled: the offset
+  state advances before the POVs are built, and the blend follows them. RL's
+  order is state → blender → offsets → clamp. Reordering is a feel change and
+  belongs to P3/P4 behind a trace — VG4 will not notice it.
+- **Split interp gains.** The follower still uses `kx` (horizontal) and `kz`
+  (vertical, halved airborne). Consequence, now measured: the eye can sit
+  **+3.06 uu outside** the 292.79 uu rig sphere (1.04%) while swivelling, and
+  exactly 0.00 without swivel. A single RL-style `InterpTo` should remove it;
+  `tests/test_camera_dynamics.cpp` asserts the true bounds in the meantime.
+- **Every constant** (`kBallAimSlew = 20` rad/s, `followRate = 1.5+14*stiffness`,
+  `kRigLagCap = 40` uu, target-filter cutoffs, swivel/snap timings, car-cam
+  400/40 look-ahead) is still **tuned/ours**, not decompiled or traced.
+
 ## 1:1 defaults and ranges (RL values)
 | Key | Default | Range | Provenance |
 |-----|---------|-------|------------|
-| fov | 110 | 60–110 | Rocket Science #2 (cone diagram = horizontal), Liquipedia 60..110, CarBaller (horizontal) |
-| distance | 270 | 100–400 | v1.74 default per CarBaller; Thespike/ Dot guides |
-| height | 100 | 40–200 | guides consensus |
-| angle | -3 | -30–15 | Zen -3.0; range kept (CarBaller says -45..0 — conflict, UNVERIFIED) |
-| stiffness | 0.45 | 0–1 | guide consensus (Squishy/Thespike/keymap); CarBaller claims 0.5 = v1.74 default — conflict, UNVERIFIED |
+| fov | 110 | 60–110 | **decomp: `Camera_TA.FOVLimits` (60/110)** — was guides only |
+| distance | 270 | 100–400 | **decomp: `Camera_TA.DistanceLimits` (100/400)**; default 270 still CarBaller |
+| height | 100 | 40–200 | **decomp: `Camera_TA.HeightLimits` (40/200, interval 10)**; default 100 still guides |
+| angle | -3 | **-15–0** | **decomp: `Camera_TA.AngleLimits` (-15/0)** — our shipped range (`-30..15`, in `Settings.cpp`, `Camera.cpp`, the menu, `INI_SCHEMA.md`) is **WRONG**; fix is cross-owner, A5-owned, tracked in `CAMERA_EXACT_LOG.md` Rounds 8/15. Default -3 is legal. |
+| stiffness | 0.45 | 0–1 | **decomp: `Camera_TA.StiffnessLimits` (0/1, interval 0.05)**; default 0.45 still guide-sourced |
 | ballcam | true | — | RL default ballcam ON |
-| transition_speed | 1.2 | 1–2 | CarBaller RL range; Thespike best 1.2 |
-| swivel_speed | 5.0 | 1–10 | CarBaller RL range; Thespike best 5.5 |
+| transition_speed | 1.2 | 1–2 | **decomp: `Camera_TA.TransitionSpeedLimits` (1/2)**; default 1.2 still best-known |
+| swivel_speed | 5.0 | 1–10 | **decomp: `Camera_TA.SwivelSpeedLimits` (1/10)**; default 5.0 still best-known |
 | shake | true | — | RL ships with shake ON (CarBaller) |
 | invert_swivel | false | — | BakkesModSDK CameraSave field |
 | snap | true | — | CarBaller `CameraSettings.snap` (RL "Snap Camera to Default"); INI-only, no menu slider |
+
+**Provenance upgrade (2026-10-20).** Six of the seven ranges above were confirmed
+against the real game rather than guides, from the `Camera_TA` class default
+object (`~/rl-decomp/decompiled/cdo_tables.txt`, decoded 3637/3637 B). The
+ranges were already correct — they now have proof. Three further decompiled facts
+not yet in code: `FreeLookSpeedLimits 1..10`, `MaxFreeLookPitchDegrees 75.0`, and
+`GroundClampZOffset 10.0` (ours is `kEyeFloorZ = 16.0`) — the last two are feel
+changes awaiting a trace-gated P4 slice.
 
 FOV slider is treated as horizontal FOV at 16:9 and converted to vertical for
 the GL frustum (keeps horizontal extent constant on 16:9).
@@ -155,9 +219,25 @@ chatter swing 10.41 → 4.32 uu; rest geometry unchanged (VG4 PASS,
   features); keyboard swivel bindings; demo/goal slow-mo cuts remain FX-only
   hooks (`OnGoal`/`OnDemo`).
 - Car-cam look-ahead (400/40) is a tuned constant, not a dumped Psyonix value.
-- Camera collision is a shell clamp (eye kept 120 uu inside
-  ±4096/±5120/2048), not RL's pull-in sweep — found via screenshot (wall
-  filled the screen when hugging it), fixed, pending playtest confirm.
+- Camera vs walls: **the side/back wall clamp was REMOVED 2026-10-21 (owner
+  call, "let it clip like RL").** History: the eye was hard-clamped 120 uu
+  inside ±4096/±5120 (`src/game/main.cpp`, coordinator block after
+  `camera.Update`) to stop a translucent wall filling the screen when hugging
+  it. Fidelity check against the decomp facts says that clamp was ours, not
+  RL's: `Camera_TA.ClipToField`/`.ClipRate` is the replay/spectator clip
+  (`docs/CAMERA_DECOMP.md` §port table), and RL's *playing* camera is free to
+  enter wall geometry — hug a wall in RL and the wall fills the screen, and
+  ballcam near a goal shows through the back net. The clamp also moved the eye
+  sideways, which is what made it feel wrong versus RL. Kept: the **vertical**
+  guards only (floor 40 uu, ceiling 2048−120), which `ClipToField` does cover.
+  Not replaced by RL's `ProximityDistance*`/`ClipRate` sweep — that is a
+  separate feel slice needing a trace. Verified: `make build/game` clean,
+  `/tmp/t_cam` CAMERA PASS (no test ever gated the clamp — it lived in the
+  coordinator, not `Camera`), `visual_gates.py --only VG4` PASS with radii
+  identical to baseline (`z600 outer=91 inner=71 disc=45; ratios
+  0.780/0.495; growth 1.022`). Playtest is the real bar for this change
+  (`docs/PLAYTEST_CHECKLIST.md`): expect the wall to fill the frame when the
+  car is pinned against it, matching RL.
 
 ## Free camera (arena inspection)
 `F` toggles. Throttle = dolly along view, steer = orbit around target,

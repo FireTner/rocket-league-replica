@@ -28,6 +28,7 @@
 #include "menu/Menu.h"
 #include "models/Fennec.h"
 #include "models/Models.h"
+#include "models/ArenaRip.h"
 #include "models/ArenaTextures.h"
 #include "render/Renderer.h"
 #include "settings/Settings.h"
@@ -60,6 +61,11 @@ int main(int argc, char** argv) {
 	bool seedGiven = false, noVsync = false, menuAtStart = false, noAudio = false, flatShading = false;
 	bool calibrate = false;
 	std::string meshDir; // --meshdir override; empty = settings [arena] mesh_dir
+	// A6b: --arenadir override; empty = [arena] arena_dir in config/settings.ini.
+	// The pack is a Psyonix-owned RUNTIME input (gitignored arena_assets/): it
+	// is read once at startup, never written, never committed.
+	std::string arenaDir;
+	bool arenaDirFlag = false;
 	float camEye[3] = {0, 0, 0}, camTarget[3] = {0, 0, 0};
 	bool camSet = false; // --cam hook: visual-verification freecam pose
 	long long shotAtTick = -1, shotEvery = 0, shotCount = 0;
@@ -157,6 +163,11 @@ int main(int argc, char** argv) {
 			if (!need(v))
 				return 2;
 			meshDir = v;
+		} else if (a == "--arenadir") {
+			if (!need(v))
+				return 2;
+			arenaDir = v;
+			arenaDirFlag = true;
 		} else if (a == "--ballpos") {
 			if (!need(v))
 				return 2;
@@ -210,7 +221,7 @@ int main(int argc, char** argv) {
 			std::fprintf(stderr,
 				"usage: %s [--bot stationary|mirror|slow-chase] [--soak SECS] [--ticks N] [--seed S]\n"
 				"       [--menu] [--shot-at-tick N --shot-path P] [--shot-every N --shot-dir D]\n"
-				"       [--no-vsync] [--no-audio] [--meshdir DIR]\n"
+				"       [--no-vsync] [--no-audio] [--meshdir DIR] [--arenadir DIR]\n"
 				"visual-harness (debug): [--ballpos x,y,z] [--boost N] [--drive t,s,p,y,r,j,b,h]\n"
 				"       [--nofennec] [--debug-colliders] [--debug-grid] [--no-hexnet] [--no-shake]\n"
 				"       [--fx-probe goal|demo|pickup --fx-probe-tick N]\n"
@@ -230,6 +241,39 @@ int main(int argc, char** argv) {
 		std::string err;
 		if (!rl::Settings::Load("config/settings.ini", settings, &err))
 			std::fprintf(stderr, "[game] settings load: %s (defaults)\n", err.c_str());
+	}
+
+	// ---- A6b: the ripped arena pack ---------------------------------------
+	// Precedence: the --arenadir FLAG wins over [arena] arena_dir in
+	// config/settings.ini.  A directory that yields no loadable pack is a
+	// LOUD FATAL (stderr, non-zero exit): there is never a silent fallback
+	// to the analytic shell.  With no flag and no INI key NOTHING happens:
+	// no pack is read, no GL object is created, the default path is
+	// byte-identical.
+	rl::ArenaPack arenaPack;
+	bool useArenaPack = false;
+	{
+		std::string iniArena;
+		if (!arenaDirFlag &&
+			rl::ReadIniKey("config/settings.ini", "arena", "arena_dir", &iniArena))
+			arenaDir = iniArena;
+		if (!arenaDir.empty()) {
+			if (!rl::LoadArenaPack(arenaDir, arenaPack)) {
+				std::fprintf(stderr,
+					"[game] FATAL: arena dir '%s' holds no loadable arena pack "
+					"(expected the manifest arena.json): %s\n",
+					arenaDir.c_str(), rl::ArenaPackError(arenaPack));
+				return 1;
+			}
+			useArenaPack = true;
+			std::fprintf(stderr,
+				"[game] arena pack: dir=%s source=%s meshes=%zu(+%zu external) "
+				"placements=%zu(+%zu external) materials=%zu textures=%zu\n",
+				arenaDir.c_str(), arenaPack.sourcePackage.c_str(),
+				arenaPack.meshes.size(), arenaPack.externalMeshes.size(),
+				arenaPack.instances.size(), arenaPack.externalInstances.size(),
+				arenaPack.materials.size(), arenaPack.textures.size());
+		}
 	}
 
 	// Collision mesh: --meshdir wins, else [arena] mesh_dir, else RocketSim's
@@ -302,6 +346,24 @@ int main(int argc, char** argv) {
 		std::fprintf(stderr, "[game] FATAL: renderer init failed (GL 4.5 compatibility required, no fallback)\n");
 		delete sim;
 		return 1;
+	}
+	// A6b: upload the ripped arena ONCE (static buffers, no per-frame work).
+	// The GL context is live now, so the upload can happen here — never in
+	// the frame loop.
+	if (useArenaPack) {
+		if (!renderer.BuildArenaPack(arenaPack)) {
+			std::fprintf(stderr,
+				"[game] FATAL: the arena pack in '%s' holds no drawable geometry\n",
+				arenaDir.c_str());
+			delete sim;
+			return 1;
+		}
+		const rl::Renderer::ArenaPackStats& as = renderer.ArenaPackInfo();
+		std::fprintf(stderr,
+			"[arena] draw path: buckets=%u visible(last)=%u culled(last)=%u "
+			"textured=%u fallback=%u tris=%llu fallback_material=neutral-grey(0.55,0.55,0.55)\n",
+			as.buckets, as.visible, as.culled, as.texturedBuckets,
+			as.untexturedBuckets, (unsigned long long)as.tris);
 	}
 	rl::Camera camera;
 	camera.LoadFromIni("config/settings.ini");
@@ -827,18 +889,21 @@ int main(int argc, char** argv) {
 				swivelX, swivelY, snap.carForward, snap.carVel,
 				snap.airborne);
 		}
-		// Camera collision (1:1 feel): RL pulls the eye in when a wall would
-		// block it. Clamp the smoothed eye inside the shell so translucent
-		// wall boxes never fill the screen when hugging walls.
+		// Camera vs arena (1:1 feel, corrected 2026-10-21): RL does NOT
+		// reposition the chase eye against side/back walls — `Camera_TA`'s
+		// `ClipToField`/`ClipRate` is the replay/spectator clip, and the playing
+		// camera is free to enter wall geometry (hug a wall in RL and the wall
+		// fills the screen; ballcam near a goal shows through the back net).
+		// The old hard AABB clamp here (eye forced 120 uu inside
+		// +/-4096/+-5120/2048) was ours, not RL's, and it teleported the eye
+		// sideways instead of letting the rig sit where RL puts it. Removed.
+		// Kept: the vertical guards only — the floor (never see the underside
+		// of the pitch) and the ceiling inset, which `ClipToField` does cover.
 		{
 			float eye[3], ctr[3];
 			camera.Eye(eye);
 			camera.Center(ctr);
 			float cx = eye[0], cy = eye[1], cz = eye[2];
-			if (cx > 4096 - 120) cx = 4096 - 120;
-			if (cx < -4096 + 120) cx = -4096 + 120;
-			if (cy > 5120 - 120) cy = 5120 - 120;
-			if (cy < -5120 + 120) cy = -5120 + 120;
 			if (cz > 2048 - 120) cz = 2048 - 120;
 			if (cz < 40) cz = 40;
 			if (cx != eye[0] || cy != eye[1] || cz != eye[2]) {
@@ -898,7 +963,15 @@ int main(int argc, char** argv) {
 		// Order inside buckets (opaque -> B2 overlay -> glass) matches the old
 		// state sandwiches (V5/V6); B2 keeps depth-test OFF and C5/C6 keep
 		// depth-write OFF inside their own draws. Grid instrument above stays.
-		renderer.DrawArenaBuckets(sim->usingRealSoccar(), noHexNet);
+		//
+		// A6b: with a ripped arena pack loaded, the PACK replaces the analytic
+		// shell (its own floor/walls/ceiling) — drawing both would double the
+		// geometry and z-fight the two floors. Without a pack this is the
+		// untouched shipped path.
+		if (renderer.HasArenaPack())
+			renderer.DrawArenaPack();
+		else
+			renderer.DrawArenaBuckets(sim->usingRealSoccar(), noHexNet);
 		// Pads.
 		{
 			int n = sim->NumPads();
@@ -932,7 +1005,10 @@ int main(int argc, char** argv) {
 		rl::DrawBall(renderer, snap);
 		// G3c: goal interiors via buckets (C5 shells + C6 weave, depth-write
 		// OFF inside). Stays AFTER cars/ball: C5/C6 blend OVER cars today.
-		renderer.DrawArenaGoalInteriors(sim->usingRealSoccar());
+		// A6b: the ripped arena carries its own goal, so the analytic goal
+		// interiors are skipped when a pack is loaded.
+		if (!renderer.HasArenaPack())
+			renderer.DrawArenaGoalInteriors(sim->usingRealSoccar());
 		if (debugColliders) {
 			// W6 instrument: x-ray collision proxies over the shaded scene.
 			glDisable(GL_DEPTH_TEST);
@@ -1208,6 +1284,16 @@ int main(int argc, char** argv) {
 
 	rl::Renderer::Pacing pc = renderer.Stats();
 	rl::Renderer::Counters rc = renderer.Stats3D();
+	// A6b: the ripped arena's own per-frame budget (the [game] exit line above
+	// stays byte-identical for the default path).
+	if (renderer.HasArenaPack()) {
+		const rl::Renderer::ArenaPackStats& as = renderer.ArenaPackInfo();
+		std::fprintf(stderr,
+			"[arena] exit buckets=%u visible=%u culled=%u textured=%u fallback=%u "
+			"tris=%llu\n",
+			as.buckets, as.visible, as.culled, as.texturedBuckets,
+			as.untexturedBuckets, (unsigned long long)as.tris);
+	}
 	std::fprintf(stderr,
 		"[game] exit ticks=%llu drops=%llu frames=%llu wall=%.1fs p50=%.2fms p99=%.2fms avg=%.2fms frame_ms=%.2f unlimited=%d bot=%s audio_cb=%llu audio_frames=%llu tris_last=%llu draws_last=%llu tris_total=%llu draws_total=%llu glerr=%llu fennec_tris=%d fennec_verts=%d\n",
 		(unsigned long long)sim->tick(), (unsigned long long)sim->physicsDropCount(),

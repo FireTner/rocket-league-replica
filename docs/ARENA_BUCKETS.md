@@ -114,12 +114,16 @@ shockwave, trail, HUD gauge/text ≈ 15-25.
   (`main.cpp:1218-1219,1275-1276`) — merged VBOs keep UVs; the texture bind
   stays dynamic per draw.
 
-## 5. VBO strategy (4.5-compat, fixed-function)
+## 5. VBO strategy (4.5-compat; merged buckets are the current path)
 
 - Precedent: Fennec VBO/IBO — `glGenBuffers`, `GL_STATIC_DRAW` upload once,
   `glVertexPointer/glNormalPointer/glColorPointer` + `glDrawElements`,
   client-state sandwich (`src/models/Fennec.cpp:152-186,221-229`). Reuse the
-  exact pattern; no shaders/VAOs (compat profile keeps fixed-function legal).
+  exact pattern. The bucket path is fixed-function today; a shader/VAO variant
+  of the same merged buckets is **permitted** by `docs/RENDER_POLICY.md`
+  (rev 2026-10-20) — it is not banned, only held to PG1's perf bar and VG1
+  stability, so it can lose to the client-state path on the R4 and stay
+  unshipped.
 - Build-once-at-startup after GL ctx + first texture gen (textures unchanged;
   VBO stores UVs, binds stay per-draw so `--no-hexnet`/team tints still work).
   Bake color (modulate tint) per vertex; keep one texture bind per VBO draw.
@@ -135,6 +139,27 @@ shockwave, trail, HUD gauge/text ≈ 15-25.
   tris with no `NoteExternalDraw` — today uncounted; leave as-is for VG7 parity.
 - Instruments excluded: `DrawGroundGrid` (`main.cpp:887-888`, `--debug-grid`
   only, off in gates), `--debug-colliders` wire (`main.cpp:1594-1621`).
+
+### 5a. Back-face culling (V11, added 2026-10-20)
+
+The shell is an interior surface: every wall/crown/skirt/weave quad is authored
+with its normal pointing INTO the room, and the bake now re-winds each triangle
+so its CCW front face agrees with its own vertex normals (`ArenaShell.cpp`
+`fixWinding`). Both arena draws therefore run inside a `CullScope`
+(`glEnable(GL_CULL_FACE)` + `glCullFace(GL_BACK)` + `GL_CCW`, saved/restored around the draws, exactly
+like the B2/C5-C6 depth sandwiches). Consequences for this plan:
+
+- Bucket counts and tris are unchanged (winding is not geometry) — VG7 stays.
+- Culling is per-draw state, not baked; `RL_NOCULL=1` restores the old
+  double-sided behaviour for A/B captures.
+- From inside the arena nothing is culled that used to be visible (all interior
+  surfaces are front-facing); the only inside-frame deltas are the thin
+  `a=0.9` trim/beam/glow boxes, which lose their second (far-face) blend layer
+  where the front/back faces land on the same pixels. See
+  `docs/VISUAL_BUGS_TODO.md` V11 for the measured numbers.
+- An eye outside a wall (chase rig only clamps Z, `main.cpp:840-851`; freecam
+  does not clamp) now looks INTO the arena instead of at the wall's opaque
+  backside, and the glass no longer depth-rejects the cars/ball drawn after it.
 
 ## 6. VG1 re-baseline risk note
 

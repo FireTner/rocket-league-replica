@@ -16,3 +16,20 @@ collision_meshes/
 render_pacing.log
 __pycache__/
 *.pyc
+
+# Local camera-decomp workspace (repo rule 1).
+#
+# decomp/ holds the camera symbol fixture extracted from the user's OWN Rocket
+# League install (tools/decomp/camera_surface.py) plus any decrypted package or
+# decompiled text. Psyonix-derived data never enters the tree; the in-repo
+# tooling is ours (MIT) and the derived FACTS live in docs/CAMERA_DECOMP.md.
+/decomp/
+
+# Ripped arena packs (repo rule 1).
+#
+# arena_assets/ holds the arena packs produced by `tools/arena/rip_arena.py`
+# (arena.json + arena.bin).  They are a container of Psyonix-owned mesh and
+# texture data ripped from the user's OWN install, so they are runtime-only,
+# user-local inputs and must never be committed or re-uploaded.  The pack
+# FORMAT is documented in docs/ARENA_PACK.md; the tool is ours (MIT).
+arena_assets/

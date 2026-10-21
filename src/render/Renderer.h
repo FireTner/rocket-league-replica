@@ -8,8 +8,64 @@
 
 #include <SDL2/SDL.h>
 #include <cstdint>
+#include <fstream>
+#include <string>
+#include <vector>
+
+#include "models/ArenaRip.h"
 
 namespace rl {
+
+// ---- tolerant INI reader (A6b) ---------------------------------------------
+// Reads ONE key out of ONE section of an INI file. The `[arena] arena_dir`
+// key is NOT carried by the A5 `Settings` struct (`src/settings/**` is out of
+// A6b's scope), so the game reads it with this reader instead.
+//
+// Rules (a subset of docs/INI_SCHEMA.md's grammar): `;` or `#` starts a
+// comment, `[section]` headers, `key = value` pairs; section and key names
+// are case-insensitive; the value is trimmed; the FIRST matching key wins.
+// Returns false (and leaves `*out` untouched) when the file, the section or
+// the key is missing — never a silent default.
+inline bool ReadIniKey(const std::string& path, const std::string& section,
+                       const std::string& key, std::string* out) {
+    std::ifstream f(path);
+    if (!f) return false;
+    auto trim = [](std::string s) {
+        size_t b = s.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) return std::string();
+        size_t e = s.find_last_not_of(" \t\r\n");
+        return s.substr(b, e - b + 1);
+    };
+    auto lower = [](std::string s) {
+        for (char& c : s)
+            if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+        return s;
+    };
+    const std::string wantSection = lower(section);
+    const std::string wantKey = lower(key);
+    std::string line;
+    bool inSection = false;
+    while (std::getline(f, line)) {
+        // Strip a trailing comment (";" or "#" after whitespace).
+        size_t cut = line.find_first_of(";#");
+        if (cut != std::string::npos) line = line.substr(0, cut);
+        line = trim(line);
+        if (line.empty()) continue;
+        if (line.front() == '[') {
+            size_t close = line.find(']');
+            if (close == std::string::npos) continue;
+            inSection = (lower(trim(line.substr(1, close - 1))) == wantSection);
+            continue;
+        }
+        if (!inSection) continue;
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        if (lower(trim(line.substr(0, eq))) != wantKey) continue;
+        if (out) *out = trim(line.substr(eq + 1));
+        return true;
+    }
+    return false;
+}
 
 // Plain snapshot of sim state. Defined HERE (A4-owned) so we don't block
 // on A1's sim headers. A1/A3 can fill it field-by-field each tick.
@@ -136,6 +192,43 @@ public:
     void DrawArenaBuckets(bool meshMode, bool noHexNet);
     void DrawArenaGoalInteriors(bool meshMode);
 
+    // ---- A6b: the ripped-arena draw path -----------------------------------
+    // A ripped arena pack (`rl-arena-pack/1`, read by src/models/ArenaRip.h)
+    // is uploaded ONCE into merged world-space buckets: one VBO + one EBO per
+    // (texture/material id, 8192 uu spatial cell) pair, baked with the
+    // instance matrix. Per frame the buckets are frustum-culled by their world
+    // AABB and every survivor is drawn with ONE fixed-function
+    // glDrawElements (GL_TEXTURE_2D + GL_LIGHTING + GL_NORMALIZE, the repo's
+    // key+fill+ambient setup; no shaders, no VAO, no per-frame upload).
+    //
+    // The pack is a RUNTIME input (Psyonix-owned, gitignored `arena_assets/`);
+    // it never enters the repository and the game works without it. With no
+    // pack the renderer creates NO GL objects and issues NO extra calls.
+    struct ArenaPackStats {
+        uint32_t buckets = 0;            // buckets built
+        uint32_t texturedBuckets = 0;    // buckets bound to a diffuse texture
+        uint32_t untexturedBuckets = 0;  // buckets on the neutral fallback
+        uint32_t textures = 0;           // GL textures uploaded
+        uint32_t placements = 0;         // placements baked into buckets
+        uint32_t skippedPlacements = 0;  // placements dropped (see the log)
+        uint32_t sectionSlots = 0;       // section slots baked
+        uint64_t tris = 0;               // triangles in the whole scene
+        uint32_t visible = 0;            // buckets drawn in the last frame
+        uint32_t culled = 0;             // buckets culled in the last frame
+    };
+
+    // Upload the pack's geometry + textures into GL objects. Needs a live GL
+    // context (call it after Init). Returns false when the pack holds no
+    // drawable geometry. Nothing is uploaded again afterwards.
+    bool BuildArenaPack(const ArenaPack& pack);
+    // Draw the visible buckets of the ripped arena (one draw call each).
+    // No-op — and no GL call at all — when no pack was built.
+    void DrawArenaPack();
+    bool HasArenaPack() const { return arenaReady_; }
+    const ArenaPackStats& ArenaPackInfo() const { return arenaStats_; }
+    // Release the pack's GL objects (the GL context must still be live).
+    void ShutdownArenaPack();
+
     // Screen-space 2D (ortho, like FillRect2D): filled disc / annular arc
     // segments. Angles in degrees, 0 = +x (right), CCW positive; y grows
     // DOWNWARD in screen space so pass angles accordingly. Used by the
@@ -245,6 +338,24 @@ private:
     // Draw-budget counters (see Stats3D). frame* reset each BeginFrame.
     uint64_t frameTris_ = 0, frameLines_ = 0, frameDraws_ = 0;
     Counters counters_;
+
+    // ---- A6b: the ripped arena (see the public API above) ------------------
+    struct ArenaBucket {
+        unsigned vbo = 0, ibo = 0;
+        uint32_t idxCount = 0;
+        uint64_t tris = 0;
+        int texId = -1;      // -1 = a tinted fallback material (see tintRgb)
+        float tintRgb[3] = {0.55f, 0.55f, 0.55f};
+        bool unlit = false;  // emissive trim-light sections ignore scene lighting
+        std::string tag;   // first (mesh, material) baked here (diagnostics)
+        int cell[3] = {0, 0, 0};
+        float lo[3] = {0, 0, 0};  // world AABB (culling)
+        float hi[3] = {0, 0, 0};
+    };
+    std::vector<ArenaBucket> arenaBuckets_;
+    std::vector<unsigned> arenaTextures_;
+    ArenaPackStats arenaStats_;
+    bool arenaReady_ = false;
 };
 
 } // namespace rl

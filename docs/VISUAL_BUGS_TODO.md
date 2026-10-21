@@ -1,7 +1,8 @@
 # Visual bugs TODO — free-play looks broken (2026-10-10)
 
 Owner: coordinator. Status: **V1–V8 RESOLVED (2026-10-10 fixes pass); V10 (arena
-shell geometry) RESOLVED 2026-10-12; V9 OPEN.**
+shell geometry) RESOLVED 2026-10-12; V11 (arena back faces) RESOLVED
+2026-10-20; V9 OPEN.**
 This file is the evidence-backed bug list for the visual regressions a human
 sees in `build/game`. Every claim has a measured number, a `file:line`, or a
 reproducible capture command. Nothing here is a guess presented as a fact —
@@ -22,6 +23,7 @@ fix → passing check, with raw output) and the top of `docs/VISUAL_VERDICT.md`.
 | V8 corner glass reads as walls | resolved by the V5 lighting fix; no geometry change | VG6 |
 | V9 `render_pacing.log` in the CWD | **OPEN** | — |
 | V10 shell geometry vs collision octagon | fixed — shell now matches the octagon | VG6, VG11 |
+| V11 arena shell is double-sided | fixed — one-sided shell, cull pass in the 2 arena draws | VG1–VG16, cull captures |
 
 The per-bug detail below is kept verbatim as the pre-fix evidence pack.
 
@@ -338,6 +340,81 @@ VG6  hex x-pitch 41 px (expected 92)          ->  92 px (expected 92)
 VG6's old recipe (a vertical run spacing against `0.25*cell`) was not the
 flat-top invariant and only matched while the net was rotated out of the wall;
 it now measures the exact horizontal period `sqrt(3)/2 * cell`.
+
+## V11 — P1 — Arena shell drawn double-sided: an eye outside a wall sees an
+opaque backside instead of the arena
+
+Reported by the owner 2026-10-20 ("when a camera goes through a wall
+(intentionally) it is too opaque and stops rendering things inside the
+arena"). Presentation-only: the sim never sees the shell.
+
+**Mechanism (two defects, both from `glCullFace` never being enabled).** The
+baked arena (`src/models/ArenaShell.cpp`) is a one-sided interior shell — wall
+/ crown / skirt quads are authored with their normals pointing INTO the room —
+but it was drawn with culling OFF, so the outward side rasterised too:
+
+1. **Occlusion.** An eye pushed through a wall by the chase rig (`main.cpp` only
+   clamps the eye's Z: `cz` 40..1928) or by freecam sees the wall's outer face
+   instead of the interior.
+2. **Depth-write from a translucent surface.** The glass is blended
+   (`kGlassA = 0.40`) but still writes depth. Because the buckets are drawn
+   BEFORE pads/cars/ball, the wall's depth is in the buffer first, so every
+   interior object drawn afterwards failed `GL_LEQUAL` — the turf that was
+   already drawn stayed visible (tinted), the cars and ball vanished. That is
+   the "stops rendering things inside" half of the report.
+
+**Fix.** (a) The bake re-winds every triangle so its CCW front face agrees
+with its own vertex normals (`fixWinding`), which is valid for every emitter
+(measured: 0/1056 opaque, 64/416 wallbase, 2/2 ceiling, 80/144 skirt, 152/472
+glass, 4/4 weave tris needed a flip). (b) The two arena draws run inside a
+`CullScope` (`GL_CULL_FACE`, `GL_BACK`, `GL_CCW`, saved/restored like the
+existing depth-mask sandwich). From outside you now look INTO the arena; from
+inside the same surfaces stay front-facing. Culling stays off for
+cars/ball/pads/FX, so nothing else changes side-ness. `RL_NOCULL=1` restores
+the old double-sided behaviour for A/B captures.
+
+Reproduce (captures are `tools/verify/capture.sh OUT NAME --cam eye,target`):
+
+```sh
+make build/game
+bash tools/verify/capture.sh /tmp/v11 outside --cam 4300,0,400,0,0,400
+bash tools/verify/capture.sh /tmp/v11 inside  --cam 3000,0,400,0,0,400
+RL_NOCULL=1 bash tools/verify/capture.sh /tmp/v11 old --cam 4300,0,400,0,0,400
+```
+
+Measured, pre-fix → post-fix (same scene, seed 7, tick 120):
+
+```
+eye 4300,0,400 (outside +X wall)  centre green 0.021 -> 0.429  (inside ref 0.432)
+                                  full   green 0.079 -> 0.327
+                                  RL_NOCULL=1 reproduces 0.021 exactly
+car crop x480-800 / y370-400      variance 236 -> 1632, max channel 122 -> 249
+                                  --nofennec vs Fennec: 66 px (rows 380-383)
+eye 3000,0,400 (inside, control)  76309 px move: 64686 by 1-4/255 (the second
+                                  blend layer) + 2208 by >8 (max 87, the 1 px
+                                  bright cove lines)
+```
+
+The default chase-cam capture moves 53954 px (5.9%): 52662 by 1-4/255, 850 by
+more than 8 (max 118, isolated 1 px depth-tie seams). Those deltas are the
+`alpha = 0.9` beam/reveal/cove boxes, whose front and back faces land on the
+same pixels and whose far face therefore passed `GL_LEQUAL` and blended a
+second time; culling removes that duplicate layer. Nothing loses coverage — a
+culled whole surface would show a large area at 50-120 and there is none.
+
+`RL_NOCULL=1` reproduces the PRE-FIX image **byte-for-byte** in both views
+(`md5 9027bf5b…` / `b5f8a7bb…`, identical to the pre-fix captures), so the
+re-wind alone is pixel-neutral and every delta above is the cull pass alone.
+Repeat captures in the same mode are byte-identical too (md5 `94905a06…`
+twice); earlier apparent run-to-run jitter was capture-scheduling noise, so
+compare spaced runs, not back-to-back ones.
+
+Held by the full `visual_gates.py` suite (VG1 determinism, VG6 glass, VG11
+curbs, VG14 turf, VG15 lighting, VG7 budget) — see
+`src/render/BUILD_NOTES.md` for the run output. Note the inside-view numbers
+above are the *reason* those gates stay the bar: they capture an inside eye,
+so they can only catch a cull regression indirectly (V11 itself needs the
+outside capture recipe above).
 
 ## Definition of done for this TODO
 
