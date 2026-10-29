@@ -6,6 +6,33 @@
 namespace rl {
 
 namespace {
+// Ball-streak look. UNVERIFIED — no game function for the ribbon.
+// 6 samples, tail dropped past 280 uu, half-width 12 uu (ball visual
+// radius is 92.75, so this stays a thin streak). Fade is 0.12 s of sim
+// time after the ball drops under kBallTrailSpeedFloor.
+// shortcut: a segment longer than 220 uu is skipped, so a hitch frame at
+// high speed leaves a gap; upgrade if the streak must stay continuous
+// across multi-tick frames.
+constexpr float kBallTrailMaxLen = 280.0f;
+constexpr float kBallTrailMaxSeg = 220.0f;
+constexpr float kBallTrailHalfW = 12.0f;
+constexpr float kBallTrailFadeSec = 0.12f;
+
+void BallTrailQuad(const float* p0, const float* p1,
+                   float sx, float sy, float sz, float w0, float w1,
+                   float cr, float cg, float cb, float a0, float a1) {
+    glColor4f(cr, cg, cb, a0);
+    glVertex3f(p0[0] + sx * w0, p0[1] + sy * w0, p0[2] + sz * w0);
+    glVertex3f(p0[0] - sx * w0, p0[1] - sy * w0, p0[2] - sz * w0);
+    glColor4f(cr, cg, cb, a1);
+    glVertex3f(p1[0] + sx * w1, p1[1] + sy * w1, p1[2] + sz * w1);
+    glColor4f(cr, cg, cb, a0);
+    glVertex3f(p0[0] - sx * w0, p0[1] - sy * w0, p0[2] - sz * w0);
+    glColor4f(cr, cg, cb, a1);
+    glVertex3f(p1[0] - sx * w1, p1[1] - sy * w1, p1[2] - sz * w1);
+    glVertex3f(p1[0] + sx * w1, p1[1] + sy * w1, p1[2] + sz * w1);
+}
+
 // Vertical shockwave ring in the XZ (facing Y) or YZ (facing X) plane —
 // DrawRing() only does the floor plane, and a goal shockwave reads as a
 // spherical blast, so we add two upright rings around the ball center.
@@ -48,12 +75,15 @@ void FX::Update(float dt, const Snapshot& s) {
     if (s.demoed && !prevDemo_) OnDemo();
     prevDemo_ = s.demoed;
 
-    // Push trail sample.
-    for (int i = kTrail - 1; i > 0; i--) {
-        trail_[i][0]=trail_[i-1][0]; trail_[i][1]=trail_[i-1][1]; trail_[i][2]=trail_[i-1][2];
+    // One path sample per sim step. A repeated render frame (dt == 0) must
+    // not push a duplicate and erase the streak. Sim time only.
+    if (dt > 0.0f) {
+        for (int i = kTrail - 1; i > 0; i--) {
+            trail_[i][0]=trail_[i-1][0]; trail_[i][1]=trail_[i-1][1]; trail_[i][2]=trail_[i-1][2];
+        }
+        trail_[0][0]=s.carPos[0]; trail_[0][1]=s.carPos[1]; trail_[0][2]=s.carPos[2];
+        if (trailN_ < kTrail) trailN_++;
     }
-    trail_[0][0]=s.carPos[0]; trail_[0][1]=s.carPos[1]; trail_[0][2]=s.carPos[2];
-    if (trailN_ < kTrail) trailN_++;
 }
 
 void FX::OnPickup(bool big) { burst_ = big ? 0.6f : 0.3f; burstBig_ = big; }
@@ -168,6 +198,7 @@ void FX::DrawBallIndicator(Renderer& r, const Snapshot& s) {
     // RL ball ground indicator: the highlight under the ball with BOTH
     // circles — outer glow ring (0.98r..1.25r) + inner filled disc (0.62r),
     // light cyan-white, fading/growing as the ball rises (floor by ~1950 uu).
+    // Radii, z, and alpha are the recipe VG4 measures. Do not retune them.
     const float rBall = 91.25f;
     float t = s.ballPos[2] / 1950.0f;
     if (t < 0) t = 0; if (t > 1) t = 1;
@@ -175,89 +206,106 @@ void FX::DrawBallIndicator(Renderer& r, const Snapshot& s) {
     float ringA = 0.9f + (0.12f - 0.9f) * t;
     float discA = 0.32f + (0.05f - 0.32f) * t;
     float bx = s.ballPos[0], by = s.ballPos[1];
+    // The markings sheet is one arena-sized quad at z=1 and it writes depth
+    // with the depth test off (ArenaShell DrawArenaBuckets, B2). The disc is
+    // on that plane and the ring is 1 uu above it. That gap is smaller than
+    // the quad's window-depth slope at a low camera, so both circles lose
+    // the test in speckles and vanish into the turf as the camera moves.
+    // Polygon offset changes window depth only — projected radii stay put.
+    // Stronger than the pack field-line decal (-1.5, -2 in Renderer.cpp) so
+    // the marker also stays above those lines. UNVERIFIED: not an RL
+    // measurement; a screen-space bias, checked on the play-camera orbit.
+    GLfloat prevFactor = 0.0f, prevUnits = 0.0f;
+    glGetFloatv(GL_POLYGON_OFFSET_FACTOR, &prevFactor);
+    glGetFloatv(GL_POLYGON_OFFSET_UNITS, &prevUnits);
+    GLboolean offsetWas = glIsEnabled(GL_POLYGON_OFFSET_FILL);
+    GLboolean maskWas = GL_TRUE;
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &maskWas);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(-2.0f, -4.0f);
+    // Translucent decal: test against the ball and the floor, but do not
+    // write depth. The ring is drawn first; a depth write would eat the disc
+    // where a grazing view overlaps them, and would punch the marker into
+    // effects drawn after it.
+    glDepthMask(GL_FALSE);
     r.DrawRing(bx, by, 2.0f, rBall * 0.98f * grow, rBall * 1.25f * grow, 48,
                0.874f, 0.957f, 1.0f, ringA);
     r.DrawDisc(bx, by, 1.0f, rBall * 0.62f * grow, 48,
                0.874f, 0.957f, 1.0f, discA);
+    glDepthMask(maskWas ? GL_TRUE : GL_FALSE);
+    glPolygonOffset(prevFactor, prevUnits);
+    if (!offsetWas) glDisable(GL_POLYGON_OFFSET_FILL);
 }
 
 void FX::DrawBoostFlame(Renderer& r, const Snapshot& s) {
-    // RL boost: twin exhaust cones, white-hot core -> yellow -> orange outer,
-    // flickering length, plus faint smoke wisps. Oriented along -forward in
-    // full 3D (works pitched/rolled), unlit emissive.
-    if (!s.boosting || s.boost <= 0) return;
-    float amt = s.boost / 100.0f; // scale flame by remaining boost
-    float flick = 0.85f + 0.15f * std::sin(time_ * 43.0f)
-                + 0.06f * std::sin(time_ * 91.0f);
-    float len = (70.0f + 150.0f * amt) * flick;
-    float wOut = 16.0f + 14.0f * amt, wCore = wOut * 0.5f;
+    // Short bright twin exhaust. One jet per nozzle: two crossed ribbons
+    // with a white-hot to orange gradient, not nested cones and not smoke.
+    // Oriented on -carForward with carUp, so pitch and roll carry it.
+    // Length follows remaining boost. UNVERIFIED: no live RL capture here.
+    // Nozzle sits just behind the documented Fennec rear face (local x=-65.9,
+    // nose +x, Fennec.cpp). Side 18 and down 6 are UNVERIFIED socket guesses.
+    if (!s.boosting || s.boost <= 0.0f) return;
+    float amt = s.boost / 100.0f;
+    if (amt < 0.0f) amt = 0.0f;
+    if (amt > 1.0f) amt = 1.0f;
+    float flick = 0.94f + 0.06f * std::sin(time_ * 47.0f);
+    // ~40 uu near empty, ~104 uu at full. Under one car length so it stays
+    // an exhaust. The old plume was 70..220 uu plus smoke out past 300.
+    float len = (40.0f + 64.0f * amt) * flick;
+    float wNozzle = 7.0f + 3.0f * amt;
     float fx = s.carForward[0], fy = s.carForward[1], fz = s.carForward[2];
-    // Left vector for twin exhaust offsets (up x fwd), ~24 uu apart.
     float ux = s.carUp[0], uy = s.carUp[1], uz = s.carUp[2];
     float lx = uy * fz - uz * fy, ly = uz * fx - ux * fz, lz = ux * fy - uy * fx;
-    float ll = std::sqrt(lx*lx + ly*ly + lz*lz);
-    if (ll < 1e-6f) { lx = -fy; ly = fx; lz = 0; ll = std::sqrt(lx*lx+ly*ly); }
+    float ll = std::sqrt(lx * lx + ly * ly + lz * lz);
+    if (ll < 1e-6f) return;
     lx /= ll; ly /= ll; lz /= ll;
+    const float kBack = 68.0f;
+    const float kSide = 18.0f;
+    const float kDown = 6.0f;
     glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
     glDepthMask(GL_FALSE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE); // bright exhaust, not a shaded solid
+    const int kSteps = 6;
     for (int e = -1; e <= 1; e += 2) {
-        float ex = s.carPos[0] - fx * 62.0f + lx * (e * 24.0f);
-        float ey = s.carPos[1] - fy * 62.0f + ly * (e * 24.0f);
-        float ez = s.carPos[2] - fz * 62.0f + lz * (e * 24.0f) - 4.0f;
-        float tx = ex - fx * len, ty = ey - fy * len, tz = ez - fz * len;
-        // Build a cone frame: pick side/up perpendicular to flame dir.
-        float ax = -fx, ay = -fy, az = -fz;
-        float sx = ay * uz - az * uy, sy = az * ux - ax * uz, sz2 = ax * uy - ay * ux;
-        float sl = std::sqrt(sx*sx + sy*sy + sz2*sz2);
-        if (sl < 1e-6f) { sx = lx; sy = ly; sz2 = lz; sl = 1; }
-        sx /= sl; sy /= sl; sz2 /= sl;
-        float vx = sy * az - sz2 * ay, vy = sz2 * ax - sx * az, vz = sx * ay - sy * ax;
-        const int N = 10;
-        // Outer cone (orange, translucent).
-        glColor4f(1.0f, 0.45f, 0.08f, 0.75f);
-        glBegin(GL_TRIANGLE_FAN);
-        glVertex3f(tx, ty, tz);
-        for (int i = 0; i <= N; i++) {
-            float a = 2.0f * (float)M_PI * i / N;
-            glVertex3f(ex + (std::cos(a) * sx + std::sin(a) * vx) * wOut,
-                       ey + (std::cos(a) * sy + std::sin(a) * vy) * wOut,
-                       ez + (std::cos(a) * sz2 + std::sin(a) * vz) * wOut);
+        float ox = s.carPos[0] - fx * kBack + lx * (e * kSide) - ux * kDown;
+        float oy = s.carPos[1] - fy * kBack + ly * (e * kSide) - uy * kDown;
+        float oz = s.carPos[2] - fz * kBack + lz * (e * kSide) - uz * kDown;
+        // Two crossed ribbons (left and up). Same length, so they read as
+        // one jet rather than a stack of cones.
+        const float axes[2][3] = {{lx, ly, lz}, {ux, uy, uz}};
+        for (int ax = 0; ax < 2; ax++) {
+            float sx = axes[ax][0], sy = axes[ax][1], sz = axes[ax][2];
+            glBegin(GL_TRIANGLE_STRIP);
+            for (int i = 0; i <= kSteps; i++) {
+                float t = float(i) / float(kSteps);
+                float w = wNozzle * (1.0f - t);
+                float wob = 2.5f * t * std::sin(time_ * 37.0f + e + t * 5.0f);
+                float cr, cg, cb, ca;
+                if (t < 0.30f) {
+                    float u = t / 0.30f;
+                    cr = 1.0f;
+                    cg = 0.98f + (0.78f - 0.98f) * u;
+                    cb = 0.92f + (0.28f - 0.92f) * u;
+                    ca = 0.95f;
+                } else {
+                    float u = (t - 0.30f) / 0.70f;
+                    cr = 1.0f;
+                    cg = 0.78f + (0.28f - 0.78f) * u;
+                    cb = 0.28f + (0.04f - 0.28f) * u;
+                    ca = 0.90f * (1.0f - 0.85f * u);
+                }
+                float bx = ox - fx * len * t + lx * wob;
+                float by = oy - fy * len * t + ly * wob;
+                float bz = oz - fz * len * t + lz * wob;
+                glColor4f(cr, cg, cb, ca);
+                glVertex3f(bx + sx * w, by + sy * w, bz + sz * w);
+                glVertex3f(bx - sx * w, by - sy * w, bz - sz * w);
+            }
+            glEnd();
         }
-        glEnd();
-        // Mid cone (yellow).
-        glColor4f(1.0f, 0.80f, 0.25f, 0.85f);
-        glBegin(GL_TRIANGLE_FAN);
-        glVertex3f(ex - fx * len * 0.7f, ey - fy * len * 0.7f, ez - fz * len * 0.7f);
-        for (int i = 0; i <= N; i++) {
-            float a = 2.0f * (float)M_PI * i / N;
-            glVertex3f(ex + (std::cos(a) * sx + std::sin(a) * vx) * wCore * 1.4f,
-                       ey + (std::cos(a) * sy + std::sin(a) * vy) * wCore * 1.4f,
-                       ez + (std::cos(a) * sz2 + std::sin(a) * vz) * wCore * 1.4f);
-        }
-        glEnd();
-        // Hot core (near-white, short).
-        glColor4f(1.0f, 0.97f, 0.85f, 0.95f);
-        glBegin(GL_TRIANGLE_FAN);
-        glVertex3f(ex - fx * len * 0.35f, ey - fy * len * 0.35f, ez - fz * len * 0.35f);
-        for (int i = 0; i <= N; i++) {
-            float a = 2.0f * (float)M_PI * i / N;
-            glVertex3f(ex + (std::cos(a) * sx + std::sin(a) * vx) * wCore * 0.7f,
-                       ey + (std::cos(a) * sy + std::sin(a) * vy) * wCore * 0.7f,
-                       ez + (std::cos(a) * sz2 + std::sin(a) * vz) * wCore * 0.7f);
-        }
-        glEnd();
-        // Exhaust glow sphere at the tip.
-        r.DrawSphere(ex, ey, ez, wCore * 1.1f, 8, 1.0f, 0.85f, 0.5f, 0.8f);
     }
-    // Smoke wisps trailing behind (grey, expanding, fading).
-    for (int i = 0; i < 6; i++) {
-        float ph = time_ * 7.0f + i * 1.7f;
-        float back = 90.0f + 40.0f * i + 18.0f * std::sin(ph);
-        float a = 0.22f * (1.0f - i / 6.0f);
-        r.DrawSphere(s.carPos[0] - fx * back, s.carPos[1] - fy * back,
-                     s.carPos[2] - fz * back + 8.0f + 6.0f * std::sin(ph * 1.3f),
-                     8.0f + 4.0f * i, 6, 0.55f, 0.55f, 0.58f, a);
-    }
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_TRUE);
     if (r.LightingOn()) glEnable(GL_LIGHTING);
 }
@@ -299,7 +347,9 @@ void FX::DrawDrift(Renderer& r, const Snapshot& s) {
                        s.carPos[1] - f[1]*38.0f + l[1]*(w*44.0f),
                        1.5f, 16.0f, 10, 0.08f, 0.08f, 0.09f, 0.5f);
     }
-    // Supersonic-slide sparks (orange embers mixed into the smoke).
+    // Contact sparks while grinding the ground. Separate from the
+    // supersonic black sparkles in DrawTrail (those are not drawn here).
+    // Left as-is for workstream G. Still gated on the 2200 speed member.
     if (sliding && s.carSpeed >= supersonic_) {
         for (int i = 0; i < 4; i++) {
             float ph = time_ * 17.0f + i * 2.7f;
@@ -315,82 +365,102 @@ void FX::DrawDrift(Renderer& r, const Snapshot& s) {
     if (r.LightingOn()) glEnable(GL_LIGHTING);
 }
 
-void FX::DrawAir(Renderer& r, const Snapshot& s) {
-    // Flip / stall read: fast rotation draws motion streak arcs around the
-    // car (like RL's dodge blur); a stall — airborne, slow spin AFTER recent
-    // rotation — draws a brief stabilization ring + puff so the cancel reads.
-    // Stall latch is render-only (no sim coupling): high angSpeed arms it,
-    // and near-zero spin while still airborne shows the ring briefly.
-    static float stallT = 0, cool = 0;
-    bool spinning = s.airborne && s.angSpeed > 6.0f;
-    if (spinning) { stallT = 0.55f; cool = 0.0f; }
-    if (cool > 0) cool -= 1.0f / 120.0f;
-    float dt = 1.0f / 120.0f;
-    if (stallT > 0) stallT -= dt;
-    glDisable(GL_LIGHTING);
-    glDepthMask(GL_FALSE);
-    if (spinning) {
-        // 3 orthogonal streak arcs (forward/left/up planes), alpha by rate.
-        float a = 0.25f + 0.45f * (s.angSpeed / 12.0f);
-        if (a > 0.7f) a = 0.7f;
-        const int N = 20;
-        for (int plane = 0; plane < 3; plane++) {
-            glColor4f(0.65f, 0.85f, 1.0f, a * (plane == 0 ? 1.0f : 0.55f));
-            glBegin(GL_LINE_STRIP);
-            for (int i = 0; i <= N; i++) {
-                float t = -0.9f + 1.8f * i / N + time_ * 2.0f;
-                float c = std::cos(t) * 95.0f, q = std::sin(t) * 95.0f;
-                float x = s.carPos[0], y = s.carPos[1], z = s.carPos[2] + 10.0f;
-                if (plane == 0) { x += c * s.carForward[0]; y += c * s.carForward[1]; z += q; }
-                else if (plane == 1) {
-                    float lx = s.carUp[1]*s.carForward[2]-s.carUp[2]*s.carForward[1];
-                    float ly = s.carUp[2]*s.carForward[0]-s.carUp[0]*s.carForward[2];
-                    x += c * lx; y += c * ly; z += q * 0.6f;
-                } else { x += c; y += q * 0.6f; }
-                glVertex3f(x, y, z);
-            }
-            glEnd();
-        }
-    } else if (s.airborne && stallT > 0 && cool <= 0) {
-        // Stall / flip-cancel freeze ring: thin cyan ring + soft puff.
-        float k = stallT / 0.55f; // 1 -> 0
-        r.DrawRing(s.carPos[0], s.carPos[1], s.carPos[2] + 10.0f,
-                   90.0f + 60.0f * (1.0f - k), 96.0f + 60.0f * (1.0f - k),
-                   32, 0.6f, 0.9f, 1.0f, 0.6f * k);
-        r.DrawSphere(s.carPos[0], s.carPos[1], s.carPos[2] + 10.0f,
-                     30.0f + 40.0f * (1.0f - k), 8,
-                     0.7f, 0.9f, 1.0f, 0.25f * k);
-        if (stallT <= 0) cool = 1.0f;
-    }
-    glDepthMask(GL_TRUE);
-    if (r.LightingOn()) glEnable(GL_LIGHTING);
+void FX::DrawAir(Renderer&, const Snapshot&) {
+    // Airborne spin used to draw three arcs plus a stall ring around the car.
+    // Removed. A flip is readable from the car's orientation. No new ring.
 }
 
 void FX::DrawTrail(Renderer& r, const Snapshot& s) {
-    float fx = std::cos(s.carYaw), fy = std::sin(s.carYaw);
-    if (s.carSpeed >= supersonic_) {
-        // Fading ribbon quads behind car: alpha decays along trail.
-        for (int i = 1; i < trailN_; i++) {
-            float a = 0.35f * (1.0f - (float)i / kTrail);
-            float w = 30.0f * (1.0f - (float)i / (kTrail * 1.5f));
-            if (w < 4) w = 4;
-            r.DrawBox(trail_[i][0], trail_[i][1], trail_[i][2] + 10,
-                      w, w, 6.0f, s.carYaw, 0.6f, 0.8f, 1.0f, a);
+    // Streak and sparkles follow RocketSim's flag (Snapshot.supersonic),
+    // including the 2100 maintain band. A bare speed >= 2200 check is not used.
+    if (s.supersonic && trailN_ >= 2) {
+        glDisable(GL_LIGHTING);
+        glDisable(GL_TEXTURE_2D);
+        glDepthMask(GL_FALSE);
+        // Speed streak: crossed quads along the recent path. UNVERIFIED
+        // length 320 uu — chosen so it reads as a trail behind the car,
+        // shorter than the old 24-box chain. No live RL measurement.
+        const float kStreakLen = 320.0f;
+        float traveled = 0.0f;
+        glBegin(GL_QUADS);
+        for (int i = 0; i < trailN_ - 1; i++) {
+            float dx = trail_[i + 1][0] - trail_[i][0];
+            float dy = trail_[i + 1][1] - trail_[i][1];
+            float dz = trail_[i + 1][2] - trail_[i][2];
+            float seg = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (seg < 0.5f) continue;
+            if (traveled >= kStreakLen) break;
+            float u0 = traveled / kStreakLen;
+            float u1 = (traveled + seg) / kStreakLen;
+            if (u1 > 1.0f) u1 = 1.0f;
+            dx /= seg; dy /= seg; dz /= seg;
+            float hx = -dy, hy = dx, hz = 0.0f;
+            float hl = std::sqrt(hx * hx + hy * hy);
+            if (hl < 1e-4f) { hx = 1.0f; hy = 0.0f; hz = 0.0f; hl = 1.0f; }
+            hx /= hl; hy /= hl;
+            float vx = dy * hz - dz * hy;
+            float vy = dz * hx - dx * hz;
+            float vz = dx * hy - dy * hx;
+            float vl = std::sqrt(vx * vx + vy * vy + vz * vz);
+            if (vl < 1e-4f) { vx = 0.0f; vy = 0.0f; vz = 1.0f; vl = 1.0f; }
+            vx /= vl; vy /= vl; vz /= vl;
+            float w0 = 14.0f * (1.0f - u0);
+            float w1 = 14.0f * (1.0f - u1);
+            if (w0 < 2.0f) w0 = 2.0f;
+            if (w1 < 2.0f) w1 = 2.0f;
+            float a0 = 0.55f * (1.0f - u0);
+            float a1 = 0.55f * (1.0f - u1);
+            float s0[2][3] = {{hx, hy, hz}, {vx, vy, vz}};
+            for (int ax = 0; ax < 2; ax++) {
+                float sx = s0[ax][0], sy = s0[ax][1], sz = s0[ax][2];
+                glColor4f(0.92f, 0.97f, 1.0f, a0);
+                glVertex3f(trail_[i][0] + sx * w0, trail_[i][1] + sy * w0, trail_[i][2] + sz * w0);
+                glVertex3f(trail_[i][0] - sx * w0, trail_[i][1] - sy * w0, trail_[i][2] - sz * w0);
+                glColor4f(0.92f, 0.97f, 1.0f, a1);
+                glVertex3f(trail_[i + 1][0] - sx * w1, trail_[i + 1][1] - sy * w1, trail_[i + 1][2] - sz * w1);
+                glVertex3f(trail_[i + 1][0] + sx * w1, trail_[i + 1][1] + sy * w1, trail_[i + 1][2] + sz * w1);
+            }
+            traveled += seg;
         }
-        // Supersonic wheel embers: deterministic (sim-time) sparks trailing
-        // both rear wheels. No RNG — the rig must be capture-stable.
-        float lx = -fy, ly = fx; // left
-        for (int i = 0; i < 10; i++) {
-            float ph = time_ * 9.0f + i * 2.399f;
-            float back = 50.0f + 95.0f * std::fabs(std::sin(ph * 0.7f));
-            float side = ((i & 1) ? 34.0f : -34.0f);
-            float dx = s.carPos[0] - fx * back + lx * side;
-            float dy = s.carPos[1] - fy * back + ly * side;
-            float dz = s.carPos[2] - 12.0f + 16.0f * std::sin(ph);
-            float a = 0.55f * (0.5f + 0.5f * std::sin(ph * 1.3f));
-            r.DrawSphere(dx, dy, dz, 5.0f + 3.0f * std::fabs(std::sin(ph)), 6,
-                         1.0f, 0.42f + 0.22f * std::sin(ph), 0.10f, a);
+        glEnd();
+        // Black sparkles. TUNED — owner stand-in (issue I4), not a claim
+        // that Rocket League's sparks are black. Own draw: not the streak
+        // quads above, not DrawSphere, not DrawDrift's grind sparks.
+        float fx = s.carForward[0], fy = s.carForward[1], fz = s.carForward[2];
+        float ux = s.carUp[0], uy = s.carUp[1], uz = s.carUp[2];
+        float lx = uy * fz - uz * fy, ly = uz * fx - ux * fz, lz = ux * fy - uy * fx;
+        float ll = std::sqrt(lx * lx + ly * ly + lz * lz);
+        if (ll > 1e-6f) {
+            lx /= ll; ly /= ll; lz /= ll;
+            const float kHalf = 6.0f;   // UNVERIFIED sparkle size, uu
+            const float kThick = 1.4f;  // UNVERIFIED arm thickness, uu
+            glBegin(GL_QUADS);
+            for (int i = 0; i < 8; i++) {
+                float cycle = time_ * 5.5f + i * 0.37f;
+                float u = cycle - std::floor(cycle);
+                float back = 80.0f + 150.0f * u;
+                float side = ((i & 1) ? 1.0f : -1.0f) * (10.0f + 22.0f * std::fabs(std::sin(cycle * 1.7f)));
+                float lift = 8.0f + 16.0f * std::fabs(std::sin(cycle * 2.3f + i));
+                float a = 0.90f * (1.0f - u);
+                float px = s.carPos[0] - fx * back + lx * side + ux * lift;
+                float py = s.carPos[1] - fy * back + ly * side + uy * lift;
+                float pz = s.carPos[2] - fz * back + lz * side + uz * lift;
+                glColor4f(0.0f, 0.0f, 0.0f, a);
+                // Plus-sign in the car's left/up plane (faces back along
+                // forward, so a chase camera sees it).
+                glVertex3f(px + lx * kHalf + ux * kThick, py + ly * kHalf + uy * kThick, pz + lz * kHalf + uz * kThick);
+                glVertex3f(px + lx * kHalf - ux * kThick, py + ly * kHalf - uy * kThick, pz + lz * kHalf - uz * kThick);
+                glVertex3f(px - lx * kHalf - ux * kThick, py - ly * kHalf - uy * kThick, pz - lz * kHalf - uz * kThick);
+                glVertex3f(px - lx * kHalf + ux * kThick, py - ly * kHalf + uy * kThick, pz - lz * kHalf + uz * kThick);
+                glVertex3f(px + ux * kHalf + lx * kThick, py + uy * kHalf + ly * kThick, pz + uz * kHalf + lz * kThick);
+                glVertex3f(px + ux * kHalf - lx * kThick, py + uy * kHalf - ly * kThick, pz + uz * kHalf - lz * kThick);
+                glVertex3f(px - ux * kHalf - lx * kThick, py - uy * kHalf - ly * kThick, pz - uz * kHalf - lz * kThick);
+                glVertex3f(px - ux * kHalf + lx * kThick, py - uy * kHalf + ly * kThick, pz - uz * kHalf + lz * kThick);
+            }
+            glEnd();
         }
+        glDepthMask(GL_TRUE);
+        if (r.LightingOn()) glEnable(GL_LIGHTING);
     }
     if (explode_ > 0) {
         // Goal shockwave: an expanding ground blast ring plus two upright
@@ -415,6 +485,144 @@ void FX::DrawTrail(Renderer& r, const Snapshot& s) {
         r.DrawRing(s.carPos[0], s.carPos[1], 6.0f, 260.0f * (1.2f - k),
                    300.0f * (1.2f - k), 32, 0.85f, 0.95f, 1.0f, 0.7f * k);
     }
+}
+
+void FX::DrawBallTrail(Renderer& r, const Snapshot& s) {
+    // Separate from DrawBallIndicator and from DrawTrail (car streak on
+    // trail_[]). Samples live only in ballTrail_[].
+    const bool newTick = !ballTrailHaveTick_ || s.tick != ballTrailTick_;
+    float dt = 0.0f;
+    if (ballTrailHaveTick_ && s.tick > ballTrailTick_)
+        dt = float(s.tick - ballTrailTick_) * (1.0f / 120.0f);
+    if (newTick) {
+        ballTrailTick_ = s.tick;
+        ballTrailHaveTick_ = true;
+    }
+    if (!s.ballTouched) {
+        ballTrailFade_ = 0.0f;
+        ballTrailN_ = 0;
+        return;
+    }
+    const bool fast = s.ballSpeed >= kBallTrailSpeedFloor;
+    if (newTick && fast) {
+        for (int i = kBallTrail - 1; i > 0; --i) {
+            ballTrail_[i][0] = ballTrail_[i - 1][0];
+            ballTrail_[i][1] = ballTrail_[i - 1][1];
+            ballTrail_[i][2] = ballTrail_[i - 1][2];
+        }
+        ballTrail_[0][0] = s.ballPos[0];
+        ballTrail_[0][1] = s.ballPos[1];
+        ballTrail_[0][2] = s.ballPos[2];
+        if (ballTrailN_ < kBallTrail) ballTrailN_++;
+    }
+    if (fast) {
+        ballTrailFade_ = 1.0f;
+    } else if (ballTrailFade_ > 0.0f) {
+        ballTrailFade_ -= dt / kBallTrailFadeSec;
+        if (ballTrailFade_ < 0.0f) ballTrailFade_ = 0.0f;
+    }
+    if (ballTrailFade_ <= 0.0f || ballTrailN_ < 2) {
+        if (ballTrailFade_ <= 0.0f) ballTrailN_ = 0;
+        return;
+    }
+    // Same RGB as the car team paint (Models.cpp DrawCar, ledger Team paint).
+    const bool orange = s.ballTeam == 1;
+    const float cr = orange ? 0.85f : 0.10f;
+    const float cg = orange ? 0.30f : 0.35f;
+    const float cb = orange ? 0.08f : 0.90f;
+    glDisable(GL_LIGHTING);
+    glDisable(GL_TEXTURE_2D);
+    glDepthMask(GL_FALSE);
+    glBegin(GL_TRIANGLES);
+    int tris = 0;
+    float walked = 0.0f;
+    for (int i = 0; i + 1 < ballTrailN_; i++) {
+        float dx = ballTrail_[i][0] - ballTrail_[i + 1][0];
+        float dy = ballTrail_[i][1] - ballTrail_[i + 1][1];
+        float dz = ballTrail_[i][2] - ballTrail_[i + 1][2];
+        float seg = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (seg < 0.5f || seg > kBallTrailMaxSeg) continue;
+        if (walked >= kBallTrailMaxLen) break;
+        walked += seg;
+        dx /= seg; dy /= seg; dz /= seg;
+        float hx = 0.0f, hy = 0.0f, hz = 1.0f;
+        if (std::fabs(dz) >= 0.9f) { hx = 1.0f; hy = 0.0f; hz = 0.0f; }
+        float ax = dy * hz - dz * hy;
+        float ay = dz * hx - dx * hz;
+        float az = dx * hy - dy * hx;
+        float al = std::sqrt(ax * ax + ay * ay + az * az);
+        if (al < 1e-6f) continue;
+        ax /= al; ay /= al; az /= al;
+        float bx = dy * az - dz * ay;
+        float by = dz * ax - dx * az;
+        float bz = dx * ay - dy * ax;
+        float u0 = float(i) / float(kBallTrail);
+        float u1 = float(i + 1) / float(kBallTrail);
+        float w0 = kBallTrailHalfW * (1.0f - u0);
+        float w1 = kBallTrailHalfW * (1.0f - u1);
+        float a0 = ballTrailFade_ * (1.0f - u0);
+        float a1 = ballTrailFade_ * (1.0f - u1);
+        BallTrailQuad(ballTrail_[i], ballTrail_[i + 1], ax, ay, az, w0, w1,
+                      cr, cg, cb, a0, a1);
+        BallTrailQuad(ballTrail_[i], ballTrail_[i + 1], bx, by, bz, w0, w1,
+                      cr, cg, cb, a0, a1);
+        tris += 4;
+    }
+    glEnd();
+    glDepthMask(GL_TRUE);
+    if (r.LightingOn()) glEnable(GL_LIGHTING);
+    if (tris > 0) r.NoteExternalDraw(uint64_t(tris));
+}
+
+void FX::DrawContactSparks(Renderer& r, const ContactSparkFrame& c) {
+    // Own immediate-mode draw. Does not push into the trail ribbon, the
+    // black sparkle quads in DrawTrail, the boost flame, or DrawAir.
+    if (c.awkward) {
+        ballSparkUntil_ = time_ + kBallBurstSeconds;
+        ballSparkX_ = c.hx;
+        ballSparkY_ = c.hy;
+        ballSparkZ_ = c.hz;
+    }
+    bool burst = time_ < ballSparkUntil_;
+    if (!c.scrape && !burst)
+        return;
+    glDisable(GL_LIGHTING);
+    glDepthMask(GL_FALSE);
+    if (c.scrape) {
+        for (int p = 0; p < c.count; ++p) {
+            for (int i = 0; i < 3; ++i) {
+                float ph = time_ * 19.0f + p * 2.3f + i * 1.7f;
+                float dist = 8.0f + 36.0f * std::fabs(std::sin(ph));
+                float lift = 3.0f + 8.0f * std::fabs(std::sin(ph * 1.3f));
+                float px = c.x[p] + c.bx * dist + c.nx[p] * lift;
+                float py = c.y[p] + c.by * dist + c.ny[p] * lift;
+                float pz = c.z[p] + c.bz * dist + c.nz[p] * lift;
+                if (pz < 2.0f)
+                    pz = 2.0f;
+                // White-yellow. UNVERIFIED colour. Not DrawTrail's black
+                // sparkles. DrawDrift's orange grind spheres stay there.
+                r.DrawSphere(px, py, pz, 3.2f + 1.4f * float(2 - i), 6,
+                             1.0f, 0.90f - 0.08f * i, 0.40f, 0.75f - 0.18f * i);
+            }
+        }
+    }
+    if (burst) {
+        float k = (ballSparkUntil_ - time_) / kBallBurstSeconds;
+        if (k < 0) k = 0;
+        if (k > 1) k = 1;
+        float grow = 1.0f - k;
+        for (int i = 0; i < 6; ++i) {
+            float ang = i * (3.14159265f / 3.0f);
+            float rad = 8.0f + 32.0f * grow;
+            r.DrawSphere(ballSparkX_ + std::cos(ang) * rad,
+                         ballSparkY_ + std::sin(ang) * rad,
+                         ballSparkZ_ + 6.0f + 14.0f * grow,
+                         3.0f + 5.0f * k, 6, 1.0f, 0.92f, 0.50f, 0.8f * k);
+        }
+    }
+    glDepthMask(GL_TRUE);
+    if (r.LightingOn())
+        glEnable(GL_LIGHTING);
 }
 
 } // namespace rl

@@ -24,8 +24,10 @@ void DrawCar(Renderer& r, const Snapshot& s, bool blueTeam = true);
 // cars + the ball collision sphere (r = 91.25, i.e. NOT the 92.75 visual).
 void DrawDebugColliders(Renderer& r, const Snapshot& player, const Snapshot& bot);
 
-// Ball: RL-style white hexagon-panel sphere (procedural in-code texture),
-// visual radius 92.75 (collision 91.25). Defined in Models.cpp.
+// Ball: truncated icosahedron (white hexagons, black pentagons) on a
+// procedural sphere, visual radius 92.75 (collision 91.25). The print is
+// object-space. Drawn in body space, then oriented by Snapshot::ballRot
+// (physics spin integrated in sim time). Defined in Models.cpp.
 void DrawBall(Renderer& r, const Snapshot& s);
 
 } // namespace rl

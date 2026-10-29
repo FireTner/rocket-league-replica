@@ -636,38 +636,75 @@ def texture_info(pkg, texture_export):
     if not (0 < mip_count <= 32):
         info['error'] = 'implausible mip count %d' % mip_count
         return info
-    rec, ds, cs, off, _zero, rx, ry = struct.unpack_from('<7i', data, end + 16)
-    info['record_type'] = rec
-    info['record'] = {'data_size': ds, 'cache_size': cs, 'cache_offset': off,
-                      'size_x': rx, 'size_y': ry}
-    if rec == 0x00010000:
-        start = end + 28
-        if start + ds > len(data):
-            info['error'] = 'inline mip0 overruns the export'
+    # Walk the mip chain.  MEASURED (workstream H): 11 textures in the stadium
+    # pack store mip0 as the empty `0x00000021` record; their pixels live in
+    # the next file-cache mip (typically half-res).  UModel reads that mip1
+    # from the `.tfc`.  Prefer mip0 when it has payload; otherwise take the
+    # first later mip that does.
+    pos = end + 16
+    chosen = None
+    for mi in range(mip_count):
+        if pos + 28 > len(data):
+            info['error'] = 'mip %d header overruns the export' % mi
             return info
-        info['payload'] = data[start:start + ds]
-        info['payload_source'] = 'inline@+%d' % (start - end)
-    elif rec == 0x00010003:
-        if not info['cache_name']:
-            info['error'] = 'file-cache mip0 without TextureFileCacheName'
-            return info
-        try:
-            fh = _tfc_handle(pkg, info['cache_name'])
-            fh.seek(off)
-            blob = fh.read(cs)
-            if len(blob) != cs:
-                info['error'] = 'short read from %s.tfc at %d (%d/%d)' % (
-                    info['cache_name'], off, len(blob), cs)
+        rec, ds, cs, off, _zero, rx, ry = struct.unpack_from('<7i', data, pos)
+        if mi == 0:
+            info['record_type'] = rec
+            info['record'] = {'data_size': ds, 'cache_size': cs,
+                              'cache_offset': off, 'size_x': rx, 'size_y': ry}
+        entry = {'mip': mi, 'rec': rec, 'data_size': ds, 'cache_size': cs,
+                 'cache_offset': off, 'size_x': rx, 'size_y': ry, 'pos': pos}
+        if rec == 0x00010000:
+            start = pos + 28
+            if start + ds > len(data):
+                info['error'] = 'inline mip %d overruns the export' % mi
                 return info
-            payload = inflate_chunk_container(blob)
-        except (ParseError, zlib.error, OSError) as exc:
-            info['error'] = 'file-cache inflate failed: %s' % (exc,)
+            entry['payload'] = data[start:start + ds]
+            entry['payload_source'] = 'inline@mip%d' % mi
+            chosen = entry
+            break
+        elif rec == 0x00010003:
+            if not info['cache_name']:
+                info['error'] = 'file-cache mip %d without TextureFileCacheName' % mi
+                return info
+            try:
+                fh = _tfc_handle(pkg, info['cache_name'])
+                fh.seek(off)
+                blob = fh.read(cs)
+                if len(blob) != cs:
+                    info['error'] = 'short read from %s.tfc at %d (%d/%d)' % (
+                        info['cache_name'], off, len(blob), cs)
+                    return info
+                payload = inflate_chunk_container(blob)
+            except (ParseError, zlib.error, OSError) as exc:
+                info['error'] = 'file-cache inflate failed (mip %d): %s' % (mi, exc)
+                return info
+            entry['payload'] = payload
+            entry['payload_source'] = 'tfc:%s.tfc@%d+%d#mip%d' % (
+                info['cache_name'], off, cs, mi)
+            chosen = entry
+            break
+        elif rec == 0x00000021:
+            # Empty first-mip (or stripped mip): skip, try the next.
+            pos = pos + 28
+        else:
+            info['error'] = 'unknown mip %d record type 0x%08x' % (
+                mi, rec & 0xFFFFFFFF)
             return info
-        info['payload'] = payload
-        info['payload_source'] = 'tfc:%s.tfc@%d+%d' % (info['cache_name'], off, cs)
-    else:
-        info['error'] = 'no mip0 payload (record type 0x%08x)' % (rec & 0xFFFFFFFF)
+    if chosen is None:
+        info['error'] = 'no mip payload (mip0 record type 0x%08x)' % (
+            (info['record_type'] or 0) & 0xFFFFFFFF)
         return info
+    info['payload'] = chosen['payload']
+    info['payload_source'] = chosen['payload_source']
+    info['mip_used'] = chosen['mip']
+    # Property SizeX/SizeY are the mip0 dimensions.  Only when we fell past
+    # an empty mip0 do we take the chosen mip's SizeX/SizeY (half-res etc.).
+    if chosen['mip'] > 0:
+        if chosen['size_x'] > 0:
+            info['width'] = chosen['size_x']
+        if chosen['size_y'] > 0:
+            info['height'] = chosen['size_y']
     return info
 
 

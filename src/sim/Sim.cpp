@@ -10,6 +10,8 @@
 //  - Sim-owned RNG is seeded fixed (SetSeed to change); no rand()/time().
 #include "Sim.h"
 
+#include "models/BallOrient.h"
+
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -58,6 +60,9 @@ struct Sim::Impl {
 	double accumulator = 0.0;
 	uint64_t drops = 0;
 	uint64_t ticks = 0;
+	// Drawn ball basis. Not physics state: never written to the rigid body.
+	// Identity until a non-zero angVel is integrated (see AdvanceBallOrientation).
+	float ballRot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
 	bool realSoccar = false;
 	bool goalLatched = false;
 	// RocketSim's goal callback fires on every tick the ball is past the line
@@ -88,6 +93,15 @@ struct Sim::Impl {
 	// during Step120 in contact order; drained by PollDemo oldest-first.
 	struct DemoEvt { int bumper, victim; uint64_t tick; };
 	std::vector<DemoEvt> demoQueue;
+	// Fallback-shell wall touch copied out of ContainFallbackBodies. The
+	// push itself is unchanged; this is only a read for contact sparks.
+	// Mesh mode never calls that function, so the latch stays clear.
+	struct WallLatch {
+		bool hit = false;
+		float x = 0, y = 0, z = 0;
+		float nx = 0, ny = 0, nz = 1;
+	};
+	std::vector<WallLatch> wallLatch;
 };
 
 namespace {
@@ -436,6 +450,20 @@ void Sim::SetControls(int idx, float throttle, float steer, float pitch, float y
 	car->controls.handbrake = handbrake;
 }
 
+void Sim::ClearBallOrientation() {
+	if (!impl_)
+		return;
+	rl::SetBallRotIdentity(impl_->ballRot);
+}
+
+void Sim::AdvanceBallOrientation() {
+	if (!impl_ || !impl_->arena || !impl_->arena->ball)
+		return;
+	RocketSim::BallState st = impl_->arena->ball->GetState();
+	rl::IntegrateBallSpin(impl_->ballRot, st.angVel.x, st.angVel.y, st.angVel.z,
+		float(kTickDt));
+}
+
 void Sim::Step120() {
 	if (!impl_ || !impl_->arena)
 		return;
@@ -447,13 +475,13 @@ void Sim::Step120() {
 	if (impl_->scoredThisTick && !impl_->scoredLastTick)
 		impl_->goalLatched = true;
 	impl_->scoredLastTick = impl_->scoredThisTick;
-	if (impl_->realSoccar) {
-		// Mesh arena: RocketSim owns walls/pads/goals (incl. goal events).
-		return;
+	// realSoccar: RocketSim owns walls/pads/goals. Otherwise fallback pads + shell.
+	if (!impl_->realSoccar) {
+		if (!impl_->pads.empty())
+			TickFallbackPads();
+		ContainFallbackBodies();
 	}
-	if (!impl_->pads.empty())
-		TickFallbackPads();
-	ContainFallbackBodies();
+	AdvanceBallOrientation();
 }
 
 // Fallback arena containment (ONLY when !realSoccar): the mesh-less plane is
@@ -490,7 +518,12 @@ void Sim::ContainFallbackBodies() {
 		if (Arena::IsGoal(Arena::Vec3{bs.pos.x, bs.pos.y, bs.pos.z}))
 			impl_->goalLatched = true;
 	}
-	for (Car* car : impl_->cars) {
+	if (impl_->wallLatch.size() != impl_->cars.size())
+		impl_->wallLatch.assign(impl_->cars.size(), {});
+	for (auto& w : impl_->wallLatch)
+		w.hit = false;
+	for (size_t ci = 0; ci < impl_->cars.size(); ++ci) {
+		Car* car = impl_->cars[ci];
 		if (!car)
 			continue;
 		CarState cs = car->GetState();
@@ -501,6 +534,15 @@ void Sim::ContainFallbackBodies() {
 		// raycasts own the ground. Walls/ceiling get push-out + normal
 		// velocity removal (plastic wall, e=0.1).
 		if (Arena::CollideSphere(c, 50.0f, n) && n.z < 0.9f) {
+			// Same push as before. The latch is the probe contact
+			// (pushed center minus radius along the push normal).
+			impl_->wallLatch[ci].hit = true;
+			impl_->wallLatch[ci].nx = n.x;
+			impl_->wallLatch[ci].ny = n.y;
+			impl_->wallLatch[ci].nz = n.z;
+			impl_->wallLatch[ci].x = c.x - n.x * 50.0f;
+			impl_->wallLatch[ci].y = c.y - n.y * 50.0f;
+			impl_->wallLatch[ci].z = c.z - n.z * 50.0f;
 			float vn = cs.vel.x * n.x + cs.vel.y * n.y + cs.vel.z * n.z;
 			cs.pos = Vec(c.x, c.y, c.z);
 			if (vn < 0)
@@ -649,6 +691,43 @@ bool Sim::GetBall(BodySample* out) const {
 	return true;
 }
 
+bool Sim::GetLastTouch(LastTouch* out) const {
+	if (!impl_ || !out)
+		return false;
+	out->car = -1;
+	out->team = -1;
+	out->tick = 0;
+	bool found = false;
+	for (int i = 0; i < int(impl_->cars.size()); i++) {
+		RocketSim::Car* car = impl_->cars[size_t(i)];
+		if (!car)
+			continue;
+		RocketSim::CarState st = car->GetState();
+		if (!st.ballHitInfo.isValid)
+			continue;
+		uint64_t tick = st.ballHitInfo.tickCountWhenHit;
+		if (found && (tick < out->tick || (tick == out->tick && i >= out->car)))
+			continue;
+		found = true;
+		out->car = i;
+		out->team = (car->team == RocketSim::Team::ORANGE) ? kOrange : kBlue;
+		out->tick = tick;
+	}
+	return found;
+}
+
+bool Sim::GetBallSpin(BallSpin* out) const {
+	if (!impl_ || !out || !impl_->arena || !impl_->arena->ball)
+		return false;
+	RocketSim::BallState st = impl_->arena->ball->GetState();
+	out->angVel[0] = st.angVel.x;
+	out->angVel[1] = st.angVel.y;
+	out->angVel[2] = st.angVel.z;
+	for (int i = 0; i < 9; i++)
+		out->rot[i] = impl_->ballRot[i];
+	return true;
+}
+
 bool Sim::GetCarForward(int idx, float* fx, float* fy, float* fz) const {
 	if (!impl_ || idx < 0 || idx >= int(impl_->cars.size()))
 		return false;
@@ -785,6 +864,7 @@ void Sim::ResetBall() {
 	s.vel = RocketSim::Vec(0.0f, 0.0f, 0.0f);
 	s.angVel = RocketSim::Vec(0.0f, 0.0f, 0.0f);
 	impl_->arena->ball->SetState(s);
+	ClearBallOrientation();
 }
 
 void Sim::SetBall(float x, float y, float z, float vx, float vy, float vz) {
@@ -804,6 +884,7 @@ void Sim::SetBall(float x, float y, float z, float vx, float vy, float vz) {
 		? RocketSim::Vec(kAtRestKick, 0.0f, 0.0f)
 		: RocketSim::Vec(0.0f, 0.0f, 0.0f);
 	impl_->arena->ball->SetState(s);
+	ClearBallOrientation();
 }
 
 void Sim::Teleport(int idx, float x, float y, float yawRad) {
@@ -852,4 +933,140 @@ bool Sim::IsDemoed(int idx) const {
 	if (!impl_ || idx < 0 || idx >= (int)impl_->cars.size())
 		return false;
 	return impl_->cars[idx]->GetState().isDemoed;
+}
+
+namespace {
+
+RocketSim::Vec HitboxSupport(const RocketSim::CarState& st, const RocketSim::Car* car,
+	float nx, float ny, float nz) {
+	const RocketSim::RotMat& rot = st.rotMat;
+	float lx = nx * rot.forward.x + ny * rot.forward.y + nz * rot.forward.z;
+	float ly = nx * rot.right.x + ny * rot.right.y + nz * rot.right.z;
+	float lz = nx * rot.up.x + ny * rot.up.y + nz * rot.up.z;
+	RocketSim::Vec half = car->config.hitboxSize * 0.5f;
+	RocketSim::Vec off = car->config.hitboxPosOffset;
+	float sx = off.x + (lx >= 0.0f ? -half.x : half.x);
+	float sy = off.y + (ly >= 0.0f ? -half.y : half.y);
+	float sz = off.z + (lz >= 0.0f ? -half.z : half.z);
+	return RocketSim::Vec(
+		st.pos.x + rot.forward.x * sx + rot.right.x * sy + rot.up.x * sz,
+		st.pos.y + rot.forward.y * sx + rot.right.y * sy + rot.up.y * sz,
+		st.pos.z + rot.forward.z * sx + rot.right.z * sy + rot.up.z * sz);
+}
+
+} // namespace
+
+bool Sim::GetCarScrape(int idx, CarScrape* out) const {
+	if (!impl_ || !out || idx < 0 || idx >= (int)impl_->cars.size())
+		return false;
+	*out = CarScrape();
+	RocketSim::Car* car = impl_->cars[(size_t)idx];
+	if (!car)
+		return false;
+	RocketSim::CarState st = car->GetState();
+	out->handbrake = st.handbrakeVal;
+	out->vx = st.vel.x;
+	out->vy = st.vel.y;
+	out->vz = st.vel.z;
+	const int nWheels = car->_bulletVehicle.m_wheelInfo.size();
+	int touching = 0;
+	for (int i = 0; i < nWheels && i < 4; ++i) {
+		const auto& wheel = car->_bulletVehicle.m_wheelInfo[i];
+		const auto& ray = wheel.m_raycastInfo;
+		if (!ray.m_isInContact)
+			continue;
+		WheelScrape& w = out->wheels[i];
+		w.touching = true;
+		++touching;
+		w.x = ray.m_contactPointWS.x() * BT_TO_UU;
+		w.y = ray.m_contactPointWS.y() * BT_TO_UU;
+		w.z = ray.m_contactPointWS.z() * BT_TO_UU;
+		w.nx = ray.m_contactNormalWS.x();
+		w.ny = ray.m_contactNormalWS.y();
+		w.nz = ray.m_contactNormalWS.z();
+		// Same slip split as Car::_UpdateWheels (Car.cpp:436-450). Read only.
+		btVector3 vel = car->_rigidBody.m_linearVelocity;
+		btVector3 ang = car->_rigidBody.m_angularVelocity;
+		btVector3 latDir = wheel.m_worldTransform.getBasis().getColumn(1);
+		btVector3 longDir = latDir.cross(ray.m_contactNormalWS);
+		btVector3 wheelDelta = ray.m_hardPointWS - car->_rigidBody.getWorldTransform().getOrigin();
+		btVector3 crossVec = (ang.cross(wheelDelta) + vel) * BT_TO_UU;
+		w.lat = std::fabs(crossVec.dot(latDir));
+		w.lon = std::fabs(crossVec.dot(longDir));
+	}
+	out->wheelsTouching = touching;
+	if (st.worldContact.hasContact) {
+		float nx = st.worldContact.contactNormal.x;
+		float ny = st.worldContact.contactNormal.y;
+		float nz = st.worldContact.contactNormal.z;
+		float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+		if (len > 1e-6f) {
+			nx /= len;
+			ny /= len;
+			nz /= len;
+			RocketSim::Vec p = HitboxSupport(st, car, nx, ny, nz);
+			out->body.hit = true;
+			out->body.x = p.x;
+			out->body.y = p.y;
+			out->body.z = p.z;
+			out->body.nx = nx;
+			out->body.ny = ny;
+			out->body.nz = nz;
+		}
+	}
+	if (idx < (int)impl_->wallLatch.size() && impl_->wallLatch[(size_t)idx].hit) {
+		const auto& w = impl_->wallLatch[(size_t)idx];
+		out->wall.hit = true;
+		out->wall.x = w.x;
+		out->wall.y = w.y;
+		out->wall.z = w.z;
+		out->wall.nx = w.nx;
+		out->wall.ny = w.ny;
+		out->wall.nz = w.nz;
+	}
+	return true;
+}
+
+bool Sim::GetBallTouch(int idx, BallTouch* out) const {
+	if (!impl_ || !out || !impl_->arena || !impl_->arena->ball ||
+		idx < 0 || idx >= (int)impl_->cars.size())
+		return false;
+	*out = BallTouch();
+	RocketSim::Car* car = impl_->cars[(size_t)idx];
+	if (!car)
+		return false;
+	RocketSim::CarState st = car->GetState();
+	RocketSim::BallState bs = impl_->arena->ball->GetState();
+	out->ballZ = bs.pos.z;
+	out->carOnGround = st.isOnGround;
+	RocketSim::Vec fwd = car->GetForwardDir();
+	out->fx = fwd.x;
+	out->fy = fwd.y;
+	out->fz = fwd.z;
+	out->relVx = bs.vel.x - st.vel.x;
+	out->relVy = bs.vel.y - st.vel.y;
+	out->relVz = bs.vel.z - st.vel.z;
+	const RocketSim::BallHitInfo& hit = st.ballHitInfo;
+	// Arena::Step increments tickCount after the collision callback, so the
+	// hit stored this step carries tickCount - 1.
+	uint64_t arenaTick = impl_->arena->tickCount;
+	out->hitThisTick = hit.isValid && arenaTick > 0 &&
+		hit.tickCountWhenHit + 1 == arenaTick;
+	if (!out->hitThisTick)
+		return true;
+	RocketSim::Vec local = hit.relativePosOnBall;
+	const RocketSim::RotMat& rot = bs.rotMat;
+	float ox = rot.forward.x * local.x + rot.right.x * local.y + rot.up.x * local.z;
+	float oy = rot.forward.y * local.x + rot.right.y * local.y + rot.up.y * local.z;
+	float oz = rot.forward.z * local.x + rot.right.z * local.y + rot.up.z * local.z;
+	float olen = std::sqrt(ox * ox + oy * oy + oz * oz);
+	out->x = hit.ballPos.x + ox;
+	out->y = hit.ballPos.y + oy;
+	out->z = hit.ballPos.z + oz;
+	if (olen > 1e-4f) {
+		out->nx = ox / olen;
+		out->ny = oy / olen;
+		out->nz = oz / olen;
+	}
+	return true;
 }

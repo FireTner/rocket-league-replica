@@ -123,6 +123,29 @@ public:
 	bool GetCar(int idx, BodySample* out) const;
 	bool GetBall(BodySample* out) const;
 
+	// Last car to touch the ball. Read-only view of RocketSim
+	// CarState::ballHitInfo (written by Ball::_OnHit). False before any
+	// car has a valid hit. The newest tickCountWhenHit wins; an equal tick
+	// keeps the lower car index. Does not write sim state.
+	struct LastTouch {
+		int car = -1;
+		int team = -1; // kBlue or kOrange
+		uint64_t tick = 0;
+	};
+	bool GetLastTouch(LastTouch* out) const;
+
+	// Ball angular velocity and the orientation that spin implies.
+	// angVel is RocketSim BallState::angVel (rad/s, world). rot is the
+	// sim-time integral of that rate (column-major 3x3: columns are local
+	// +X/+Y/+Z in world). ArenaConfig::noBallRot leaves the physics basis
+	// at identity, so this view is not the body's rotMat. Read-only: never
+	// written back. ResetBall/SetBall restart rot at identity.
+	struct BallSpin {
+		float angVel[3] = {0, 0, 0};
+		float rot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+	};
+	bool GetBallSpin(BallSpin* out) const;
+
 	// Car forward + up unit vectors (for TAS sign calibration + camera).
 	// Returns false on unknown idx. Deterministic (pure function of car state).
 	bool GetCarForward(int idx, float* fx, float* fy, float* fz) const;
@@ -183,9 +206,50 @@ public:
 	bool IsSupersonic(int idx) const;
 	bool IsDemoed(int idx) const; // true from demolition until auto-respawn (3 s)
 
+	// Read-only contact for presentation. Does not write car, ball, or world
+	// state. Wheel slip matches Car::_UpdateWheels (Car.cpp:436-454): lateral
+	// and long speed at the contact, uu/s. World-body point is the hitbox
+	// support along the stored normal (the manifold point is not retained).
+	// `wall` is the fallback analytic shell only; mesh mode leaves it clear
+	// and reports the bullet world contact in `body` instead.
+	struct WheelScrape {
+		bool touching = false;
+		float x = 0, y = 0, z = 0;
+		float nx = 0, ny = 0, nz = 1;
+		float lat = 0, lon = 0;
+	};
+	struct BodyScrape {
+		bool hit = false;
+		float x = 0, y = 0, z = 0;
+		float nx = 0, ny = 0, nz = 1;
+	};
+	struct CarScrape {
+		WheelScrape wheels[4];
+		int wheelsTouching = 0;
+		float handbrake = 0; // RocketSim handbrakeVal, 0..1
+		float vx = 0, vy = 0, vz = 0;
+		BodyScrape body;
+		BodyScrape wall;
+	};
+	// Ball touch from BallHitInfo. hitThisTick is true only on the step the
+	// collision callback fired. Contact point is ballPos + R * localPoint.
+	struct BallTouch {
+		bool hitThisTick = false;
+		float x = 0, y = 0, z = 0;
+		float nx = 0, ny = 0, nz = 1;
+		float relVx = 0, relVy = 0, relVz = 0; // ball.vel - car.vel, post-step
+		float fx = 1, fy = 0, fz = 0;
+		float ballZ = 0;
+		bool carOnGround = false;
+	};
+	bool GetCarScrape(int idx, CarScrape* out) const;
+	bool GetBallTouch(int idx, BallTouch* out) const;
+
  private:
 	void TickFallbackPads();
 	void ContainFallbackBodies();
+	void ClearBallOrientation();
+	void AdvanceBallOrientation();
 
 private:
 	Sim();

@@ -265,3 +265,52 @@
   (`73db10410bd8a8ad`).
 - The physics work order is closed (M1–M6). Verdict: `docs/PHYSICS_VERDICT.md`;
   round record: `docs/PHYSICS_1TO1_LOG.md` Round 7. Do not re-run M1–M6.
+
+## Contact view (worker G, 2026-10-29)
+
+Read-only. `GetCarScrape` reports wheel contact points and the lateral/long
+slip split from `Car::_UpdateWheels` (`Car.cpp:436-450`). `GetBallTouch`
+reports a hit only on the step the callback stored (`tickCountWhenHit + 1`
+equals `arena->tickCount` after `Step`). The fallback wall latch copies the
+existing containment normal; the push and the velocity write are the same
+lines as before. No tape, gate number, or physics result was edited.
+
+`./build/headless_sim --tape tools/tas/tapes/straight_boost_600.csv --ticks 600 --seed 1`
+printed `CHECKSUM f1a0319d95ed8f8a` (same as the pre-change binary).
+`python3 tools/verify/measured.py` → 19 PASS, 0 FAIL.
+
+## Last touch (2026-10-29) — read-only view for the ball trail
+
+`Sim::GetLastTouch` reads `CarState::ballHitInfo` (`Ball::_OnHit`). It does
+not write car, ball, or world state. Newest `tickCountWhenHit` wins; an equal
+tick keeps the lower car index.
+
+`make /tmp/t_touch` → `LAST TOUCH PASS`. Seed 1, fallback arena:
+soft contact (throttle 0.25, no boost, y=-220) ball speed 386.6 uu/s, team
+blue; boosted hit (throttle 1, y=-2000) 2797.6 uu/s at tick 178, team blue;
+a later orange contact wins at tick 194. No touch at kickoff.
+
+Physics gates after the read was added: `measured.py` 19 PASS / 0 FAIL
+(G10 checksum `7a58e155d54071f8` unchanged); `mesh_gates.py` 13 PASS / 0 FAIL
+(D4 checksum `2bd44e5e8ede6e48` unchanged). No tape or gate number edited.
+
+## Ball spin view (2026-10-29)
+
+`ArenaConfig::noBallRot` defaults true, so the soccar ball basis stays
+identity while `BallState.angVel` is still the rigid-body rate (rad/s,
+world; angular damping 0). `Sim::GetBallSpin` is read-only. `angVel` is
+copied from `Ball::GetState`. `rot` is that rate integrated once per
+`Step120` (`IntegrateBallSpin`, Rodrigues, `dt = kTickDt`) and is never
+written back. `ResetBall` / `SetBall` restart `rot` at identity, matching
+the basis those calls store.
+
+A contact tick uses the post-step rate for the whole tick.
+UNVERIFIED against bullet's intra-step ω (the basis update is the thing
+`noBallRot` skips). Between contacts the rate is constant, so the sum is
+the spin the physics reports.
+
+`make /tmp/t_bspin` → `BALLSPIN PASS`. Zero spin stays on the mark.
+A 400 uu/s turf slide settles at `w=(0, 2.9912, 0)`; the next 60 ticks
+move the mark `(0.5971,0,0.8022) → (0.8491,0,-0.5282)` about that axis.
+Fallback checksum `73db10410bd8a8ad` unchanged. `measured.py` 19 PASS /
+0 FAIL. `mesh_gates.py` 13 PASS / 0 FAIL, D4 `2bd44e5e8ede6e48` unchanged.

@@ -4,6 +4,13 @@ Agent guide for this repo. Read this before touching anything.
 
 **CURRENT work order: `MASTER_PROMPT_GRAPHICS45.md` — OPEN (2026-10-20, rev 3).**
 
+**PARALLEL work order: `MASTER_PROMPT_BALL_FX.md` — OPEN (2026-10-29).**
+Coordinator tracks goals, issues, timelines, and progress only. Eight
+workers: freeplay ball keys, boost/supersonic, ball texture, ball spin,
+ground indicator, ball trail, contact sparks, and exact DFH Stadium (Day)
+on the opt-in local arena (workstream H). Workers find the code. Arena
+1:1 (A1–A8) stays closed.
+
 GL 4.5-compat hard target + pipeline optimize (RLViser-inspired, facts only).
 Owner decisions: hard-target **GL 4.5 Compatibility, no fallback** — no 2.1/3.3
 path, no llvmpipe, no core-profile *context* — and only **two supported
@@ -304,6 +311,9 @@ M6** and kept for reference (its §2 checklist is marked, evidence in
 
 ## Open work (priority order for new agents)
 
+0. **Ball, boost, contact FX, and exact DFH Stadium** —
+   `MASTER_PROMPT_BALL_FX.md` (2026-10-29, workstream H). Coordinator-led.
+   Does not reopen V1–V8, M1–M6, or Arena 1:1 A1–A8.
 1. **Visuals are CLOSED (V1–V6, then the V1–V8 regression fixes).**
    `docs/VISUAL_FIXES_LOG.md` is the latest record, the top of
    `docs/VISUAL_VERDICT.md` is the close-out, `docs/VISUAL_PARITY_LEDGER.md`

@@ -1,11 +1,11 @@
 {
- "gates": [
-  {
-   "id": "VG1",
-   "gate": "capture determinism",
-   "verdict": "PASS",
-   "detail": "two captures byte-identical (GL_VENDOR=NVIDIA Corporation RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2 VERSION=4.6.0 NVIDIA 615.78.08) md5=5326135d54b86d53532d32d78670030d"
-  }
- ],
- "diag": []
+  "gates": [
+    {
+      "id": "VG1",
+      "gate": "capture determinism",
+      "verdict": "PASS",
+      "detail": "two captures byte-identical (GL_VENDOR=NVIDIA Corporation RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2 VERSION=4.6.0 NVIDIA 615.78.08) md5=30bbbe441a6fa32f4d58c43f30fbc65c"
+    }
+  ],
+  "diag": []
 }

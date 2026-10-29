@@ -840,8 +840,12 @@ struct ArenaKey {
     int tint = 0;  // fallback colour category when tex == -1 (0 = neutral)
     int cx = 0, cy = 0, cz = 0;
     bool transparent = false;
+    bool unlit = false;
+    bool decal = false;
     bool operator<(const ArenaKey& o) const {
         if (transparent != o.transparent) return transparent < o.transparent;
+        if (unlit != o.unlit) return unlit < o.unlit;
+        if (decal != o.decal) return decal < o.decal;
         if (tex != o.tex) return tex < o.tex;
         if (tint != o.tint) return tint < o.tint;
         if (cx != o.cx) return cx < o.cx;
@@ -849,6 +853,15 @@ struct ArenaKey {
         return cz < o.cz;
     }
 };
+
+// Field-skin unwrap measured off Field_STD_Floor_Team1 UV2 (the layout
+// channel; UV0 is a detail tile and paints the pitch as swirls).
+//   u = x/8192 + 1/2
+//   v = 1 - |y|/8192
+// The positive-Y half is the mirrored placement of the same unwrap.
+constexpr float kFieldUvScale = 1.0f / 8192.0f;
+// Sky dome radius, inside the camera far plane (40000) and outside the bowl.
+constexpr float kSkyRadius = 36000.0f;
 
 // Transparent (in-game blended) arena sections: the force-field cage/glass
 // that reads as a faint blue veil with thin hex lines in RL (see the second
@@ -1005,7 +1018,16 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     // Non-duplicated names hold exactly one mesh and behave as before.
     std::map<std::string, std::vector<const ArenaMesh*>> meshesByName;
     for (const ArenaMesh& m : pack.meshes) meshesByName[m.name].push_back(&m);
+    // The day sky is an imported SkySphere01 (external mesh). The package's
+    // own mesh table does not contain it.
+    if (const ArenaMesh* sky = FindArenaMesh(pack, "SkySphere01"))
+        meshesByName["SkySphere01"].push_back(sky);
     std::map<std::string, size_t> dupCounter;
+    int fieldTexId = -1;
+    for (size_t ti = 0; ti < pack.textures.size(); ++ti) {
+        if (pack.textures[ti].name == "FieldSkin_FutureGrid_D")
+            fieldTexId = int(ti);
+    }
 
     // Untextured materials are NOT one grey: the pack's untextured majority
     // spans white field lines, green reflective floor panels, dark trim and
@@ -1015,29 +1037,68 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         std::string n = name;
         for (char& c : n) c = char(std::tolower((unsigned char)c));
         auto has = [&](const char* s) { return n.find(s) != std::string::npos; };
-        // Emissive fixtures first: TrimLight/glow names also contain "trim",
-        // which would otherwise land them in the dark-metal bucket. In game
-        // these are additive glow strips (center rings, side trim, goal and
-        // stadium lights); drawn shaded-dark they read as extrusion ridges.
-        // Tint 5 renders unlit near-white (see DrawArenaPack).
-        if (has("trimlight") || has("glow") || has("emiss") || has("light")) {
+        // Measured LinearColors from the package's vector parameters:
+        // Team1 / TrimLight / GoalGenerator Color1 = (1, 0.10, 0.03),
+        // Team2 = (0, 0.26, 1.06). Unnamed glow keeps the orange default.
+        const bool team2 = has("team2");
+        const bool team1 = has("team1");
+        // TrimLight_None is the off housing, not the team glow.
+        if ((has("trimlight") && !has("none")) || has("glow") ||
+            has("goalgenerator") || has("emiss")) {
+            if (team2) {
+                rgb[0] = 0.15f; rgb[1] = 0.45f; rgb[2] = 1.0f; return 9;
+            }
+            rgb[0] = 1.0f; rgb[1] = 0.12f; rgb[2] = 0.04f; return 8;
+        }
+        if (has("stadiumlight") || has("lightbulb") || has("lightarray") ||
+            has("citylight")) {
             rgb[0] = 1.0f; rgb[1] = 0.97f; rgb[2] = 0.90f; return 5;
         }
-        if (has("line") || has("paint") || has("white") || has("stripe")) {
-            rgb[0] = 0.85f; rgb[1] = 0.85f; rgb[2] = 0.85f; return 1;
+        // Painted markings. Unlit white (tint 7) plus a decal offset.
+        if (has("line") || has("paint") || has("stripe")) {
+            rgb[0] = 1.0f; rgb[1] = 1.0f; rgb[2] = 1.0f; return 7;
         }
-        if (has("grass") || has("turf") || has("field") || has("floor") ||
-            has("reflect") || has("pitch") || has("groomed")) {
-            rgb[0] = 0.28f; rgb[1] = 0.36f; rgb[2] = 0.26f; return 2;
+        if (has("bark")) {
+            rgb[0] = 0.28f; rgb[1] = 0.20f; rgb[2] = 0.12f; return 12;
         }
-        if (has("frame") || has("trim") || has("grate") || has("dark") ||
-            has("cross") || has("beam") || has("steel") || has("metal") ||
-            has("collision")) {
-            rgb[0] = 0.18f; rgb[1] = 0.18f; rgb[2] = 0.20f; return 3;
+        if (has("poplar") || has("tree") || has("foliage") || has("leaf")) {
+            rgb[0] = 0.18f; rgb[1] = 0.46f; rgb[2] = 0.14f; return 10;
+        }
+        if (has("cloud") || has("sky")) {
+            // DaytimeClouds LightColor-adjacent pale day sky (0.73, 0.82, 0.90).
+            rgb[0] = 0.73f; rgb[1] = 0.82f; rgb[2] = 0.90f; return 11;
+        }
+        if (has("grass") || has("turf") || has("groomed") || has("pitch")) {
+            rgb[0] = 0.42f; rgb[1] = 0.68f; rgb[2] = 0.24f; return 2;
+        }
+        if (has("seat")) {
+            rgb[0] = 0.28f; rgb[1] = 0.36f; rgb[2] = 0.48f; return 13;
+        }
+        if (has("statue")) {
+            rgb[0] = 0.64f; rgb[1] = 0.62f; rgb[2] = 0.56f; return 14;
+        }
+        // The bowl is light concrete. "frame" used to share the dark-metal
+        // bucket, which painted the whole stadium charcoal.
+        if (has("frame") || has("roof") || has("stair") || has("concrete") ||
+            has("sidewalk") || has("handrail")) {
+            rgb[0] = 0.80f; rgb[1] = 0.79f; rgb[2] = 0.76f; return 15;
+        }
+        if (has("metal") || has("grate") || has("beam") || has("steel") ||
+            has("trim") || has("collision") || has("dark") || has("reflect")) {
+            rgb[0] = 0.16f; rgb[1] = 0.16f; rgb[2] = 0.17f; return 3;
         }
         if (has("glass") || has("force") || has("cage") || has("hex") ||
             has("energy")) {
-            rgb[0] = 0.45f; rgb[1] = 0.55f; rgb[2] = 0.60f; return 4;
+            if (team2) {
+                rgb[0] = 0.35f; rgb[1] = 0.55f; rgb[2] = 0.90f; return 4;
+            }
+            if (team1) {
+                rgb[0] = 0.90f; rgb[1] = 0.42f; rgb[2] = 0.22f; return 4;
+            }
+            rgb[0] = 0.55f; rgb[1] = 0.72f; rgb[2] = 0.84f; return 4;
+        }
+        if (has("advert")) {
+            rgb[0] = 0.10f; rgb[1] = 0.12f; rgb[2] = 0.14f; return 3;
         }
         rgb[0] = kArenaFallback[0]; rgb[1] = kArenaFallback[1];
         rgb[2] = kArenaFallback[2];
@@ -1050,7 +1111,16 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     // the sky sphere / billboard sprites of the sibling package, which the
     // neutral fallback material would render as a grey dome around the
     // camera. They are counted and reported, never silently dropped.
-    for (const ArenaInstance& inst : pack.instances) {
+    std::vector<const ArenaInstance*> toDraw;
+    toDraw.reserve(pack.instances.size() + pack.externalInstances.size());
+    for (const ArenaInstance& inst : pack.instances) toDraw.push_back(&inst);
+    for (const ArenaInstance& inst : pack.externalInstances) {
+        // Sky dome only. The other external placements are sprites, fog
+        // cards and a second fog shell; drawn opaque they become slabs.
+        if (inst.mesh == "SkySphere01") toDraw.push_back(&inst);
+    }
+    for (const ArenaInstance* instPtr : toDraw) {
+        const ArenaInstance& inst = *instPtr;
         // Invisible gameplay helpers: decal blockers (full-field invisible
         // planes), particle/FX actors and warmup effects are never visible
         // geometry. Drawing them would bury the field under opaque planes.
@@ -1065,7 +1135,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         // dark X bands over midfield). Skip them, never silently: counted.
         if (inst.mesh.rfind("Sprite", 0) == 0 ||
             inst.mesh.rfind("FogMesh", 0) == 0 ||
-            inst.mesh.rfind("FieldSpotLights", 0) == 0) {
+            inst.mesh.rfind("FieldSpotLights", 0) == 0 ||
+            inst.mesh.rfind("CloudPlane", 0) == 0) {
+            ++skipped;
+            continue;
+        }
+        // Reflective-floor overlays on the pitch (centre disc, hex floor).
+        // They have no albedo; drawn opaque they bury the field skin.
+        if (inst.mesh == "Field_STD_Floor_Hex" ||
+            inst.mesh == "Field_Center_Trim") {
             ++skipped;
             continue;
         }
@@ -1110,12 +1188,26 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             const double x = mesh->positions[v * 3 + 0];
             const double y = mesh->positions[v * 3 + 1];
             const double z = mesh->positions[v * 3 + 2];
-            const double px = inst.matrix[0] * x + inst.matrix[4] * y +
-                              inst.matrix[8] * z + inst.matrix[12];
-            const double py = inst.matrix[1] * x + inst.matrix[5] * y +
-                              inst.matrix[9] * z + inst.matrix[13];
-            const double pz = inst.matrix[2] * x + inst.matrix[6] * y +
-                              inst.matrix[10] * z + inst.matrix[14];
+            double px = inst.matrix[0] * x + inst.matrix[4] * y +
+                        inst.matrix[8] * z + inst.matrix[12];
+            double py = inst.matrix[1] * x + inst.matrix[5] * y +
+                        inst.matrix[9] * z + inst.matrix[13];
+            double pz = inst.matrix[2] * x + inst.matrix[6] * y +
+                        inst.matrix[10] * z + inst.matrix[14];
+            // The authored sky scale (64 × a 65536 uu sphere) lands millions
+            // of units out, past the camera far plane. Pull the shell in to
+            // kSkyRadius so the dome is visible and still outside the bowl.
+            if (mesh->name == "SkySphere01") {
+                const double len = std::sqrt(px * px + py * py + pz * pz);
+                if (len > 1.0) {
+                    const double s = double(kSkyRadius) / len;
+                    px *= s; py *= s; pz *= s;
+                }
+            } else if (mesh->name == "OOBFloor") {
+                // Sit under the pitch so the centre-circle cutout and the
+                // turf win the depth test. The apron outside the bowl remains.
+                pz -= 8.0;
+            }
             wp[v * 3 + 0] = float(px);
             wp[v * 3 + 1] = float(py);
             wp[v * 3 + 2] = float(pz);
@@ -1182,7 +1274,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 // Light-shaft / fog sections that survive the placement
                 // filter (shared meshes): same skip, same counting.
                 if (matName.find("LightCone") != std::string::npos ||
-                    matName.find("StadiumFog") != std::string::npos) {
+                    matName.find("Fog") != std::string::npos) {
                     ++skipped;
                     continue;
                 }
@@ -1190,23 +1282,59 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 if (texId < 0)
                     tint = fallbackTint(matName, tintRgb);
             }
+            std::string matLower = secMatName;
+            for (char& c : matLower)
+                c = char(std::tolower((unsigned char)c));
+            // Grass materials sample FieldSkin_FutureGrid_* as a detail
+            // tile (UV0). The pitch layout lives on UV2 of the floor and in
+            // FieldSkin_FutureGrid_D. Retarget every grass section onto that
+            // texture and project world XY (see kFieldUvScale).
+            const bool fieldSkin =
+                fieldTexId >= 0 &&
+                (mesh->name == "Field_Center" ||
+                 matLower.find("grass") != std::string::npos ||
+                 matLower.find("groomed") != std::string::npos);
+            if (fieldSkin) texId = fieldTexId;
+            const bool skyDome = mesh->name == "SkySphere01";
+            if (skyDome) {
+                texId = -1;
+                tint = 11;
+                tintRgb[0] = 0.73f; tintRgb[1] = 0.82f; tintRgb[2] = 0.90f;
+            }
+            // The out-of-bounds floor is a Reflective_Floor overlay with no
+            // albedo. A flat mid ground reads as the apron instead of a void.
+            if (mesh->name == "OOBFloor") {
+                texId = -1;
+                tint = 16;
+                tintRgb[0] = 0.34f; tintRgb[1] = 0.36f; tintRgb[2] = 0.33f;
+            }
+            bool boostPad = false;
+            if (texId >= 0 && size_t(texId) < pack.textures.size())
+                boostPad = pack.textures[size_t(texId)].name.rfind(
+                               "BoostPad_", 0) == 0;
             // Force-field/glass transparency (no blend flag in the pack, so a
             // name join — see ArenaSectionTransparent). Transparent sections
-            // get their own buckets (key.transparent) and untextured ones
-            // share the pale glass veil instead of the neutral grey.
+            // get their own buckets (key.transparent). Untextured ones take
+            // the pale veil, unless a team tint was already chosen.
             const bool secTransparent =
                 ArenaSectionTransparent(mesh->name, secMatName);
-            if (secTransparent && texId < 0) {
+            if (secTransparent && texId < 0 && tint != 8 && tint != 9) {
                 tintRgb[0] = kArenaGlass[0];
                 tintRgb[1] = kArenaGlass[1];
                 tintRgb[2] = kArenaGlass[2];
                 tint = 6;  // glass-veil bucket (opaque grey stays tint 0..5)
             }
+            const bool unlit = skyDome || fieldSkin || boostPad || tint == 5 ||
+                               tint == 7 || tint == 8 || tint == 9 ||
+                               tint == 11 || tint == 16;
+            const bool decal = (tint == 7);
 
             ArenaKey key;
             key.tex = texId;
             key.tint = (texId < 0) ? tint : 0;
             key.transparent = secTransparent;
+            key.unlit = unlit;
+            key.decal = decal;
             key.cx = cell[0]; key.cy = cell[1]; key.cz = cell[2];
             size_t bi;
             auto it = bucketIndex.find(key);
@@ -1249,8 +1377,14 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                         b.v.push_back(wn[vi * 3 + 0]);
                         b.v.push_back(wn[vi * 3 + 1]);
                         b.v.push_back(wn[vi * 3 + 2]);
-                        b.v.push_back(hasUv ? mesh->uvs[vi * 2 + 0] : 0.0f);
-                        b.v.push_back(hasUv ? mesh->uvs[vi * 2 + 1] : 0.0f);
+                        float u = hasUv ? mesh->uvs[vi * 2 + 0] : 0.0f;
+                        float v = hasUv ? mesh->uvs[vi * 2 + 1] : 0.0f;
+                        if (fieldSkin) {
+                            u = wp[vi * 3 + 0] * kFieldUvScale + 0.5f;
+                            v = 1.0f - std::fabs(wp[vi * 3 + 1]) * kFieldUvScale;
+                        }
+                        b.v.push_back(u);
+                        b.v.push_back(v);
                         for (int c = 0; c < 3; ++c) {
                             const float p = b.v[b.v.size() - kArenaStride + size_t(c)];
                             if (p < b.lo[c]) b.lo[c] = p;
@@ -1272,7 +1406,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         const ArenaTexture& t = pack.textures[ti];
         if (!t.valid || t.rgba.empty() || t.width <= 0 || t.height <= 0) continue;
         const uint8_t* px = t.rgba.data();
-        std::vector<uint8_t> converted;  // only for the hex-mask texture below
+        std::vector<uint8_t> converted;
+        GLenum wrap = GL_REPEAT;
         // The force-field hex texture is a packed UE3 shader mask, NOT albedo:
         // raw it is black centres + saturated green/blue/red rings (the rainbow
         // in the bug report). The green channel is the hex-line mask (27% of
@@ -1293,6 +1428,42 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                     (uint8_t)((unsigned)g * 80u / 255u);  // 0..80 (0..0.31)
             }
             px = converted.data();
+        } else if (t.name == "FieldSkin_FutureGrid_D") {
+            // The cooked field skin is a dark olive (mean G ~130) with the
+            // mow checker and markings in the variation. A per-channel gain
+            // lifts it to the bright day turf without flattening the checker.
+            // Clamp so the layout does not repeat onto the apron.
+            converted.resize(t.rgba.size());
+            for (size_t p = 0; p < t.rgba.size() / 4; ++p) {
+                auto lift = [](unsigned c, unsigned num, unsigned den) -> uint8_t {
+                    const unsigned v = c * num / den;
+                    return (uint8_t)(v > 255u ? 255u : v);
+                };
+                converted[p * 4 + 0] = lift(t.rgba[p * 4 + 0], 165, 100);
+                converted[p * 4 + 1] = lift(t.rgba[p * 4 + 1], 140, 100);
+                converted[p * 4 + 2] = lift(t.rgba[p * 4 + 2], 115, 100);
+                converted[p * 4 + 3] = 255;
+            }
+            px = converted.data();
+            wrap = GL_CLAMP_TO_EDGE;
+        } else if (t.name.rfind("BoostPad_", 0) == 0) {
+            // The cooked "diffuse" is a red/green/black mask. The measured
+            // pad colours are gold (BoostPad_Color 1, 0.47, 0.05 and the
+            // BoostPad_02 ColorA/B/C family). Red becomes the disc, green
+            // the arrow highlight, black the centre.
+            converted.resize(t.rgba.size());
+            for (size_t p = 0; p < t.rgba.size() / 4; ++p) {
+                const unsigned r = t.rgba[p * 4 + 0];
+                const unsigned g = t.rgba[p * 4 + 1];
+                const unsigned orr = r;
+                const unsigned org = r * 45u / 100u + g * 35u / 100u;
+                const unsigned orb = r * 8u / 100u;
+                converted[p * 4 + 0] = (uint8_t)(orr > 255u ? 255u : orr);
+                converted[p * 4 + 1] = (uint8_t)(org > 255u ? 255u : org);
+                converted[p * 4 + 2] = (uint8_t)(orb > 255u ? 255u : orb);
+                converted[p * 4 + 3] = 255;
+            }
+            px = converted.data();
         }
         GLuint tex = 0;
         glGenTextures(1, &tex);
@@ -1305,8 +1476,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                         GL_LINEAR_MIPMAP_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
         glBindTexture(GL_TEXTURE_2D, 0);
         texGlId[ti] = int(tex);
         arenaTextures_.push_back(tex);
@@ -1325,7 +1496,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.tintRgb[0] = b.tintRgb[0];
         g.tintRgb[1] = b.tintRgb[1];
         g.tintRgb[2] = b.tintRgb[2];
-        g.unlit = (key.tint == 5);  // trim-light glow ignores scene lighting
+        g.unlit = key.unlit;
+        g.decal = key.decal;
         g.transparent = key.transparent;
         g.tag = b.tag;
         g.cell[0] = key.cx; g.cell[1] = key.cy; g.cell[2] = key.cz;
@@ -1372,6 +1544,16 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
 void Renderer::DrawArenaPack() {
     // No pack -> no GL call at all (the default path stays byte-identical).
     if (!arenaReady_) return;
+    // Day sky behind the bowl. The analytic path clears a night blue; that
+    // clear is only replaced when a pack is actually drawn.
+    glClearColor(0.73f, 0.82f, 0.90f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    GLfloat prevAmb[4];
+    glGetFloatv(GL_LIGHT_MODEL_AMBIENT, prevAmb);
+    // High-key daylight. The analytic key+fill stays installed; only the
+    // ambient term is lifted for this draw, then restored before cars.
+    const GLfloat dayAmb[4] = {0.62f, 0.64f, 0.62f, 1.0f};
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, dayAmb);
     const ArenaFrustum f = ExtractArenaFrustum();
     const GLsizei stride = kArenaStride * int(sizeof(float));
     const GLboolean texWas = glIsEnabled(GL_TEXTURE_2D);
@@ -1399,6 +1581,10 @@ void Renderer::DrawArenaPack() {
         // shaded they would go dark on their shadow side and read as ridges.
         if (bk.unlit) glDisable(GL_LIGHTING);
         else if (lightWas) glEnable(GL_LIGHTING);
+        if (bk.decal) {
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(-1.5f, -2.0f);
+        }
         glBindBuffer(GL_ARRAY_BUFFER, bk.vbo);
         glVertexPointer(3, GL_FLOAT, stride, (const void*)0);
         glNormalPointer(GL_FLOAT, stride, (const void*)(3 * sizeof(float)));
@@ -1408,6 +1594,7 @@ void Renderer::DrawArenaPack() {
                        (const void*)0);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+        if (bk.decal) glDisable(GL_POLYGON_OFFSET_FILL);
         NoteExternalDraw(bk.tris, 0);
         return true;
     };
@@ -1444,7 +1631,9 @@ void Renderer::DrawArenaPack() {
     if (texWas) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
     if (blendWas) glEnable(GL_BLEND); else glDisable(GL_BLEND);
     if (lightWas) glEnable(GL_LIGHTING); else glDisable(GL_LIGHTING);
+    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, prevAmb);
     glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_POLYGON_OFFSET_FILL);
     arenaStats_.visible = visible;
     arenaStats_.culled = culled;
 }

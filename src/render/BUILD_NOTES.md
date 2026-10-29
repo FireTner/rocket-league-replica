@@ -680,3 +680,217 @@ MEASURED (machine B, `GL_VENDOR=NVIDIA Corporation`
   stands/pads unchanged (grass still opaque, no grey floor regression).
 * Default-path proof (fix touches only pack code): `--only VG1` PASS
   byte-identical `md5=5326135d54b86d53532d32d78670030d` (== V11 record).
+
+## Stadium Day look (2026-10-29) — pack path only
+
+The ripped DFH day bowl was already the real mesh. It read as a grey
+model in a void because UV0 on the grass is a detail tile (the floor's
+layout is UV2), the field skin is a dark olive mask, the sky sphere was
+skipped, and `frame` shared the dark-metal tint.
+
+Pack path only (`DrawArenaPack` / `BuildArenaPack`; no pack means the
+function still returns before any new GL call):
+
+* Grass and `Field_Center` sample `FieldSkin_FutureGrid_D` with the
+  measured unwrap `u = x/8192 + 1/2`, `v = 1 - |y|/8192`, unlit, with a
+  per-channel gain so the mow checker reads as day turf. Clamp, so the
+  apron does not repeat the pitch.
+* `SkySphere01` (the imported dome) is drawn, pulled in to radius 36000
+  so it sits inside the far plane. Clear colour for a pack frame is the
+  measured daytime-cloud pale blue `(0.73, 0.82, 0.90)`.
+* Name tints use the package's vector defaults: Team1 glow
+  `(1, 0.12, 0.04)`, Team2 `(0.15, 0.45, 1)`, painted lines unlit white
+  with polygon offset, poplars green, the bowl light concrete. `frame`
+  is no longer dark metal. `TrimLight_None` stays off.
+* Boost-pad masks are recoloured gold at upload. Procedural pad discs
+  are not drawn when a pack is loaded.
+* Skipped on top of the old list: cloud cards, the centre trim puck,
+  the hex floor overlay. `OOBFloor` sits 8 uu under the pitch.
+
+Checked offscreen on machine B (`NVIDIA GeForce RTX 4060 Laptop GPU`,
+`4.6.0 NVIDIA 615.78.08`), `glerr=0`, four cameras (top-down, corner,
+midfield toward a goal, goal mouth toward midfield). The cook still has
+no albedo for the crowd, the poplar cards, or most of the concrete, so
+those stay flat tints.
+
+## Contact sparks (worker G, 2026-10-29)
+
+`FX::DrawContactSparks` draws its own spheres from `ContactSparkFrame`.
+It does not write the trail ribbon, the black-sparkle quads in `DrawTrail`,
+the boost flame, or `DrawAir`. The old orange spheres inside `DrawDrift`
+(still only when sliding and `carSpeed >= 2200`) were left in place.
+
+Decision constants and the reason each is measured or UNVERIFIED are in
+`src/fx/ContactSparks.h`. Clean hits stay quiet: no source says a square
+touch sparks. A side hit sparks when tangential speed is at least 400 uu/s
+and the contact normal is off the nose (`|dot(n, forward)| < 0.75`). Those
+two cutoffs are the gap between the two hits below.
+
+`make /tmp/t_spark` → `CONTACT SPARKS PASS`. Slow grind tick 48, speed
+349.8 uu/s, lateral slip 83.5, patch on the turf; sparks stopped after 27
+brake ticks (speed 39.8). Offset ball (x=100) tick 44 awkward, ball
+`102.29 283.95 94.63` vel `570.50 716.09 228.78`, identical on the second
+run. Square hit tangent 150.4, align 0.91, not awkward. Straight boost run
+scrapes=0, top 2300, supersonic flag set. That run is not worker B's
+sparkle check. Visual gates and the 30-minute soak were not run.
+
+## Ball ground indicator (2026-10-29) — workstream E
+
+The ring (z=2) and disc (z=1) were losing the depth test to the floor.
+The markings sheet is one arena-sized quad at z=1 and it writes depth
+with the test off, so the disc is coplanar with that plane and the ring
+is only 1 uu above it. At a low camera that gap is inside the quad's
+window-depth slope, and the circles speckle into the turf.
+
+`FX::DrawBallIndicator` now draws both circles with
+`glPolygonOffset(-2, -4)` and depth write off, then restores both.
+Radii, height growth, fade, and colour are the VG4 recipe, unchanged.
+The bias is UNVERIFIED (not an RL measurement). It is stronger than the
+pack field-line decal `(-1.5, -2)` so the marker stays above those lines.
+Offset changes window depth only, so the projected radii stay put.
+`DrawBallTrail` is a separate draw after this one; its size and colour
+are untouched, and the offset does not leak into it.
+
+Machine B (`GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`):
+
+```
+python3 tools/verify/visual_gates.py --only VG4 --diag
+VG4  PASS  ball indicator radii (recipe)      z600 outer=91 inner=71 disc=45; ratios 0.780/0.495; growth 1.022
+```
+
+```
+python3 tools/verify/measured.py
+# summary: 19 PASS, 0 FAIL
+```
+
+Ball on the ground (`--ballpos 0,0,93.15`), gamescope headless, orbit of
+8 cameras at height 150 and 8 at height 52, plus the same pose nudged
+12 uu. Ring pixel counts stayed in band (play 15061–15383, low
+8997–9230). The nudge pair had every ring pixel within 3 px of the
+other frame. `glerr=0`. A chase view on `arena_assets/stadium_day` shows
+both circles on the centre logo. An extreme graze (eye 500 uu back,
+42 uu up) is still a thin aliased arc; the recipe was not thickened.
+
+## Ball path streak (2026-10-29) — workstream F
+
+Separate draw: `FX::DrawBallTrail`. It does not use `trail_[]`, `DrawTrail`
+(car supersonic mark), or `DrawBallIndicator` (ground marker). Samples are
+`ballTrail_[]` (6 positions). One `GL_TRIANGLES` submission.
+
+Speed floor `FX::kBallTrailSpeedFloor = 1500` uu/s is **UNVERIFIED**. Issue
+I2 stays open: no game function names it, and it is not the car's 2200 line.
+It is a round split of the two contacts above (386.6 and 2797.6). Look
+constants are also UNVERIFIED: tail ≤280 uu, half-width 12 uu, fade 0.12 s
+of sim time. Colour is the existing car team paint (blue 0.10, 0.35, 0.90 /
+orange 0.85, 0.30, 0.08).
+
+`/tmp/t_btrail` on machine B (`GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`) → `BALL TRAIL PASS`:
+hard hit 2797.6 uu/s blue pixels 120, orange 0, **20 tris / 1 draw**;
+orange last touch recolours to 120 orange / 0 blue; 24 ticks under 386.6
+clears the streak; the 386.6 soft touch draws 0 tris. Before any touch, no
+streak.
+
+`python3 tools/verify/visual_gates.py --only VG4 --diag` →
+`VG4 PASS` z600 outer=91 inner=71 disc=45; ratios 0.780/0.495; growth 1.022.
+Indicator size and colour were not retuned.
+`python3 tools/verify/visual_gates.py --only VG7` →
+`VG7 PASS` ticks=7200 drops=0 glerr=0 tris_last=189144 (cap 240000)
+draws_last=189 fennec_tris=84823. The streak's own cost on a fast shot is
+the 20 tris / 1 draw above, inside that cap.
+
+## Ball orientation (2026-10-29)
+
+`DrawBall` leaves the hex-panel texture and its UVs alone. After the
+translate it multiplies `Snapshot::ballRot` when that basis is not
+identity (`BallOrientationMatrix`, the same columns as `MapBallPoint`).
+The snapshot fields are filled from `Sim::GetBallSpin`. A zero-spin ball
+does not touch the modelview, so the unspun draw is the previous path.
+
+`python3 tools/verify/visual_gates.py --only VG4` →
+`VG4 PASS ball indicator radii (recipe) z600 outer=91 inner=71 disc=45; ratios 0.780/0.495; growth 1.022`.
+The rest of VG1–VG16 was not re-run. No 30-minute soak.
+
+## Boost, supersonic streak, black sparkles (2026-10-29) — workstream B
+
+`DrawAir` no longer draws the airborne spin arcs or the stall ring. A flip
+is the car's orientation. Nothing was put in their place.
+
+`DrawBoostFlame` is two crossed ribbons per nozzle (left and up), white-hot
+at the pipe and orange at the tip, additive, only while `boosting` and
+`boost > 0`. Length is `(40 + 64·boost)·flick` uu (about 40..104). UNVERIFIED:
+no live RL capture. The old nested cones, tip spheres, and grey smoke balls
+are gone. The nozzle is 68 uu behind the origin, 18 uu each side, 6 uu down
+car-up. 68 clears the Fennec rear face noted at local x=-65.9 in `Fennec.cpp`.
+Side and down are UNVERIFIED socket guesses.
+
+`DrawTrail`'s supersonic block follows `Snapshot.supersonic`, filled from the
+existing `Sim::IsSupersonic` (RLConst.h start 2200, hold to 2100 for up to
+1 s). It is not a second `speed >= 2200` test. The streak is crossed quads
+along the recent path, fading over 320 uu (UNVERIFIED length). The black
+sparkles are a second `GL_QUADS` draw in that same function: eight plus-signs
+in the car's left/up plane, shed 80..230 uu behind the car. TUNED owner
+stand-in (issue I4), not a claim that Rocket League's sparks are black.
+They are not `DrawSphere`, not the streak quads, and not `DrawContactSparks`.
+`DrawDrift` still has its own orange grind spheres, gated on sliding and
+`carSpeed >= 2200`. That gate was left alone.
+
+Path samples are pushed only when `Update`'s dt is > 0, so a repeated render
+frame does not wipe the streak. Sim time only.
+
+Dropout: the flag-off frame at tick 297 (speed 2099.1, `super=0`) still
+shows a pale band because the chase camera (160 uu behind the car) is inside
+the centre circle (r=600 uu, stroke ~26 uu, `ArenaTextures.cpp`). Drawing
+`DrawTrail` or skipping it is the same picture (md5
+`f600f9e6344f206e45955d73285f5f70`). The frame past that stroke is
+`/tmp/bfx/dropout_clear.ppm`, tick 366, speed 1797.3, `super=0`, boost 0,
+car y=1838. Same md5 with the trail draw skipped
+(`022fff0596de2c5dc673c5728bb4c640`). No pale band on the ground behind the
+car. The 49 near-white pixels are the ceiling seam; 18 more are the
+headlight. `glerr=0`.
+
+## Ball panels (2026-10-29) — workstream C
+
+`BuildBallTexture` no longer stamps a flat 4×8 hex lattice. `PaintBallPanels`
+builds the Archimedean truncated icosahedron in the sphere's object frame
+(regular icosahedron, cyclic `(0, ±1, ±φ)`, truncated at 1/3 of each edge)
+and paints the equirect texel by the face the direction hits: 12 pentagons,
+20 hexagons. Hex `(242,244,247)`, pentagon `(18,18,20)`. Both bytes are
+UNVERIFIED swatches of white and black, held inside 0/255 so the existing
+key and ambient still shade the panel. `DrawBall` still translates, then
+multiplies `Snapshot::ballRot` when it is not identity. UVs stay index-based
+on that mesh. No texture scroll, no spin integration change.
+
+Gloss is local to the ball draw: material specular `(0.55,0.58,0.65)`,
+shininess 32 (UNVERIFIED; no published fixed-function exponent),
+`GL_SEPARATE_SPECULAR_COLOR`, and the key/fill specular colours copied from
+those lights' diffuse in `Renderer::Init`. The previous specular, shininess,
+colour control, and light specular are restored before `glPopMatrix`, so the
+arena's zero specular stays put.
+
+Still, two runs, kickoff ball, freecam `240,-180,200` → `0,0,93`,
+`--ticks 12 --shot-at-tick 4` (the frame that crossed the tick was tick 8;
+`ResetBall` leaves angVel 0, so the basis stays identity):
+md5 `5e924d5d60c25593d0b4f70c6b1d6f86` both times. The picture is pentagons
+and hexagons with a highlight on the lit side, not a hex wallpaper.
+`GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`. `glerr=0`. No panel-build failure and no
+missed rays in the log.
+
+Spin: `--ballpos 70,-2080,130 --drive 1,0,0,0,0,0,1,0`, fixed cam
+`520,-2400,280` → `40,-1900,90`. Ball-centred black-panel centroid moved
+from `(-4.1, -14.8)` px at tick 1 to `(-19.7, -13.6)` px at tick 91, and the
+visible pentagon moved from the lower-left of the ball to the upper-left.
+Machine A was not measured.
+
+`python3 tools/verify/visual_gates.py --only VG1,VG4 --diag` →
+`VG1 PASS` two captures byte-identical, md5 `30bbbe441a6fa32f4d58c43f30fbc65c`
+(this is the new kickoff picture; the previous kickoff hash is not this one).
+`VG4 PASS` z600 outer=91 inner=71 disc=45; ratios 0.780/0.495; growth 1.022.
+Indicator size was not retuned. The rest of VG1–VG16 was not re-run. No
+30-minute soak. The gate file was restored after the run so a partial
+`--only` write did not replace the shared record.

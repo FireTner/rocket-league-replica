@@ -68,7 +68,7 @@ build/render_stub: src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camer
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@
 
-GAME_SRCS = src/game/main.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/ArenaRip.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
+GAME_SRCS = src/game/main.cpp src/game/FreeplayBall.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/ArenaRip.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
 
 build/game: $(GAME_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
 	mkdir -p build
@@ -83,7 +83,10 @@ game: build/game
 headless: build/headless_sim
 render_stub: build/render_stub
 
-tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir
+tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir /tmp/t_ball /tmp/t_touch /tmp/t_btrail /tmp/t_bspin /tmp/t_spark
+# Free-play keys 1–5. Links the sim so the scripted run is a real 120 Hz step.
+/tmp/t_ball: tests/test_freeplay_ball.cpp src/game/FreeplayBall.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
+	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $(RS_INC) $^ -o $@ && $@
 /tmp/t_rt: tests/test_settings_roundtrip.cpp src/settings/Settings.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -o $@ && $@
 /tmp/t_kb: tests/test_keyboard_menu.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp
@@ -109,6 +112,20 @@ tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_ad
 # SDL2 for the header, no GL context).
 /tmp/t_adir: tests/test_arena_dir.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $(SDL_CFLAGS) $< $(SDL_LIBS) -o $@ && $@
+# Last-touch read. Fails until Sim::GetLastTouch exists (presentation-only
+# fact; the test never writes physics).
+/tmp/t_touch: tests/test_last_touch.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
+	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $^ -o $@ && $@
+# Ball-trail pixels. Needs a GL 4.5 compat context (gamescope headless works).
+/tmp/t_btrail: tests/test_ball_trail.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp
+	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@ && $@
+# Ball orientation is the sim-time integral of physics angVel (noBallRot
+# leaves the body basis at identity). Read-only; the test never writes spin.
+/tmp/t_bspin: tests/test_ball_spin.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
+	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $^ -o $@ && $@
+# Contact sparks: read-only scrape/touch view plus the presentation decision.
+/tmp/t_spark: tests/test_contact_sparks.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
+	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $^ -o $@ && $@
 
 # A6 frozen tapes through the real sim (MODE=MEASURED).
 tapes: build/headless_sim
@@ -132,4 +149,4 @@ meshgen: build/make_soccar_mesh
 	./build/make_soccar_mesh collision_meshes/soccar/soccar_cleanroom.cmf
 
 clean:
-	rm -rf build /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir /tmp/arena_test
+	rm -rf build /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir /tmp/t_ball /tmp/t_touch /tmp/t_bspin /tmp/t_btrail /tmp/t_spark /tmp/arena_test

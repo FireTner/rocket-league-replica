@@ -29,7 +29,7 @@ gates, `measured.py` and `visual_gates.py` ever exercise.
 | Mesh **positions + indices** | **OK: 119/119** | A1 — there was no second layout; the `BoolProperty` value byte made the stream byte-aligned, not 4-byte-aligned |
 | Normals / UVs | **OK: 119/119** | A2 — the 12 B/vertex block is 2×`FPackedNormal` (tangent, normal; `b/255*2−1`) + 2×IEEE-754 binary16 UV; **329 472** normals decoded over 119 meshes, only 10 outside `[0.98,1.02]` (all in `SkyScrapers_02_Combined`, proven to be source data — null `(0,0,0)` normals — not a decode error) |
 | Sections | **OK: 119/119, 174 sections** | A2 — the **24-byte** record (`MinVertexIndex`, `MaxVertexIndex`, `Flags`, `MaterialIndex`, `FirstIndex`, `NumTriangles`), located by content, never by a fixed offset |
-| Materials / textures | **PARTIAL — 38.75 %** | A3/A3b — the cook **strips the material graph**; 248 of 640 used section slots resolve to a decoded diffuse. The ≥ 90 % target is **NOT met** and is **proven unreachable** (see below) |
+| Materials / textures | **PARTIAL — pack 258/640 (40.31 %); binding census 375/606 (61.88 %)** | A3/A3b graph 248/640; H-shader (2026-10-29) reads `RefShaderCache` (Oodle) and proves `Stairs_Mat` → `Stairs_Pack`/`Stairs_N`. Pack re-rip with `--bindings` adds named diffuses (19 textures). Lightmap × vertex-colour path and GLSL pack draw still open |
 | Actor/component transforms | **OK** | A4 — 451 placements + 26 imported, 112 distinct meshes, **0 orphans**; UE3 rot order `Rz*Ry*Rx`, column-major `T*R*S`; the 650 zeroed export slots are filtered by any census |
 | Pack format + writer | **OK** | A5 — `arena_assets/stadium_day/arena.json` (807 793 B) + `arena.bin` (29 121 416 B), gitignored; byte-identical reruns; `--verify` 19/19 |
 | C++ reader | **OK** | A6a — `src/models/ArenaRip.{h,cpp}`; CPU DXT decode **byte-identical to `rldds.py` 13/13**; 796 contract checks PASS; loud SKIP when the pack is absent |
@@ -63,6 +63,13 @@ down as `untextured-by-design` 331, `external:CustomColors` 34 (a runtime
 scripted texture, not pixels), `param-mask` 16, `external:Materials` 9,
 `null-slot` 2. **The remaining 61.25 % of used section slots render on the
 pack's documented neutral-grey fallback material.**
+
+The expression-graph result above is unchanged. A later read of the compiled
+texture array and of `RefShaderCache-PC-D3D-SM5.upk` (2026-10-29, workstream
+H) identifies a diffuse for **368 of the 606** non-`CustomColors` sections
+(60.73 %). That is under 90 % (the bar is 546). The draw stays blocked. The
+structure still missing is the `ShaderCache` export body. Record:
+`docs/ARENA_RIP_LOG.md`, round H-bind.
 
 ## Tagged properties (MEASURED)
 

@@ -1,9 +1,10 @@
 // Models.cpp — procedural car + RL-style ball.
-// Ball: hexagon-panel equirect texture generated in code (no assets), the
-// RL ball look: white panels, gray seams, subtle top/bottom shading.
+// Ball: truncated-icosahedron equirect generated in code (no assets):
+// white hexagons, black pentagons. Shading comes from the scene lights.
 // Car: hitbox-proportioned stylized body (replaced by the Fennec GLB mesh
 // when assets/models/fennec.bin is present — see Fennec.cpp).
 #include "Models.h"
+#include "BallOrient.h"
 #include <GL/gl.h>
 #include <cmath>
 #include <cstdlib>
@@ -168,30 +169,280 @@ void DrawDebugColliders(Renderer& r, const Snapshot& player, const Snapshot& bot
                      dims::kBallR, 20, 1.0f, 0.35f, 0.9f, 0.95f);
 }
 
-// ---- RL ball: procedural hexagon-panel texture + textured sphere ----------
+// ---- RL ball: truncated-icosahedron print + textured sphere ----------------
 
 static const int kBtw = 512, kBth = 256; // equirect texture size
 
-// Hexagon seam edges at (cx,cy) with circumradius R, wrapped horizontally.
-static void HexSeam(unsigned char* img, float cx, float cy, float R,
-                    int seamR, int seamG, int seamB, float thick) {
-    for (int e = 0; e < 6; e++) {
-        float a0 = (float)M_PI / 3.0f * e, a1 = (float)M_PI / 3.0f * (e + 1);
-        float x0 = cx + std::cos(a0) * R, y0 = cy + std::sin(a0) * R;
-        float x1 = cx + std::cos(a1) * R, y1 = cy + std::sin(a1) * R;
-        int steps = (int)(R / 2.0f) + 2;
-        for (int s = 0; s <= steps; s++) {
-            float t = (float)s / steps;
-            float px = x0 + (x1 - x0) * t, py = y0 + (y1 - y0) * t;
-            int x = ((int)px % kBtw + kBtw) % kBtw;
-            for (int dy = -(int)thick; dy <= (int)thick; dy++) {
-                int y = ((int)py + dy) % kBth;
-                if (y < 0) y += kBth;
-                unsigned char* p = img + (y * kBtw + x) * 3;
-                p[0] = seamR; p[1] = seamG; p[2] = seamB;
+// Object-space direction. Same frame as DrawBall's parametric sphere:
+// +Z is the v=1 pole, phi=0 lies on +X and increases toward +Y.
+struct BallV {
+    float x, y, z;
+};
+
+static BallV BAdd(BallV a, BallV b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+static BallV BSub(BallV a, BallV b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+static BallV BMul(BallV a, float s) { return {a.x * s, a.y * s, a.z * s}; }
+static float BDot(BallV a, BallV b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+static BallV BCross(BallV a, BallV b) {
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+static float BLen(BallV a) { return std::sqrt(BDot(a, a)); }
+
+// Archimedean truncated icosahedron: 12 pentagons + 20 hexagons.
+// Regular icosahedron vertices are the cyclic (0, ±1, ±φ) set,
+// φ = (1+√5)/2. Truncation at 1/3 of each edge gives equal edges,
+// because consecutive neighbors of a vertex are themselves an edge.
+// Each texel is the face hit by its equirect direction. The print is
+// fixed in this object frame; DrawBall's modelview spins it.
+//
+// Panel bytes are UNVERIFIED swatches of the work-order white/black.
+// They sit a little inside 0 and 255 so the existing key+ambient still
+// shade the panel and a separate specular lobe has headroom.
+static void PaintBallPanels(unsigned char* img) {
+    const unsigned char kHexR = 242, kHexG = 244, kHexB = 247;
+    const unsigned char kPentR = 18, kPentG = 18, kPentB = 20;
+    const float phi = (1.0f + std::sqrt(5.0f)) * 0.5f;
+    BallV ico[12];
+    int ni = 0;
+    for (int sy = -1; sy <= 1; sy += 2)
+        for (int sp = -1; sp <= 1; sp += 2)
+            ico[ni++] = {0.0f, (float)sy, sp * phi};
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sp = -1; sp <= 1; sp += 2)
+            ico[ni++] = {(float)sx, sp * phi, 0.0f};
+    for (int sp = -1; sp <= 1; sp += 2)
+        for (int sz = -1; sz <= 1; sz += 2)
+            ico[ni++] = {sp * phi, 0.0f, (float)sz};
+    float minD = 1.0e30f;
+    for (int i = 0; i < 12; i++) {
+        for (int j = i + 1; j < 12; j++) {
+            float d2 = BDot(BSub(ico[i], ico[j]), BSub(ico[i], ico[j]));
+            if (d2 > 1.0e-6f && d2 < minD)
+                minD = d2;
+        }
+    }
+    int edges[30][2];
+    int ne = 0;
+    int edgeOf[12][12];
+    for (int i = 0; i < 12; i++)
+        for (int j = 0; j < 12; j++)
+            edgeOf[i][j] = -1;
+    for (int i = 0; i < 12; i++) {
+        for (int j = i + 1; j < 12; j++) {
+            float d2 = BDot(BSub(ico[i], ico[j]), BSub(ico[i], ico[j]));
+            if (std::fabs(d2 - minD) > 0.05f)
+                continue;
+            if (ne >= 30)
+                break;
+            edges[ne][0] = i;
+            edges[ne][1] = j;
+            edgeOf[i][j] = edgeOf[j][i] = ne;
+            ne++;
+        }
+    }
+    int nbr[12][5];
+    int deg[12] = {};
+    for (int e = 0; e < ne; e++) {
+        int a = edges[e][0], b = edges[e][1];
+        if (deg[a] < 5)
+            nbr[a][deg[a]++] = b;
+        if (deg[b] < 5)
+            nbr[b][deg[b]++] = a;
+    }
+    for (int v = 0; v < 12; v++) {
+        BallV outward = ico[v];
+        float ol = BLen(outward);
+        BallV tmp = std::fabs(outward.z) < 0.9f * ol ? BallV{0, 0, 1} : BallV{0, 1, 0};
+        BallV ref = BCross(tmp, outward);
+        BallV bitan = BCross(outward, ref);
+        float ang[5];
+        int ord[5];
+        int n = deg[v];
+        for (int k = 0; k < n; k++) {
+            ord[k] = nbr[v][k];
+            BallV d = BSub(ico[ord[k]], outward);
+            ang[k] = std::atan2(BDot(d, bitan), BDot(d, ref));
+        }
+        for (int i = 1; i < n; i++) {
+            int id = ord[i];
+            float a = ang[i];
+            int j = i;
+            while (j > 0 && ang[j - 1] > a) {
+                ang[j] = ang[j - 1];
+                ord[j] = ord[j - 1];
+                j--;
+            }
+            ang[j] = a;
+            ord[j] = id;
+        }
+        for (int k = 0; k < n; k++)
+            nbr[v][k] = ord[k];
+    }
+    int tri[20][3];
+    int ntri = 0;
+    bool seen[12][12][12] = {};
+    for (int v = 0; v < 12; v++) {
+        int n = deg[v];
+        for (int k = 0; k < n; k++) {
+            int a = v, b = nbr[v][k], c = nbr[v][(k + 1) % n];
+            int s0 = a, s1 = b, s2 = c;
+            if (s0 > s1) { int t = s0; s0 = s1; s1 = t; }
+            if (s1 > s2) { int t = s1; s1 = s2; s2 = t; }
+            if (s0 > s1) { int t = s0; s0 = s1; s1 = t; }
+            if (seen[s0][s1][s2] || ntri >= 20)
+                continue;
+            seen[s0][s1][s2] = true;
+            tri[ntri][0] = a;
+            tri[ntri][1] = b;
+            tri[ntri][2] = c;
+            ntri++;
+        }
+    }
+    BallV vert[60];
+    for (int e = 0; e < ne; e++) {
+        BallV a = ico[edges[e][0]], b = ico[edges[e][1]];
+        vert[e * 2] = BAdd(BMul(a, 2.0f / 3.0f), BMul(b, 1.0f / 3.0f));
+        vert[e * 2 + 1] = BAdd(BMul(a, 1.0f / 3.0f), BMul(b, 2.0f / 3.0f));
+    }
+    auto nearEnd = [&](int edge, int endpoint) {
+        return edges[edge][0] == endpoint ? edge * 2 : edge * 2 + 1;
+    };
+    struct Face {
+        int n;
+        bool pent;
+        BallV v[6];
+        BallV normal;
+        float plane;
+    };
+    Face faces[32];
+    int nf = 0;
+    auto pushFace = [&](BallV* pts, int n, bool pent) {
+        if (nf >= 32)
+            return;
+        Face& f = faces[nf];
+        f.n = n;
+        f.pent = pent;
+        for (int i = 0; i < n; i++)
+            f.v[i] = pts[i];
+        BallV nrm = BCross(BSub(pts[1], pts[0]), BSub(pts[2], pts[0]));
+        BallV cen = {0, 0, 0};
+        for (int i = 0; i < n; i++)
+            cen = BAdd(cen, pts[i]);
+        cen = BMul(cen, 1.0f / (float)n);
+        if (BDot(nrm, cen) < 0.0f)
+            nrm = BMul(nrm, -1.0f);
+        float nl = BLen(nrm);
+        if (nl < 1.0e-8f)
+            return;
+        f.normal = BMul(nrm, 1.0f / nl);
+        f.plane = BDot(f.normal, pts[0]);
+        nf++;
+    };
+    for (int v = 0; v < 12; v++) {
+        BallV pts[5];
+        int n = deg[v];
+        if (n != 5)
+            continue;
+        bool bad = false;
+        for (int k = 0; k < 5; k++) {
+            int e = edgeOf[v][nbr[v][k]];
+            if (e < 0) {
+                bad = true;
+                break;
+            }
+            pts[k] = vert[nearEnd(e, v)];
+        }
+        if (bad) {
+            ne = -1;
+            break;
+        }
+        pushFace(pts, 5, true);
+    }
+    for (int t = 0; t < ntri; t++) {
+        int seq[3] = {tri[t][0], tri[t][1], tri[t][2]};
+        BallV pts[6];
+        bool ok = true;
+        for (int k = 0; k < 3; k++) {
+            int fr = seq[k], to = seq[(k + 1) % 3];
+            int e = edgeOf[fr][to];
+            if (e < 0) {
+                ok = false;
+                break;
+            }
+            pts[k * 2] = vert[nearEnd(e, fr)];
+            pts[k * 2 + 1] = vert[nearEnd(e, to)];
+        }
+        if (ok)
+            pushFace(pts, 6, false);
+    }
+    if (ne != 30 || ntri != 20 || nf != 32) {
+        std::fprintf(stderr, "[ball] panel build failed edges=%d tris=%d faces=%d\n",
+                     ne, ntri, nf);
+        for (int i = 0; i < kBtw * kBth * 3; i += 3) {
+            img[i] = kHexR;
+            img[i + 1] = kHexG;
+            img[i + 2] = kHexB;
+        }
+        return;
+    }
+    int misses = 0;
+    for (int y = 0; y < kBth; y++) {
+        float v = ((float)y + 0.5f) / (float)kBth;
+        float theta = (float)M_PI * (1.0f - v);
+        float st = std::sin(theta), ct = std::cos(theta);
+        for (int x = 0; x < kBtw; x++) {
+            float u = ((float)x + 0.5f) / (float)kBtw;
+            float phiA = 2.0f * (float)M_PI * u;
+            BallV d = {st * std::cos(phiA), st * std::sin(phiA), ct};
+            int hit = -1;
+            for (int fi = 0; fi < nf; fi++) {
+                const Face& f = faces[fi];
+                float nd = BDot(f.normal, d);
+                if (nd <= 1.0e-8f)
+                    continue;
+                float t = f.plane / nd;
+                if (t <= 0.0f)
+                    continue;
+                BallV p = BMul(d, t);
+                bool inside = true;
+                for (int i = 0; i < f.n; i++) {
+                    BallV e = BSub(f.v[(i + 1) % f.n], f.v[i]);
+                    BallV c = BCross(e, BSub(p, f.v[i]));
+                    if (BDot(c, f.normal) < -1.0e-4f) {
+                        inside = false;
+                        break;
+                    }
+                }
+                if (inside) {
+                    hit = fi;
+                    break;
+                }
+            }
+            if (hit < 0) {
+                misses++;
+                float best = -1.0e30f;
+                for (int fi = 0; fi < nf; fi++) {
+                    float nd = BDot(faces[fi].normal, d);
+                    if (nd > best) {
+                        best = nd;
+                        hit = fi;
+                    }
+                }
+            }
+            unsigned char* p = img + (y * kBtw + x) * 3;
+            if (hit >= 0 && faces[hit].pent) {
+                p[0] = kPentR;
+                p[1] = kPentG;
+                p[2] = kPentB;
+            } else {
+                p[0] = kHexR;
+                p[1] = kHexG;
+                p[2] = kHexB;
             }
         }
     }
+    if (misses)
+        std::fprintf(stderr, "[ball] panel rays missed %d texels\n", misses);
 }
 
 // G4 texture chains (GRAPHICS45 §5/G4): full mip chain generated ONCE at
@@ -224,27 +475,7 @@ static unsigned BuildBallTexture() {
     static unsigned tex = 0;
     if (tex) return tex;
     static unsigned char img[kBtw * kBth * 3];
-    // Base: vertical gradient white (#f4f7fb -> #c3ccda), brightest mid-lats.
-    // Clamp every channel: values may exceed 1.0 and would wrap in the cast.
-    for (int y = 0; y < kBth; y++) {
-        float v = (float)y / kBth;
-        float k = 0.10f * (1 - std::abs(2 * v - 1)); // 0 at poles, 0.1 mid
-        for (int x = 0; x < kBtw; x++) {
-            unsigned char* p = img + (y * kBtw + x) * 3;
-            p[0] = (unsigned char)(std::fmin(1.0f, 0.86f + k) * 255.0f);
-            p[1] = (unsigned char)(std::fmin(1.0f, 0.89f + k) * 255.0f);
-            p[2] = (unsigned char)(std::fmin(1.0f, 0.93f + k) * 255.0f);
-        }
-    }
-    // Hex panel seams: staggered hex rows (RL ball ~6 panels around).
-    float R = 52.0f;
-    for (int row = 0; row < 4; row++) {
-        float cy = (row + 0.5f) * kBth / 4.0f;
-        for (int col = 0; col < 8; col++) {
-            float cx = (col + (row & 1 ? 0.5f : 0.0f)) * kBtw / 8.0f;
-            HexSeam(img, cx, cy, R, 138, 148, 165, 2.0f);
-        }
-    }
+    PaintBallPanels(img);
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, kBtw, kBth, 0, GL_RGB,
@@ -266,14 +497,44 @@ static unsigned BuildBallTexture() {
 }
 
 void DrawBall(Renderer& r, const Snapshot& s) {
-    // RL-style ball: white hexagon panels + gray seams. Visual radius 92.75
-    // (collision 91.25). Textured sphere, ~1.1k tris.
+    // Truncated icosahedron print. Visual radius 92.75 (collision 91.25).
+    // Textured sphere, ~1.1k tris. Panels stay in object space.
     unsigned tex = BuildBallTexture();
     const int segs = 16;
     const float R = 92.75f;
     static bool s_noTex = std::getenv("RL_NOTEX") != nullptr; // debug
     glPushMatrix();
     glTranslatef(s.ballPos[0], s.ballPos[1], s.ballPos[2]);
+    // Physics spin, integrated in sim time. The panel UVs stay on the mesh
+    // so a later pattern change keeps this orientation.
+    if (!BallRotIsIdentity(s.ballRot)) {
+        float orient[16];
+        BallOrientationMatrix(s.ballRot, orient);
+        glMultMatrixf(orient);
+    }
+    // Gloss under the existing key and fill. Local to this draw: the arena
+    // keeps the zero specular from Renderer::Init. Shininess is UNVERIFIED
+    // (no published fixed-function exponent). Separate specular is added
+    // after the texture multiply, so the lobe still reads on a black pentagon.
+    // Key/fill specular colours match those lights' diffuse in Renderer::Init.
+    GLfloat prevSpec[4] = {0, 0, 0, 1};
+    GLfloat prevShine = 0.0f;
+    GLint prevCtl = GL_SINGLE_COLOR;
+    GLfloat prevKey[4] = {1, 1, 1, 1};
+    GLfloat prevFill[4] = {0, 0, 0, 1};
+    glGetMaterialfv(GL_FRONT, GL_SPECULAR, prevSpec);
+    glGetMaterialfv(GL_FRONT, GL_SHININESS, &prevShine);
+    glGetIntegerv(GL_LIGHT_MODEL_COLOR_CONTROL, &prevCtl);
+    glGetLightfv(GL_LIGHT0, GL_SPECULAR, prevKey);
+    glGetLightfv(GL_LIGHT1, GL_SPECULAR, prevFill);
+    const GLfloat ballSpec[] = {0.55f, 0.58f, 0.65f, 1.0f};
+    const GLfloat keySpec[] = {0.72f, 0.74f, 0.80f, 1.0f};
+    const GLfloat fillSpec[] = {0.30f, 0.32f, 0.36f, 1.0f};
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, ballSpec);
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32.0f);
+    glLightModeli(GL_LIGHT_MODEL_COLOR_CONTROL, GL_SEPARATE_SPECULAR_COLOR);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, keySpec);
+    glLightfv(GL_LIGHT1, GL_SPECULAR, fillSpec);
     if (!s_noTex) {
         glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -295,6 +556,11 @@ void DrawBall(Renderer& r, const Snapshot& s) {
         glEnd();
     }
     glDisable(GL_TEXTURE_2D);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, prevSpec);
+    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, prevShine);
+    glLightModeli(GL_LIGHT_MODEL_COLOR_CONTROL, prevCtl);
+    glLightfv(GL_LIGHT0, GL_SPECULAR, prevKey);
+    glLightfv(GL_LIGHT1, GL_SPECULAR, prevFill);
     (void)s_noTex;
     glPopMatrix();
 }

@@ -1,10 +1,12 @@
-// FX.h — A4 FX: boost pads, boost flame, trails, supersonic wheel embers,
-// goal shockwave ring, demo/pickup feedback, camera-shake overlay.
+// FX.h — A4 FX: boost pads, boost flame, supersonic streak, black sparkles
+// (TUNED owner stand-in), goal shockwave ring, demo/pickup feedback,
+// camera-shake overlay. Airborne spin circles are not drawn.
 // All procedural (no textures/audio assets). Ownership: A4.
 //
 // FX advances on SIM time (the coordinator feeds it tick-delta seconds), so
 // every timer, pulse and burst is deterministic for offscreen capture.
 #pragma once
+#include "fx/ContactSparks.h"
 #include "render/Renderer.h"
 
 namespace rl {
@@ -34,18 +36,31 @@ public:
     // Apply with the current ball snapshot.
     void DrawBallIndicator(Renderer& r, const Snapshot& s);
 
-    // Boost flame behind car, scaled by boost amount + boosting flag.
+    // Ball path streak. Own samples (ballTrail_), not trail_ and not the
+    // ground marker. Last-touch team colour. No draw before a touch, and
+    // none while the ball is under kBallTrailSpeedFloor.
+    void DrawBallTrail(Renderer& r, const Snapshot& s);
+
+    // Short bright exhaust behind the car, full 3D (pitch and roll), only
+    // while boost is firing. Length follows remaining boost. Not a smoke cloud.
     void DrawBoostFlame(Renderer& r, const Snapshot& s);
 
-    // Powerslide/drift tire smoke + stall/flip-cancel air streaks. Call after
-    // camera Apply with the current snapshot. Deterministic (sim time).
+    // Powerslide/drift tire smoke. The orange grind sparks in here are contact
+    // sparks (workstream G), separate from the supersonic black sparkles.
+    // Call after camera Apply. Deterministic (sim time).
     void DrawDrift(Renderer& r, const Snapshot& s);
+    // Formerly airborne spin arcs and a stall ring. Now a no-op: a flip is
+    // readable from the car's motion, and the circles are not replaced.
     void DrawAir(Renderer& r, const Snapshot& s);
 
-    // Supersonic feedback: fading trail ribbon + wheel embers when
-    // carSpeed >= threshold (default 2200 uu/s). Also drives the goal
-    // shockwave ring and demo flash.
+    // Supersonic streak + black sparkles while Snapshot.supersonic is set
+    // (RocketSim's flag, not a speed threshold). Also the goal shockwave
+    // ring and demo flash, which are not part of that streak.
     void DrawTrail(Renderer& r, const Snapshot& s);
+
+    // Contact sparks (workstream G). Own draw: not the boost flame, not
+    // DrawTrail's streak or black sparkles, not the ball path streak.
+    void DrawContactSparks(Renderer& r, const ContactSparkFrame& c);
 
     // Goal explosion + slow-mo beat. Trigger via Snapshot.goalScored.
     // Returns slow-mo scale (1.0 normal, ~0.25 during beat) for sim hookup.
@@ -70,6 +85,13 @@ public:
 
     void SetSupersonicThreshold(float v) { supersonic_ = v; }
 
+    // uu/s. UNVERIFIED — issue I2 stays open. No game function names this
+    // floor, and it is not the car's 2200 uu/s supersonic line. Round split
+    // of two contacts measured in this sim (tests/test_last_touch.cpp,
+    // seed 1, fallback arena): soft 386.6 (throttle 0.25, no boost, y=-220)
+    // and hard 2797.6 (throttle 1 + boost, y=-2000). 1500 sits in that gap.
+    static constexpr float kBallTrailSpeedFloor = 1500.0f;
+
 private:
     float time_ = 0;
     float burst_ = 0;      // pickup burst timer
@@ -85,6 +107,16 @@ private:
     static const int kTrail = 24;
     float trail_[kTrail][3];
     int trailN_ = 0;
+    // Ball streak samples. Not the car ribbon above.
+    static const int kBallTrail = 6;
+    float ballTrail_[kBallTrail][3] = {};
+    int ballTrailN_ = 0;
+    uint32_t ballTrailTick_ = 0;
+    bool ballTrailHaveTick_ = false;
+    float ballTrailFade_ = 0.0f;
+    // Contact-spark burst (workstream G). Sim-time deadline + last hit point.
+    float ballSparkUntil_ = 0;
+    float ballSparkX_ = 0, ballSparkY_ = 0, ballSparkZ_ = 0;
 };
 
 } // namespace rl

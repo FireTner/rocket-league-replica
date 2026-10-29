@@ -53,7 +53,8 @@ int main() {
         s.carPos[0] = std::cos(t * 0.3f) * 1200;
         s.carPos[1] = std::sin(t * 0.3f) * 1200;
         s.carPos[2] = 40;
-        s.carSpeed = 2300; // force supersonic trail visible
+        s.carSpeed = 2300; // force the stand-in speed
+        s.supersonic = true; // stub has no Sim::IsSupersonic; the trail follows this flag
         s.ballPos[0] = std::cos(t * 0.5f + 1.0f) * 500;
         s.ballPos[1] = std::sin(t * 0.5f + 1.0f) * 500;
         s.ballPos[2] = 100 + 60 * std::sin(t * 1.3f);

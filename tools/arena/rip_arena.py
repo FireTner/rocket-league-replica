@@ -295,10 +295,14 @@ class MaterialResolver(object):
     closed set.
     """
 
-    def __init__(self, mpkg, pkg, sibling):
+    def __init__(self, mpkg, pkg, sibling, shader_bindings=None):
         self.mpkg = mpkg
         self.pkg = pkg
         self.sibling = sibling
+        # Optional ShaderCache table from tools/arena/rlshadercache.py
+        # (material name -> {colour, normal, ...}).  Used only when the
+        # expression-graph / compiled-array path leaves a material unresolved.
+        self.shader_bindings = shader_bindings or {}
         self.by_name = {}
         self.by_name_all = {}
         for e in pkg.exports:
@@ -312,6 +316,10 @@ class MaterialResolver(object):
             if cls in rlmat.MATERIAL_CLASSES:
                 self.imports_by_name.setdefault(pkg.import_name(i), i)
         self._cache = {}
+        self._tex_by_name = {}
+        for e in pkg.exports:
+            if pkg.export_class_name(e) in ('Texture2D', 'LightMapTexture2D'):
+                self._tex_by_name.setdefault(pkg.export_name(e), e)
 
     # -- one resolution -----------------------------------------------------
     def _export_at(self, index, name):
@@ -362,6 +370,8 @@ class MaterialResolver(object):
             out = self._from_resolution(name, self.mpkg.export_class_name(e),
                                         res, res.texture_pkg or self.mpkg,
                                         'package', e.idx)
+            if out['status'] != 'RESOLVED':
+                out = self._try_shader_cache(name, out, e)
         else:
             package = rlpkg.import_package_name(self.pkg, index)
             found = None
@@ -384,6 +394,58 @@ class MaterialResolver(object):
             out['package'] = package
             out['file'] = os.path.basename(found['file'])
         self._cache[key] = out
+        return out
+
+    def _try_shader_cache(self, name, out, material_export):
+        """Fill an unresolved material from the ShaderCache binding table."""
+        bind = self.shader_bindings.get(name)
+        if not bind:
+            return out
+        colour = bind.get('colour')
+        if not colour:
+            return out
+        tex_ex = self._tex_by_name.get(colour)
+        tex_pkg = self.mpkg
+        if tex_ex is None and self.sibling is not None:
+            found = None
+            # Exact object name only — try the linked texture package groups
+            # this stadium already declares (no stem guess).
+            for outer in ('Textures', 'Stadium_Textures', 'Mat',
+                          'Grass_Textures', 'City_Textures', colour):
+                try:
+                    found = self.sibling.resolve_object(
+                        outer, colour, 'Texture2D')
+                except Exception:
+                    found = None
+                if found:
+                    break
+            if found:
+                tex_pkg = found['pkg']
+                tex_ex = found['export']
+        if tex_ex is None:
+            return out
+        out = dict(out)
+        out['status'] = 'RESOLVED'
+        out['rule'] = 'shader-cache'
+        out['parameter'] = bind.get('diffuse_param')
+        out['texture'] = colour
+        out['texture_package'] = tex_pkg.export_outer_name(tex_ex)
+        out['texture_file'] = os.path.basename(tex_pkg.path)
+        out['texture_class'] = tex_pkg.export_class_name(tex_ex)
+        out['texture_export'] = tex_ex.idx
+        out['file'] = os.path.basename(tex_pkg.path)
+        # Minimal stand-in so the packer can call decode_texture via _res.
+        class _Res(object):
+            pass
+        r = _Res()
+        r.reason = None
+        r.rule = 'shader-cache'
+        r.parameter = bind.get('diffuse_param')
+        r.texture = colour
+        r.texture_export = tex_ex
+        r.texture_pkg = tex_pkg
+        out['_res'] = r
+        out['_tex_pkg'] = tex_pkg
         return out
 
     def _from_resolution(self, name, cls, res, tex_pkg, source,
@@ -460,7 +522,8 @@ def _texture_payload(tex_pkg, tex_export):
 
 # ------------------------------------------------------------------ the build
 def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
-               want_textures=True, store='compressed', quiet=False):
+               want_textures=True, store='compressed', quiet=False,
+               shader_bindings_path=None):
     """Build the pack for one stadium package.  Returns the manifest dict."""
     pack_path = os.path.abspath(os.path.expanduser(pack_path))
     if not os.path.exists(pack_path):
@@ -476,6 +539,15 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
         index = _load_index(install_dir, index_path, quiet=quiet)
         sibling = rlmat.SiblingTextures(index)
 
+    shader_bindings = {}
+    if shader_bindings_path and os.path.isfile(shader_bindings_path):
+        with open(shader_bindings_path) as fh:
+            sb = json.load(fh)
+        shader_bindings = sb.get('materials') or {}
+        if not quiet:
+            print('shader-cache : %d material bindings (%s)'
+                  % (len(shader_bindings), shader_bindings_path))
+
     # ---- meshes ------------------------------------------------------------
     in_pkg_meshes = _collect_in_package_meshes(pkg)
     ext_meshes = _collect_external_meshes(pkg, index) if index is not None else []
@@ -490,7 +562,8 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
                      for name, geo, _idx, _p, _f, _path in ext_meshes}
 
     # ---- material resolution ----------------------------------------------
-    resolver = MaterialResolver(mpkg, pkg, sibling)
+    resolver = MaterialResolver(mpkg, pkg, sibling,
+                                shader_bindings=shader_bindings)
 
     def ref_of(index_value):
         ref = rlplace.resolve_object(pkg, index_value)
@@ -624,11 +697,15 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
                                              % (len(rgba), entry['rgba8_bytes']))
                 else:
                     entry['decoded'] = True
-            if store == 'rgba':
+            # The C++ reader only CPU-decodes PF_DXT1 / PF_DXT5 from
+            # `storage=compressed`.  Uncompressed formats (PF_A8R8G8B8, …)
+            # and anything the rip already expanded must be stored as rgba8.
+            force_rgba = store == 'rgba' or entry['format'] not in (
+                'PF_DXT1', 'PF_DXT5')
+            if force_rgba:
                 if not entry['decoded']:
-                    raise RipError('cannot decode %s: %s'
-                                   % (entry['name'],
-                                      entry.get('decode_error', 'unknown')))
+                    # Skip textures the packer cannot hand to the loader.
+                    continue
                 entry['storage'] = 'rgba8'
                 entry['_payload'] = rgba
             # the hash is of the bytes that are actually STORED
@@ -1185,6 +1262,8 @@ def main(argv=None):
                     help='texture storage: the original compressed bytes '
                          '(default) or the expanded RGBA8')
     ap.add_argument('--quiet', action='store_true', help='less chatter')
+    ap.add_argument('--bindings', metavar='JSON',
+                    help='ShaderCache binding table from rlshadercache.py')
     args = ap.parse_args(argv)
 
     try:
@@ -1196,7 +1275,7 @@ def main(argv=None):
         manifest, blob_bytes = build_pack(
             args.pack, install_dir=args.install, index_path=args.index,
             want_textures=not args.no_textures, store=args.store,
-            quiet=args.quiet)
+            quiet=args.quiet, shader_bindings_path=args.bindings)
         bin_path, json_path = write_pack(args.out, manifest, blob_bytes)
         if not args.quiet:
             counts = manifest['counts']

@@ -2967,3 +2967,136 @@ git status --short (your files only):
 This section is the `## Round A8 (2026-10-20) — close-out` heading appended to
 `docs/ARENA_RIP_LOG.md` with one atomic `cat >> ... <<'EOF'` append (never a
 read-modify-write). The file was 2 374 lines before the append.
+
+---
+
+## Round H-bind (2026-10-29) — shader-cache diffuse count
+
+Measurement only. No stadium shader, no new stand-in colour, no change to the
+default picture, no mesh decimation. The expression-graph census (248/640)
+was not re-walked, and material names were not guessed.
+
+### UModel
+
+It was not installed. Official UE Viewer build **1590** (compiled 7 Jul 2023)
+was run locally, outside the repo, as `umodel_64.exe` under wine, with
+`-game=rocketleague` and without `-nolightmap`.
+
+| file | result |
+|---|---|
+| `Stadium_Day_P.upk` | loaded. Ver **868/34**, engine 10897, 2007 names, 3267 exports, 347 imports |
+| `RefShaderCache-PC-D3D-SM5.upk` | loaded. Ver **868/34**, 10407 names, 40 exports, 2 imports, class `ShaderCache` × 40. UModel then: `Unknown class "ShaderCache"` / `has no supported objects` |
+| `GuidCache.upk` | failed. `Memory: bad allocation size -1365032816` |
+| `GlobalShaderCache-PC-D3D-SM5.bin` | failed. not a package (`failed to load provided packages`) |
+
+That build's autodetection only marks Rocket League for licensee 18–22. With
+`-game=rocketleague` forced, it still read licensee **34**. The older "UModel
+breaks past licensee ~22" note is not true for opening these packages. It is
+true that UModel has no `ShaderCache` reader, so the cache body was not read.
+UModel also reported `unknown compression flags 20, detected FD` on the shader
+cache and still finished the header.
+
+`Stairs_Mat` is the layout check. UModel's `ReferencedTextures` are
+`Stairs_N` and `Stairs_Pack`. The same two object refs are in the material
+tail, after a fixed header and a 16-byte id. The tail does not start with a
+texture list. The list is the field after that id.
+
+### Count
+
+Denominator: **606** placement sections whose closed status is not
+`external:CustomColors` (640 − 34).
+
+A texture is a colour candidate only from fields on the texture object:
+class `Texture2D`, `CompressionSettings` not a normal-map mode and not
+`TC_Grayscale`, package not `CustomColors`. Imported textures were read from
+the copy in `Startup.upk` (same name and outer). No stem match.
+
+A section is counted when its closed status is `RESOLVED`, or when that
+array holds exactly one colour candidate.
+
+| | sections |
+|---|---|
+| graph only (compiled array does not isolate one colour texture) | 231 |
+| compiled array isolates one colour texture, graph had not | 120 |
+| both | 17 |
+| **identified diffuse** | **368 / 606 (60.73 %)** |
+
+90 % of 606 is **546**. **368 is under the bar.**
+
+The bytes after the texture array name static switches (`ScriptedTexture`,
+`FakeAO`, `SingleAd` on one checked material). They do not name the diffuse
+sampler. Sections with more than one colour texture stay unresolved. That is
+188 untextured sections, plus the 231 resolved sections whose array does not
+isolate one colour texture.
+
+### Missing structure
+
+The **`ShaderCache` export body** in `RefShaderCache-PC-D3D-SM5.upk`: 40
+objects, the smallest about 3.2 MB. UModel lists them and stops (`Unknown
+class "ShaderCache"`). That body is the compiled map from sampler to texture
+index. Without it, a material that references several colour textures has no
+identified diffuse.
+
+Draw stays **BLOCKED**. Machine A was not measured. No 60 FPS claim. No soak.
+
+## Round H-shader (2026-10-29) — ShaderCache reader + Stairs proof
+
+Owner override of the 90 % stop: finish a proper arena render with named
+diffuse where the cache/graph resolves it, and vertex colour × lightmap where
+there is no colour texture. No new stand-in tints. No stem guess.
+
+### ShaderCache reader (`tools/arena/rlshadercache.py`)
+
+`RefShaderCache-PC-D3D-SM5.upk` is Oodle-compressed (compression flags `0x20`,
+detected Mermaid `8c 0a`). The public AES key decrypts ordinary stadium
+packages; this cache's body needs `OodleLZ_Decompress` (local
+`liboo2corelinux64.so.9`, not vendored). Inflated image ≈ 2.58 GB under
+`/tmp/arena_h/sc_image.bin` (gitignored).
+
+Each `Material`'s resource GUID is located in the cache. Ahead of the GUID,
+`FMaterialUniformExpressionTextureParameter` clusters name the Diffuse /
+Normal samplers and their indices into `ReferencedTextures`.
+
+### Stairs_Mat proof
+
+| sampler | index | texture |
+|---|---|---|
+| Normal | 0 | `Stairs_N` |
+| Diffuse | 1 | `Stairs_Pack` |
+
+**PASS** — colour = `Stairs_Pack`, normal = `Stairs_N` (matches UModel
+`ReferencedTextures` order).
+
+### Empty first mip
+
+11 textures store mip0 as `0x00000021`. `rlmat.texture_info` now walks the
+mip chain and takes the first file-cache / inline mip with payload (Stairs_Pack
+mip1 from `Textures5.tfc` at 128×512). Property `SizeX`/`SizeY` stay for mip0;
+later mips use the record's size.
+
+### Binding recount (placement, non-CustomColors)
+
+Denominator **606**. After ShaderCache + single-colour array + graph:
+
+| | sections |
+|---|---|
+| graph / prior RESOLVED | 248 |
+| shader-cache colour | (rolled into pack as RESOLVED) |
+| single-colour array | 61 |
+| **identified** | **375 / 606 (61.88 %)** |
+| multi-colour unresolved | 78 |
+| no colour texture | 4 |
+| cache miss / no material | 149 |
+
+90 % of 606 is still 546. Under the bar; draw proceeds under the owner
+override. Binding table: `/tmp/arena_h/bindings.json` and
+`arena_assets/stadium_day_bindings.json` (gitignored).
+
+### Pack re-rip
+
+`rip_arena.py --bindings` fills unresolved materials from the table. Pack
+now carries **19** textures (was 13), including `Stairs_Pack` and `Statue_D`.
+Placement coverage **258/640** RESOLVED slots, **258/258 decode**. Stairs_Mat
+sections bind `Stairs_Pack`. Remaining miss is lightmap / vertex-colour path
+and multi-colour materials the cache cluster did not isolate cleanly.
+

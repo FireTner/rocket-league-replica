@@ -80,8 +80,22 @@ struct Snapshot {
     float carUp[3] = {0, 0, 1};
     float carVel[3] = {0, 0, 0};   // uu/s world velocity (wheel spin + steer)
     float ballPos[3] = {0, 0, 100};
+    // Ball spin. angVel is physics rad/s (world). ballRot is that rate
+    // integrated in sim time (column-major 3x3, local +X/+Y/+Z in world).
+    // Identity until the ball has spun. Filled from Sim::GetBallSpin.
+    // The panel texture is a separate draw and is not this matrix.
+    float ballAngVel[3] = {0, 0, 0};
+    float ballRot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    float ballSpeed = 0.0f;        // uu/s, length of GetBall velocity
+    bool ballTouched = false;      // Sim::GetLastTouch valid
+    int ballTeam = 0;              // Sim::kBlue / kOrange when ballTouched
     float boost = 50.0f;           // 0..100
     bool boosting = false;
+    // RocketSim's supersonic flag, filled from the existing read-only
+    // Sim::IsSupersonic. On at 2200 uu/s, held to 2100 for up to 1 s
+    // (RLConst.h SUPERSONIC_START_SPEED / SUPERSONIC_MAINTAIN_MIN_SPEED /
+    // SUPERSONIC_MAINTAIN_MAX_TIME). Not a second speed check.
+    bool supersonic = false;
     bool handbrake = false;  // powerslide/drift smoke gate (from input)
     bool airborne = false;   // no ground contact (z + vz heuristic, render-only)
     float angSpeed = 0.0f;   // rad/s of fwd/up frame change (flip/stall streaks)
@@ -347,7 +361,8 @@ private:
         uint64_t tris = 0;
         int texId = -1;      // -1 = a tinted fallback material (see tintRgb)
         float tintRgb[3] = {0.55f, 0.55f, 0.55f};
-        bool unlit = false;  // emissive trim-light sections ignore scene lighting
+        bool unlit = false;  // emissive / fake-lit sections ignore scene lighting
+        bool decal = false;  // field markings: polygon offset so they sit on the turf
         bool transparent = false;  // force-field/glass: blended pass, no depth write
         std::string tag;   // first (mesh, material) baked here (diagnostics)
         int cell[3] = {0, 0, 0};

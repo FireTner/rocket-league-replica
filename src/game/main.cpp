@@ -33,6 +33,7 @@
 #include "render/Renderer.h"
 #include "settings/Settings.h"
 #include "sim/Sim.h"
+#include "game/FreeplayBall.h"
 
 namespace {
 
@@ -49,6 +50,33 @@ rlbot::StubMode ParseBot(const char* s) {
 
 uint64_t NowMs() {
 	return (uint64_t)SDL_GetTicks();
+}
+
+// Keys 1–5. Both the keydown path and the rebindable poll path call this
+// so they cannot drift. SetBall clears leftover spin.
+void RunBallDrill(Sim* sim, int player, int drill) {
+	Sim::BodySample cc;
+	Sim::BodySample ball;
+	if (!sim->GetCar(player, &cc) || !sim->GetBall(&ball))
+		return;
+	float fx = 0.f, fy = 1.f, fz = 0.f;
+	float ux = 0.f, uy = 0.f, uz = 1.f;
+	sim->GetCarForward(player, &fx, &fy, &fz);
+	sim->GetCarUp(player, &ux, &uy, &uz);
+	rl::FreeplayCar car;
+	car.body = {cc.x, cc.y, cc.z, cc.vx, cc.vy, cc.vz};
+	car.fx = fx;
+	car.fy = fy;
+	car.fz = fz;
+	car.ux = ux;
+	car.uy = uy;
+	car.uz = uz;
+	rl::FreeplaySample b{ball.x, ball.y, ball.z, ball.vx, ball.vy, ball.vz};
+	rl::FreeplayCommand cmd;
+	if (!rl::ComputeFreeplayBall(drill, car, b, Physics::kDefaultPreset, &cmd))
+		return;
+	sim->SetBall(cmd.x, cmd.y, cmd.z, cmd.vx, cmd.vy, cmd.vz);
+	std::fprintf(stderr, "[game] drill %d ball spawn\n", drill + 1);
 }
 
 } // namespace
@@ -361,7 +389,7 @@ int main(int argc, char** argv) {
 		const rl::Renderer::ArenaPackStats& as = renderer.ArenaPackInfo();
 		std::fprintf(stderr,
 			"[arena] draw path: buckets=%u visible(last)=%u culled(last)=%u "
-			"textured=%u fallback=%u tris=%llu fallback_material=neutral-grey(0.55,0.55,0.55)\n",
+			"textured=%u fallback=%u tris=%llu\n",
 			as.buckets, as.visible, as.culled, as.texturedBuckets,
 			as.untexturedBuckets, (unsigned long long)as.tris);
 	}
@@ -547,20 +575,7 @@ int main(int argc, char** argv) {
 				} else if (k == SDLK_r) {
 					sim->ResetCarToSpawn(player);
 				} else if (k >= SDLK_1 && k <= SDLK_5) {
-					Sim::BodySample cc;
-					sim->GetCar(player, &cc);
-					float fx0 = 0, fy0 = 1;
-					float fz0 = 0;
-					sim->GetCarForward(player, &fx0, &fy0, &fz0);
-					float fl = sqrtf(fx0*fx0 + fy0*fy0);
-					if (fl > 1e-6f) { fx0 /= fl; fy0 /= fl; }
-					int drill = (int)(k - SDLK_1);
-					if (drill == 0) sim->SetBall(cc.x + fx0*400, cc.y + fy0*400, 110, 0, 0, 0);
-					else if (drill == 1) sim->SetBall(cc.x, cc.y, cc.z + 250, cc.vx, cc.vy, cc.vz);
-					else if (drill == 2) sim->SetBall(cc.x + fx0*1800, cc.y + fy0*1800, 300, -fx0*1200, -fy0*1200, 200);
-					else if (drill == 3) sim->SetBall(cc.x, cc.y, 110, 0, 0, 1400);
-					else sim->SetBall(cc.x * 0.3f, (cc.y > 0 ? 3500 : -3500), 500, 0, (cc.y > 0 ? 1200 : -1200), 300);
-					std::fprintf(stderr, "[game] drill %d ball spawn\n", drill + 1);
+					RunBallDrill(sim, player, (int)(k - SDLK_1));
 				}
 			}
 		}
@@ -630,20 +645,7 @@ int main(int argc, char** argv) {
 				unlimitedBoost = !unlimitedBoost;
 			if (ev.kickoffIndex >= 0) {
 				// Ball drills 1..5 (rebindable via kickoff_0..4): ball-only.
-				Sim::BodySample cc;
-				sim->GetCar(player, &cc);
-				float fx0 = 0, fy0 = 1;
-				float fz0 = 0;
-				sim->GetCarForward(player, &fx0, &fy0, &fz0);
-				float fl = sqrtf(fx0*fx0 + fy0*fy0);
-				if (fl > 1e-6f) { fx0 /= fl; fy0 /= fl; }
-				int drill = ev.kickoffIndex;
-				if (drill == 0) sim->SetBall(cc.x + fx0*400, cc.y + fy0*400, 110, 0, 0, 0);
-				else if (drill == 1) sim->SetBall(cc.x, cc.y, cc.z + 250, cc.vx, cc.vy, cc.vz);
-				else if (drill == 2) sim->SetBall(cc.x + fx0*1800, cc.y + fy0*1800, 300, -fx0*1200, -fy0*1200, 200);
-				else if (drill == 3) sim->SetBall(cc.x, cc.y, 110, 0, 0, 1400);
-				else sim->SetBall(cc.x * 0.3f, (cc.y > 0 ? 3500 : -3500), 500, 0, (cc.y > 0 ? 1200 : -1200), 300);
-				std::fprintf(stderr, "[game] drill %d ball spawn\n", drill + 1);
+				RunBallDrill(sim, player, ev.kickoffIndex);
 			}
 			{
 				// J held = look behind (rear view). Fixed key, like F freecam.
@@ -793,8 +795,27 @@ int main(int argc, char** argv) {
 		snap.ballPos[0] = bl.x;
 		snap.ballPos[1] = bl.y;
 		snap.ballPos[2] = bl.z;
+		snap.ballSpeed = sqrtf(bl.vx * bl.vx + bl.vy * bl.vy + bl.vz * bl.vz);
+		{
+			Sim::LastTouch lt;
+			if (sim->GetLastTouch(&lt)) {
+				snap.ballTouched = true;
+				snap.ballTeam = lt.team;
+			}
+		}
+		{
+			Sim::BallSpin spin;
+			if (sim->GetBallSpin(&spin)) {
+				snap.ballAngVel[0] = spin.angVel[0];
+				snap.ballAngVel[1] = spin.angVel[1];
+				snap.ballAngVel[2] = spin.angVel[2];
+				for (int i = 0; i < 9; i++)
+					snap.ballRot[i] = spin.rot[i];
+			}
+		}
 		snap.boost = sim->GetBoost(player);
 		snap.boosting = sim->IsBoosting(player);
+		snap.supersonic = sim->IsSupersonic(player);
 		snap.handbrake = ctl.handbrake;
 		// Render-only airborne heuristic: clearly off the ground or moving
 		// vertically fast. No sim coupling (no new Sim API).
@@ -817,6 +838,13 @@ int main(int argc, char** argv) {
 		snap.ballCam = camera.BallCam();
 		snap.demoed = sim->IsDemoed(player); // FX respawn flash
 		snap.tick = (uint32_t)sim->tick();
+		rl::ContactSparkFrame contactSparks;
+		{
+			Sim::CarScrape scrape;
+			Sim::BallTouch touch;
+			if (sim->GetCarScrape(player, &scrape) && sim->GetBallTouch(player, &touch))
+				contactSparks = rl::ClassifyContact(scrape, touch, nullptr);
+		}
 
 		Sim::BodySample os;
 		sim->GetCar(botIdx, &os);
@@ -834,6 +862,7 @@ int main(int argc, char** argv) {
 		osnap.carVel[0] = os.vx; osnap.carVel[1] = os.vy; osnap.carVel[2] = os.vz;
 		osnap.boost = sim->GetBoost(botIdx);
 		osnap.demoed = sim->IsDemoed(botIdx);
+		osnap.supersonic = sim->IsSupersonic(botIdx);
 
 		float dtf = float(dt > 0.1 ? 0.1 : dt);
 		// Live settings -> camera (menu edits apply instantly, no restart).
@@ -989,7 +1018,9 @@ int main(int argc, char** argv) {
 				p.cooldown = ps.cooldown;
 				pads.push_back(p);
 			}
-			if (!pads.empty())
+			// The ripped stadium already has the real pad meshes. The procedural
+			// discs would sit on top of them as a second set of pads.
+			if (!pads.empty() && !renderer.HasArenaPack())
 				fx.DrawPads(renderer, pads.data(), int(pads.size()));
 		}
 		// Cars: Fennec GLB body when available (CC-BY-4.0), box fallback else.
@@ -1038,10 +1069,13 @@ int main(int argc, char** argv) {
 			renderer.DrawText2D(28, 30, "DEBUG COLLIDERS: car hitbox / ball r91.25 / pads / shell",
 				1, 1.0f, 0.9f, 0.3f);
 		fx.DrawBallIndicator(renderer, snap);
+		// Path streak only. Does not use the indicator or DrawTrail (car mark).
+		fx.DrawBallTrail(renderer, snap);
 		fx.DrawBoostFlame(renderer, snap);
 		fx.DrawDrift(renderer, snap);
 		fx.DrawAir(renderer, snap);
 		fx.DrawTrail(renderer, snap);
+		fx.DrawContactSparks(renderer, contactSparks);
 		if (menu.IsOpen()) {
 			// RL-style SETTINGS panel: full-screen dim, centered card with a
 			// title bar, section sub-bars, a cyan selection bar, right-

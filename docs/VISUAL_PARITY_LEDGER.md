@@ -59,11 +59,11 @@ pass)** with their new class and the gate that holds them.
 |---|---|---|---|---|
 | Visual radius | 92.75 | MEASURED | `src/models/Models.cpp DrawBall` R | VG3 (ball close-up) |
 | Indicator basis radius | 91.25 | MEASURED | `src/physics/Tuning.h:31 kBallRadiusSoccar`; also the radius the indicator recipe is written against | VG4 |
-| Hex-panel texture | 512x256, in-code | TUNED | procedural; panel count/shade chosen to read like RL's ball | VG3 (ball scene, 134 colours) |
+| Ball panels | 512×256 equirect, 12 pentagons + 20 hexagons | UNVERIFIED swatch | `PaintBallPanels`: icosahedron truncated at 1/3. Hex (242,244,247), pentagon (18,18,20). Ball-local specular (0.55,0.58,0.65), shininess 32 | close-up still; VG1 two-run match (new kickoff hash) |
 | Ground indicator: outer ring | 0.98r … 1.25r | MEASURED (recipe ported) | `src/fx/FX.cpp DrawBallIndicator`; RocketLeague2 BallIndicatorMesh recipe | VG4: measured 91/71 px vs predicted 91.0/71.3, ratio 0.780 vs 0.784 |
 | Ground indicator: inner disc | 0.62r | MEASURED (recipe ported) | as above | VG4: measured 45 px vs 45.1, ratio 0.495 vs 0.496 |
 | Indicator fade/growth | alpha 0.9→0.12 / 0.32→0.05, +18% at 1950 uu | MEASURED (recipe ported) | as above | VG4: outer 91→93 px (z600→z900) matches the +18%-at-1950 curve within 0.4% |
-| Ball trail | — | n/a | no ball trail exists; not claimed | n/a |
+| Ball trail | floor 1500 uu/s; team paint RGB; 6 samples, tail ≤280 uu, 12 uu half-width, 0.12 s fade; 20 tris / 1 draw | UNVERIFIED floor | I2 open. Not the car 2200 line. Soft contact in this sim 386.6 uu/s, boosted hit 2797.6 (`tests/test_last_touch.cpp`). Colour is the existing car team paint. Separate from the ground marker and the car supersonic streak | `tests/test_ball_trail.cpp` pixels; VG4 radii unchanged |
 
 ## Pads
 
@@ -114,11 +114,11 @@ pass)** with their new class and the gate that holds them.
 |---|---|---|---|---|
 | Goal shockwave ring | radius 140 + 2600·k, k = elapsed/2 s; alpha 0.85·(1−k) | TUNED | no permitted source; shape chosen to read like the RL goal blast | VG8: 38 px @t70 → 104 px @t110 vs recipe 37.7 → 103.4 (measured while the ring is still opaque; it fades to 0.15 by t150 by design) |
 | Slow-mo beat | 0.25x for 1 s, ease back over 2 s | TUNED | feel constant (`FX::GoalBeat`) | not gated: not a drawable, exposed for the sim hook |
-| Supersonic trail ribbon | 24-sample ribbon, alpha 0.35→0 | TUNED | proportions chosen by eye | not pixel-gated: needs a moving-car capture; drawn only when speed ≥ 2200 (code path exercised by `render_stub`) |
-| Supersonic wheel embers | 10 deterministic sparks | TUNED | rl-opus-style embers, numbers ported as a recipe | as above |
+| Supersonic streak | crossed quads along the path, fade over 320 uu, white-cyan | TUNED | UNVERIFIED length (no live RL capture). Follows `Snapshot.supersonic` (RLConst start 2200, hold to 2100 for 1 s), not `speed >= 2200` | not pixel-gated: moving-car capture |
+| Supersonic black sparkles | 8 plus-sign quads, own `GL_QUADS` draw | TUNED | owner stand-in (issue I4). Not a claim that RL sparks are black. Separate from `DrawContactSparks` and from `DrawDrift`'s orange grind spheres | as above |
 | Pickup burst | expanding gold ring + flash | TUNED | no permitted source | VG12: adds 648 warm px (mean RGB 109,115,60) |
 | Demo flash | cool sphere + expanding ring | TUNED | no permitted source | VG12: adds 2327 cool px (mean RGB 82,116,120) |
-| Boost flame | length 60+140·boost, two-tone | TUNED | reads like RL's exhaust | not gated independently; drawn only while boosting (`render_stub` exercises it) |
+| Boost flame | twin jets, length (40+64·boost)·flick ≈ 40..104 uu, white-hot to orange | TUNED | UNVERIFIED length (no live RL capture). Nozzle 68 uu back of the origin (Fennec rear face noted at local x=-65.9). No smoke spheres. Full 3D on -forward / carUp. Airborne spin circles removed, no replacement ring | not gated independently; drawn only while boosting |
 
 ## Instruments (W6)
 
