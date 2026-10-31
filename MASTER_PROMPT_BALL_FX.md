@@ -584,7 +584,8 @@ do not write here.
 | I5 | 2026-10-29 | H | Expression-graph diffuse coverage is 38.75 % and the stem guess failed. The shader-cache measurement is recorded at 368/606 (60.73 %), under the 90 % bar. No further tint pass | CLOSED — count written, draw not started |
 | I6 | 2026-10-29 | H | UModel build 1590 with `-game=rocketleague` opens licensee 34 packages. It has no `ShaderCache` reader (`Unknown class "ShaderCache"`). `GuidCache.upk` fails with a bad allocation. The miss stops the draw | CLOSED — measured, draw stopped |
 | I7 | 2026-10-29 | H | Machine A (Radeon R4) is the 60 FPS bar and was not measured for this stadium. A result from B alone cannot close H | OPEN |
-| I11 | 2026-10-29 | H | Owner asked to finish a proper arena render past the 90 % binding stop. Named diffuse where the cache or graph resolves it. Vertex colour × baked lightmap where the material has no colour texture. No new stand-in tints. No stem guess. Crowd stays flat | OPEN — owner override of the draw block |
+| I11 | 2026-10-29 | H | Owner asked to finish a proper arena render past the 90 % binding stop. Named diffuse where the cache or graph resolves it. Vertex colour × baked lightmap where the material has no colour texture. No new stand-in tints. No stem guess. Crowd stays flat | OPEN — draw landed under override; cameras still fail the bar |
+| I12 | 2026-10-29 | H | Floor_Team1 FLightMap2D atlas rect on the bound NormalizedAverage / DirectionalMax pair is empty (MEASURED rect lit 1.5–1.7%). Correct `uv*s+b` lands at ~8.6% lit. Raw UV1’s higher hit rate is wrong-neighbor sampling. No alternate channel in the component blob fills that rect. StadiumBase `uv*s+b` works (70.5% lit) | OPEN — structural miss |
 | I8 | 2026-10-29 | H | `CustomColors` is runtime. The crowd will not be frame-identical | OPEN — accepted gap |
 | I9 | 2026-10-29 | D | Ball draw orientation. `noBallRot` leaves `rotMat` stuck. D integrated `angVel` in the view and does not write it back. Scripted roll quoted. One-tick contact phase stays UNVERIFIED | CLOSED |
 | I10 | 2026-10-29 | A | Wave 1 is writing one primary checkout. There is no extra worktree. A later row is accepted only for its own behavior. A mixed `git status` is not one worker's diff | OPEN |
@@ -604,7 +605,7 @@ Coordinator only.
 | E | Ground indicator stays above the turf | DONE | Wave 1. Accepted 2026-10-29 | [Ground indicator visibility](75d9f7e5-f735-4ead-82ed-d51b651afb00). VG4 PASS, radii unchanged. Play-camera orbit stays up. See E report |
 | F | Fast-ball team-coloured trail | DONE | Wave 1. Accepted 2026-10-29. I2 stays open | [Fast ball trail](3f096bdf-2d14-478d-8319-d1fa172f0f9c). Hard 2797.6 blue, soft 386.6 none, switch to orange, fade in 24 ticks, 20 tris / 1 draw. See F report |
 | G | Scrape and awkward-touch sparks | DONE | Wave 1. Accepted 2026-10-29. Wall grind not driven | [Contact spark research](8921329a-e82a-4e16-a709-0b2fcd71fd63). Turf grind 349.8 uu/s, off-nose burst, and black plus-signs at tick 280 (2300 uu/s) with the ball parked aside. See G report |
-| H | Exact DFH Stadium from the shader cache and lightmaps, ≥60 FPS on the R4 | IN PROGRESS | Owner 2026-10-29: finish a proper arena render. Measurement stayed under 90 %. Draw proceeds with named diffuse where known, vertex colour × lightmap where the material has no colour texture. No new stand-in tints | Dispatched after owner request. Prior count 368/606. See §4 and the H-bind log |
+| H | Exact DFH Stadium from the shader cache and lightmaps, ≥60 FPS on the R4 | BLOCKED | Owner override draw landed. Cameras fail day-stadium bar. I12 | [Finish DFH stadium draw](b73ecd35-78c4-40b7-887a-8e889182ebe5). Stairs_Mat PASS. `uv*s+b` correct on StadiumBase (70.5% lit). Floor_Team1 atlas empty (I12). Bowl still grey; goal blue frame ~21%. VG1 `30bbbe…`. See H reports |
 
 ### A report (2026-10-29) — accepted, I1 and I3 open
 
@@ -731,18 +732,33 @@ Research to keep for the landing pass: procedural truncated-icosahedron classifi
 
 **Wave 1 (parallel):** A, B, D, E, F, G's research, and H's binding measurement.
 
-**Wave 2:** C, G, and B are accepted. H's draw is not dispatched: the binding count is 368/606, under 90 %. No open send-back.
+**Wave 2:** A–G accepted. H is `BLOCKED` on I12 (Floor_Team1 empty lightmap atlas). Pack draw exists under I11; the four cameras do not clear a day-stadium bar.
 
-### H report (2026-10-29) — measurement accepted, draw blocked
+### H report (2026-10-29) — second draw pass, blocked on I12
 
 Workstream: H
-Goal (one sentence): Count how many of the 606 non-CustomColors DFH Stadium (Day) sections gain a real diffuse from the shader cache, and stop if that is under 90 %.
-Issue closed: I5 and I6 as measurements. I7 stays open because the draw never ran, so machine A was not timed.
-Still wrong: 238 of 606 sections have no identified diffuse. The compiled texture array does not name the diffuse sampler when more than one colour texture is present.
-Evidence: UModel was not installed. Official build 1590 was run outside the repo, `-game=rocketleague`, no `-nolightmap`. `Stadium_Day_P.upk` loaded, licensee Ver 868/34. `RefShaderCache-PC-D3D-SM5.upk` loaded, 40 `ShaderCache` exports, then `Unknown class "ShaderCache"`. `GuidCache.upk` failed: `Memory: bad allocation size -1365032816`. `GlobalShaderCache-PC-D3D-SM5.bin` is not a package. Count written in `docs/ARENA_RIP_LOG.md` round H-bind: graph-only 231, array isolates one colour texture the graph had not 120, both 17, total **368/606 (60.73 %)**. 90 % of 606 is 546. No stem guess. No renderer edit. No 60 FPS claim. Coordinator checked 231+120+17 = 368.
-Sites changed: `docs/ARENA_RIP_LOG.md`, `docs/ARENA_RIP.md`.
-Blocker for another workstream: none.
-Timeline: the measurement is done. The row is BLOCKED. The draw stays unstarted.
+Goal: Day stadium in the four cameras — bowl shade from a correct lightmap decode, real diffuse on resolved surfaces, no purple atlas junk.
+Issue closed: none against that bar. Kept: Stairs_Mat PASS, pack `/2`, FieldSkin UV2, binding **375/606**, VG1 `30bbbe441a6fa32f4d58c43f30fbc65c`, soak `drops=0 glerr=0`. StadiumBase lightmap decode is `uv*s+b` + DirectionalMax: lit **70.5%** (raw was 26.2%).
+Still wrong: Bowl flat grey in corner/midfield. Goal view ~21% solid blue frame. Floor_Team1 atlas empty (I12): `uv*s+b` lit 8.6%, rect lit 1.5%. Frame/Trim MICs bind only normals; SeatBase binds a 1×512 ramp. Machine A unmeasured (I7).
+Evidence: `/tmp/arena_h/{top,corner,midfield,goal}.png`; proof `/tmp/arena_h/lm_proof/floor_team1_proof.png`. Coordinator: goal.png blueish 20.6%.
+Sites changed: `tools/arena/{rip_arena,rllightmap}.py`, `src/models/ArenaRip.{h,cpp}`, `src/render/Renderer.{h,cpp}`.
+Blocker: I12. Next needs a non-empty Team1 bake outside this component SIG, or an owner accept of pitch=FieldSkin-without-LM and a different bowl bar on grey concrete albedos.
+Timeline: stopped.
+
+### H report (2026-10-29) — first draw pass, not accepted
+
+Workstream: H
+Goal: DFH Stadium (Day) local pack looks like a proper stadium.
+Issue closed: Stairs_Mat PASS. Pack `/2`. FieldSkin on the pitch. VG1 unchanged. Binding **375/606**.
+Still wrong then: Bowl grey; CoordinateScale/Bias looked wrong; purple atlas junk.
+Timeline: slipped. Sent back (superseded by the second pass).
+
+### H report (2026-10-29) — measurement accepted, draw was blocked (superseded by owner override I11)
+
+Workstream: H (measurement only)
+Goal: Count how many of the 606 non-CustomColors sections gain a real diffuse from the shader cache.
+Issue closed: I5 and I6 as measurements. Count was **368/606 (60.73%)** before the ShaderCache reader; later H-shader recount **375/606**.
+Timeline: measurement done. Draw later opened under I11.
 
 **Acceptance bar for the whole order.** All eight rows `DONE` (H may be
 `BLOCKED` on a written cache miss, which defers the draw and does not fail

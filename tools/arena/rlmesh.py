@@ -409,17 +409,22 @@ def decode_vertex_stream(data, pe, num_verts):
         return None
     normals = []
     tangents = []
-    uvs = []
+    uvs = []          # channel 0 (legacy callers)
+    uvs_all = [[] for _ in range(a)]
     for v in range(num_verts):
         o = base + v * stride
         t = struct.unpack_from('<4B', data, o)
         n = struct.unpack_from('<4B', data, o + 4)
         tangents.append(packed_normal(t[:3]))
         normals.append(packed_normal(n[:3]))
-        uvs.append(struct.unpack_from('<2e', data, o + 8))
+        for c in range(a):
+            uv = struct.unpack_from('<2e', data, o + 8 + 4 * c)
+            uvs_all[c].append(uv)
+        uvs.append(uvs_all[0][-1])
     return {'channels': a, 'stride': stride, 'offset': base,
             'tangents': tuple(tangents), 'normals': tuple(normals),
-            'uvs': tuple(uvs)}
+            'uvs': tuple(uvs),
+            'uvs_all': tuple(tuple(ch) for ch in uvs_all)}
 
 
 # --------------------------------------------------------------- section table
@@ -719,6 +724,7 @@ def parse_static_mesh(pkg, export):
         'normals': stream['normals'] if stream else None,
         'tangents': stream['tangents'] if stream else None,
         'uvs': stream['uvs'] if stream else None,
+        'uvs_all': stream.get('uvs_all') if stream else None,
         'uv_channels': stream['channels'] if stream else 0,
         'sections': sections,
         'section_info': sec_info,

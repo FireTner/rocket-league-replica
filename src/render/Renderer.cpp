@@ -826,8 +826,8 @@ constexpr int kArenaCell = 8192;
 // (392 of the 640 used section slots in the DFH Stadium day pack). A mid
 // grey: it reads as "unpainted" without competing with the textured parts.
 constexpr float kArenaFallback[3] = {0.55f, 0.55f, 0.55f};
-// Vertex layout: pos(3) normal(3) uv(2) = 8 floats.
-constexpr int kArenaStride = 8;
+// Vertex layout: pos(3) normal(3) uvDiff(2) uvLm(2) = 10 floats.
+constexpr int kArenaStride = 10;
 
 // Bucket key: (transparency, texture id, spatial cell). The pack's materials
 // carry no colour, only a diffuse texture, so the TEXTURE is the material id
@@ -837,28 +837,35 @@ constexpr int kArenaStride = 8;
 // the DXT5 grass mask-alpha opaque).
 struct ArenaKey {
     int tex = -1;
+    int lm = -1;   // lightmap texture id (-1 = none)
     int tint = 0;  // fallback colour category when tex == -1 (0 = neutral)
     int cx = 0, cy = 0, cz = 0;
     bool transparent = false;
     bool unlit = false;
     bool decal = false;
+    bool alphaTest = false;
+    float lmScale[3] = {1.f, 1.f, 1.f};
     bool operator<(const ArenaKey& o) const {
         if (transparent != o.transparent) return transparent < o.transparent;
         if (unlit != o.unlit) return unlit < o.unlit;
         if (decal != o.decal) return decal < o.decal;
+        if (alphaTest != o.alphaTest) return alphaTest < o.alphaTest;
         if (tex != o.tex) return tex < o.tex;
+        if (lm != o.lm) return lm < o.lm;
         if (tint != o.tint) return tint < o.tint;
+        for (int i = 0; i < 3; ++i)
+            if (lmScale[i] != o.lmScale[i]) return lmScale[i] < o.lmScale[i];
         if (cx != o.cx) return cx < o.cx;
         if (cy != o.cy) return cy < o.cy;
         return cz < o.cz;
     }
 };
 
-// Field-skin unwrap measured off Field_STD_Floor_Team1 UV2 (the layout
-// channel; UV0 is a detail tile and paints the pitch as swirls).
+// Field-skin unwrap (legacy fall-back only). Prefer mesh UV2 when the pack
+// stores it (rl-arena-pack/2 field floors). World unwrap is removed once the
+// surface resolves to a real diffuse UV channel.
 //   u = x/8192 + 1/2
 //   v = 1 - |y|/8192
-// The positive-Y half is the mirrored placement of the same unwrap.
 constexpr float kFieldUvScale = 1.0f / 8192.0f;
 // Sky dome radius, inside the camera far plane (40000) and outside the bowl.
 constexpr float kSkyRadius = 36000.0f;
@@ -993,6 +1000,139 @@ extern "C" void glBufferData(GLenum target, GLsizeiptr size, const void* data,
                              GLenum usage);
 extern "C" void glDeleteBuffers(GLsizei n, const GLuint* buffers);
 extern "C" void glGenerateMipmap(unsigned int target);
+extern "C" GLuint glCreateShader(GLenum type);
+extern "C" void glShaderSource(GLuint shader, GLsizei count,
+                               const GLchar* const* string, const GLint* length);
+extern "C" void glCompileShader(GLuint shader);
+extern "C" void glGetShaderiv(GLuint shader, GLenum pname, GLint* params);
+extern "C" void glGetShaderInfoLog(GLuint shader, GLsizei bufSize,
+                                   GLsizei* length, GLchar* infoLog);
+extern "C" void glDeleteShader(GLuint shader);
+extern "C" GLuint glCreateProgram(void);
+extern "C" void glAttachShader(GLuint program, GLuint shader);
+extern "C" void glBindAttribLocation(GLuint program, GLuint index,
+                                     const GLchar* name);
+extern "C" void glLinkProgram(GLuint program);
+extern "C" void glGetProgramiv(GLuint program, GLenum pname, GLint* params);
+extern "C" void glGetProgramInfoLog(GLuint program, GLsizei bufSize,
+                                    GLsizei* length, GLchar* infoLog);
+extern "C" void glDeleteProgram(GLuint program);
+extern "C" void glUseProgram(GLuint program);
+extern "C" GLint glGetUniformLocation(GLuint program, const GLchar* name);
+extern "C" void glUniform1i(GLint location, GLint v0);
+extern "C" void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2);
+extern "C" void glActiveTexture(GLenum texture);
+extern "C" void glEnableVertexAttribArray(GLuint index);
+extern "C" void glDisableVertexAttribArray(GLuint index);
+extern "C" void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
+                                      GLboolean normalized, GLsizei stride,
+                                      const void* pointer);
+#ifndef GL_COMPILE_STATUS
+#define GL_COMPILE_STATUS 0x8B81
+#define GL_LINK_STATUS 0x8B82
+#define GL_FRAGMENT_SHADER 0x8B30
+#define GL_VERTEX_SHADER 0x8B31
+#define GL_TEXTURE0 0x84C0
+#define GL_TEXTURE1 0x84C1
+#endif
+#ifndef GLchar
+typedef char GLchar;
+#endif
+
+// Pack-only GLSL ≤ 4.50: albedo × tint × lightmap. Compiled once at upload.
+namespace {
+constexpr const char* kArenaVs = R"(#version 450 compatibility
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNrm;
+layout(location = 2) in vec2 aUv0;
+layout(location = 3) in vec2 aUv1;
+out vec2 vUv0;
+out vec2 vUv1;
+out vec3 vNrm;
+void main() {
+  vUv0 = aUv0;
+  vUv1 = aUv1;
+  vNrm = normalize(gl_NormalMatrix * aNrm);
+  gl_Position = gl_ModelViewProjectionMatrix * vec4(aPos, 1.0);
+}
+)";
+constexpr const char* kArenaFs = R"(#version 450 compatibility
+uniform sampler2D uDiffuse;
+uniform sampler2D uLightmap;
+uniform vec3 uTint;
+uniform vec3 uLmScale;
+uniform int uUseDiff;
+uniform int uUseLm;
+uniform int uAlphaTest;
+in vec2 vUv0;
+in vec2 vUv1;
+in vec3 vNrm;
+void main() {
+  vec3 albedo = uTint;
+  float alpha = 1.0;
+  if (uUseDiff != 0) {
+    vec4 t = texture(uDiffuse, vUv0);
+    albedo = t.rgb;
+    alpha = t.a;
+  }
+  if (uAlphaTest != 0 && alpha < 0.5) discard;
+  vec3 lm = vec3(1.0);
+  if (uUseLm != 0) {
+    // DirectionalMax * ScaleVectors — MEASURED shade carrier (StadiumBase
+    // uv*s+b lit=70.5% lum~0..2.1; raw UV1 only 26%). Luminance only so
+    // sky-blue bake does not tint concrete purple. Near-black atlas
+    // padding → neutral 0.88 (not lm=1 wash, not lm=0.18 blackout).
+    vec3 raw = texture(uLightmap, vUv1).rgb * uLmScale;
+    float lum = dot(raw, vec3(0.3333));
+            float live = smoothstep(0.0, 0.06, lum);
+    // Wide gain so grey concrete/sidewalk albedos still show bowl shade.
+    float sh = mix(0.72, clamp(lum * 1.15, 0.28, 1.70), live);
+    lm = vec3(sh);
+  }
+  vec3 n = normalize(vNrm);
+  float ndl = max(dot(n, normalize(vec3(0.35, 0.2, 0.9))), 0.0);
+  float shade = mix(0.92, 1.0, ndl);
+  gl_FragColor = vec4(albedo * lm * shade, alpha);
+}
+)";
+
+GLuint ArenaCompileShader(GLenum type, const char* src) {
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, &src, nullptr);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        char log[512];
+        glGetShaderInfoLog(s, 512, nullptr, log);
+        std::fprintf(stderr, "[arena] shader compile failed: %s\n", log);
+        glDeleteShader(s);
+        return 0;
+    }
+    return s;
+}
+
+GLuint ArenaLinkProgram(GLuint vs, GLuint fs) {
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    glAttachShader(p, fs);
+    glBindAttribLocation(p, 0, "aPos");
+    glBindAttribLocation(p, 1, "aNrm");
+    glBindAttribLocation(p, 2, "aUv0");
+    glBindAttribLocation(p, 3, "aUv1");
+    glLinkProgram(p);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[512];
+        glGetProgramInfoLog(p, 512, nullptr, log);
+        std::fprintf(stderr, "[arena] program link failed: %s\n", log);
+        glDeleteProgram(p);
+        return 0;
+    }
+    return p;
+}
+}  // namespace
 
 bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     ShutdownArenaPack();
@@ -1136,14 +1276,20 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         if (inst.mesh.rfind("Sprite", 0) == 0 ||
             inst.mesh.rfind("FogMesh", 0) == 0 ||
             inst.mesh.rfind("FieldSpotLights", 0) == 0 ||
-            inst.mesh.rfind("CloudPlane", 0) == 0) {
+            inst.mesh.rfind("CloudPlane", 0) == 0 ||
+            // Goal/side force-field nets bind Hexagons_Pack_01_T; opaque they
+            // read as a purple/blue moiré slab across the goal camera.
+            inst.mesh.rfind("FF_", 0) == 0 ||
+            inst.mesh.rfind("FFCage", 0) == 0) {
             ++skipped;
             continue;
         }
-        // Reflective-floor overlays on the pitch (centre disc, hex floor).
-        // They have no albedo; drawn opaque they bury the field skin.
-        if (inst.mesh == "Field_STD_Floor_Hex" ||
-            inst.mesh == "Field_Center_Trim") {
+        // Reflective centre-trim / hex-floor overlays bind Hexagons_Pack_* as
+        // albedo; sampled they read as purple/iridescent atlas junk over the
+        // FieldSkin. Skip the overlays — pitch shade stays on the skin.
+        if (inst.mesh == "Field_Center_Trim" ||
+            inst.mesh == "Field_STD_Floor_Hex" ||
+            inst.mesh == "Field_Center") {
             ++skipped;
             continue;
         }
@@ -1181,6 +1327,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         const size_t nv = mesh->positions.size() / 3;
         const bool hasN = mesh->normals.size() >= nv * 3;
         const bool hasUv = mesh->uvs.size() >= nv * 2;
+        const bool hasUvLm = mesh->uvsLm.size() >= nv * 2;
+        const bool hasPackedLm = inst.lightmap.valid && inst.lightmap.texture >= 0;
+        // Pack /2 stores field-skin layout on UV2 as the diffuse channel —
+        // no world unwrap. Legacy packs (channel 0 only) keep the unwrap.
+        const bool meshHasFieldUv = mesh->diffuseUvChannel >= 2 ||
+            mesh->name == "Field_STD_Floor_Team1" ||
+            mesh->name == "Field_STD_Floor_Team2" ||
+            mesh->name == "Field_CenterField_Team1" ||
+            mesh->name == "Field_CenterField_Team2";
         // Transform the mesh into world space once (positions + normals).
         std::vector<float> wp(nv * 3), wn(nv * 3);
         double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
@@ -1279,22 +1434,67 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                     continue;
                 }
                 texId = pack.materials[size_t(matIdx)].texture;
+                // Reject non-albedo textures that slipped into the diffuse
+                // slot (normal maps, 1x1 stubs). Keep the section; shade via
+                // lightmap / tint instead of painting a normal as colour.
+                if (texId >= 0 && size_t(texId) < pack.textures.size()) {
+                    const ArenaTexture& td = pack.textures[size_t(texId)];
+                    const std::string& tn = td.name;
+                    // Real normal maps are ≥5×5 (ENV_CarbonFiber_N etc.).
+                    // SeatBase's Step_N is a 1×512 ramp — keep it as albedo.
+                    const bool bigEnough =
+                        td.width > 4 && td.height > 4;
+                    const bool looksNormal =
+                        bigEnough &&
+                        tn.size() >= 2 &&
+                        (tn.compare(tn.size() - 2, 2, "_N") == 0 ||
+                         tn.compare(tn.size() - 2, 2, "_n") == 0 ||
+                         tn.find("_N_") != std::string::npos ||
+                         tn.find("Normal") != std::string::npos);
+                    // ShaderCache sometimes binds a curve/noise/mask into the
+                    // diffuse slot (sky fog strip, grate smoke). Sampling
+                    // those reads as purple moiré on frames/dome.
+                    // Hexagons_Pack_B is a reflective/spec pack (MEASURED min
+                    // B-heavy purple flecks) — not an albedo for goal floors.
+                    const bool looksJunk =
+                        tn.rfind("Curve_", 0) == 0 ||
+                        tn.rfind("Noise_", 0) == 0 ||
+                        tn == "FillFlare" ||
+                        tn == "Hexagons_Pack_B";
+                    const bool tinyStub = td.width <= 4 && td.height <= 4;
+                    if (looksNormal || looksJunk || tinyStub || td.lightmap)
+                        texId = -1;
+                }
                 if (texId < 0)
                     tint = fallbackTint(matName, tintRgb);
             }
             std::string matLower = secMatName;
             for (char& c : matLower)
                 c = char(std::tolower((unsigned char)c));
-            // Grass materials sample FieldSkin_FutureGrid_* as a detail
-            // tile (UV0). The pitch layout lives on UV2 of the floor and in
-            // FieldSkin_FutureGrid_D. Retarget every grass section onto that
-            // texture and project world XY (see kFieldUvScale).
+            // FieldSkin only on the actual pitch meshes — never on stadium
+            // "Grass_Base_*" sections (those stole the world unwrap and
+            // painted the bowl with pitch swirls).
+            const bool isPitchMesh =
+                meshHasFieldUv || mesh->name == "Field_Center" ||
+                mesh->name == "Field_STD_Floor_Team1" ||
+                mesh->name == "Field_STD_Floor_Team2" ||
+                mesh->name == "Field_STD_Floor_Thick" ||
+                mesh->name == "Field_CenterField_Team1" ||
+                mesh->name == "Field_CenterField_Team2";
             const bool fieldSkin =
-                fieldTexId >= 0 &&
-                (mesh->name == "Field_Center" ||
+                fieldTexId >= 0 && isPitchMesh &&
+                (mesh->name == "Field_Center" || meshHasFieldUv ||
                  matLower.find("grass") != std::string::npos ||
-                 matLower.find("groomed") != std::string::npos);
+                 matLower.find("groomed") != std::string::npos ||
+                 matLower.find("field") != std::string::npos);
             if (fieldSkin) texId = fieldTexId;
+            const bool useFieldUnwrap = fieldSkin && !meshHasFieldUv;
+            const bool alphaTest =
+                matLower.find("tree") != std::string::npos ||
+                matLower.find("leaf") != std::string::npos ||
+                matLower.find("foliage") != std::string::npos ||
+                mesh->name.find("Leafy") != std::string::npos ||
+                mesh->name.find("Tree") != std::string::npos;
             const bool skyDome = mesh->name == "SkySphere01";
             if (skyDome) {
                 texId = -1;
@@ -1329,12 +1529,38 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                                tint == 11 || tint == 16;
             const bool decal = (tint == 7);
 
+            // Lightmap: skip on sky / glass (atlas strips read as purple
+            // moiré) and when the component's atlas rect is the known-empty
+            // Floor_Team half (scale≈0.5 bias≈0/0.5 on Color1) — those
+            // rects measure ~1.7% lit and raw UV1 wrongly samples neighbours.
+            bool useLm = hasPackedLm && !skyDome && !secTransparent;
+            if (useLm) {
+                const float sx = inst.lightmap.coordScale[0];
+                const float sy = inst.lightmap.coordScale[1];
+                const float bx = inst.lightmap.coordBias[0];
+                const float by = inst.lightmap.coordBias[1];
+                // Tiny stamps (boost pads etc.) are fine; the empty Team
+                // floor rects are ~0.5 with bias near 0 or 0.5 and belong
+                // to pitch overlays that keep FieldSkin without LM.
+                if (isPitchMesh && sx > 0.4f && sx < 0.55f &&
+                    sy > 0.4f && sy < 0.55f &&
+                    ((bx < 0.05f && by < 0.05f) ||
+                     (bx > 0.45f && bx < 0.55f && by > 0.45f && by < 0.55f)))
+                    useLm = false;
+            }
             ArenaKey key;
             key.tex = texId;
+            key.lm = useLm ? inst.lightmap.texture : -1;
             key.tint = (texId < 0) ? tint : 0;
             key.transparent = secTransparent;
             key.unlit = unlit;
             key.decal = decal;
+            key.alphaTest = alphaTest;
+            if (useLm) {
+                key.lmScale[0] = inst.lightmap.colorScale[0];
+                key.lmScale[1] = inst.lightmap.colorScale[1];
+                key.lmScale[2] = inst.lightmap.colorScale[2];
+            }
             key.cx = cell[0]; key.cy = cell[1]; key.cz = cell[2];
             size_t bi;
             auto it = bucketIndex.find(key);
@@ -1379,12 +1605,27 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                         b.v.push_back(wn[vi * 3 + 2]);
                         float u = hasUv ? mesh->uvs[vi * 2 + 0] : 0.0f;
                         float v = hasUv ? mesh->uvs[vi * 2 + 1] : 0.0f;
-                        if (fieldSkin) {
+                        if (useFieldUnwrap) {
                             u = wp[vi * 3 + 0] * kFieldUvScale + 0.5f;
                             v = 1.0f - std::fabs(wp[vi * 3 + 1]) * kFieldUvScale;
                         }
+                        // UE3 FLightMap2D: LightmapUV = ChartUV * Scale + Bias.
+                        // MEASURED: this beats raw UV on StadiumBase (71% vs
+                        // 26%), Stadium_Top (95% vs 65%), Goal_Floor, Hex.
+                        // Pitch Team floors with empty atlas rects disable LM
+                        // above (useLm=false) so they are not blacked.
+                        float lu = hasUvLm ? mesh->uvsLm[vi * 2 + 0] : 0.0f;
+                        float lv = hasUvLm ? mesh->uvsLm[vi * 2 + 1] : 0.0f;
+                        if (useLm) {
+                            lu = lu * inst.lightmap.coordScale[0] +
+                                 inst.lightmap.coordBias[0];
+                            lv = lv * inst.lightmap.coordScale[1] +
+                                 inst.lightmap.coordBias[1];
+                        }
                         b.v.push_back(u);
                         b.v.push_back(v);
+                        b.v.push_back(lu);
+                        b.v.push_back(lv);
                         for (int c = 0; c < 3; ++c) {
                             const float p = b.v[b.v.size() - kArenaStride + size_t(c)];
                             if (p < b.lo[c]) b.lo[c] = p;
@@ -1401,13 +1642,47 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     }
 
     // ---- GL upload: the textures first (the buckets reference them) ------
+    // 1x1 white for missing albedo / lightmap slots.
+    {
+        const uint8_t white[4] = {255, 255, 255, 255};
+        GLuint wtex = 0;
+        glGenTextures(1, &wtex);
+        glBindTexture(GL_TEXTURE_2D, wtex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, white);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        arenaWhiteTex_ = wtex;
+    }
+    // Pack-only GLSL program (compiled once; never per frame).
+    {
+        GLuint vs = ArenaCompileShader(GL_VERTEX_SHADER, kArenaVs);
+        GLuint fs = ArenaCompileShader(GL_FRAGMENT_SHADER, kArenaFs);
+        if (vs && fs) arenaProg_ = ArenaLinkProgram(vs, fs);
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        if (arenaProg_) {
+            arenaUniDiffuse_ = glGetUniformLocation(arenaProg_, "uDiffuse");
+            arenaUniLightmap_ = glGetUniformLocation(arenaProg_, "uLightmap");
+            arenaUniTint_ = glGetUniformLocation(arenaProg_, "uTint");
+            arenaUniLmScale_ = glGetUniformLocation(arenaProg_, "uLmScale");
+            arenaUniUseDiff_ = glGetUniformLocation(arenaProg_, "uUseDiff");
+            arenaUniUseLm_ = glGetUniformLocation(arenaProg_, "uUseLm");
+            arenaUniAlphaTest_ = glGetUniformLocation(arenaProg_, "uAlphaTest");
+            std::fprintf(stderr, "[arena] pack GLSL program ready\n");
+        } else {
+            std::fprintf(stderr,
+                         "[arena] pack GLSL unavailable — fixed-function draw\n");
+        }
+    }
     std::vector<int> texGlId(pack.textures.size(), -1);
     for (size_t ti = 0; ti < pack.textures.size(); ++ti) {
         const ArenaTexture& t = pack.textures[ti];
         if (!t.valid || t.rgba.empty() || t.width <= 0 || t.height <= 0) continue;
         const uint8_t* px = t.rgba.data();
         std::vector<uint8_t> converted;
-        GLenum wrap = GL_REPEAT;
+        GLenum wrap = t.lightmap ? GL_CLAMP_TO_EDGE : GL_REPEAT;
         // The force-field hex texture is a packed UE3 shader mask, NOT albedo:
         // raw it is black centres + saturated green/blue/red rings (the rainbow
         // in the bug report). The green channel is the hex-line mask (27% of
@@ -1417,7 +1692,9 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         // pass draws thin pale lines and shows the sky through elsewhere.
         // Mips are generated from the converted bytes, so distant minification
         // stays a stable faint mean (G4 precedent).
-        if (t.name == "Hexagons_Pack_01_T") {
+        if (t.lightmap) {
+            // Baked lightmaps: upload as-is (no field-skin / pad remaps).
+        } else if (t.name == "Hexagons_Pack_01_T") {
             converted.resize(t.rgba.size());
             for (size_t p = 0; p < t.rgba.size() / 4; ++p) {
                 const uint8_t g = t.rgba[p * 4 + 1];
@@ -1471,11 +1748,18 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.width, t.height, 0, GL_RGBA,
                      GL_UNSIGNED_BYTE, px);
-        // G4 precedent: build the mip chain ONCE at upload, trilinear min.
-        glGenerateMipmap(GL_TEXTURE_2D);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                        GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // Lightmaps are atlas-packed: mipmaps average across chart borders
+        // and paint purple/blue padding onto seams (goal frames, dome edge).
+        // Diffuse keeps G4 trilinear; lightmaps stay linear + clamp.
+        if (t.lightmap) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        } else {
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
         glBindTexture(GL_TEXTURE_2D, 0);
@@ -1493,12 +1777,19 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.texId = (key.tex >= 0 && size_t(key.tex) < texGlId.size())
                       ? texGlId[size_t(key.tex)]
                       : -1;
+        g.lmTexId = (key.lm >= 0 && size_t(key.lm) < texGlId.size())
+                        ? texGlId[size_t(key.lm)]
+                        : -1;
+        g.lmScale[0] = key.lmScale[0];
+        g.lmScale[1] = key.lmScale[1];
+        g.lmScale[2] = key.lmScale[2];
         g.tintRgb[0] = b.tintRgb[0];
         g.tintRgb[1] = b.tintRgb[1];
         g.tintRgb[2] = b.tintRgb[2];
         g.unlit = key.unlit;
         g.decal = key.decal;
         g.transparent = key.transparent;
+        g.alphaTest = key.alphaTest;
         g.tag = b.tag;
         g.cell[0] = key.cx; g.cell[1] = key.cy; g.cell[2] = key.cz;
         g.idxCount = uint32_t(b.idx.size());
@@ -1550,8 +1841,6 @@ void Renderer::DrawArenaPack() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     GLfloat prevAmb[4];
     glGetFloatv(GL_LIGHT_MODEL_AMBIENT, prevAmb);
-    // High-key daylight. The analytic key+fill stays installed; only the
-    // ambient term is lifted for this draw, then restored before cars.
     const GLfloat dayAmb[4] = {0.62f, 0.64f, 0.62f, 1.0f};
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, dayAmb);
     const ArenaFrustum f = ExtractArenaFrustum();
@@ -1561,35 +1850,73 @@ void Renderer::DrawArenaPack() {
     const GLboolean lightWas = glIsEnabled(GL_LIGHTING);
     GLboolean maskWas = GL_TRUE;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &maskWas);
+    const bool useGlsl = arenaProg_ != 0;
+    if (useGlsl) {
+        glUseProgram(arenaProg_);
+        glUniform1i(arenaUniDiffuse_, 0);
+        glUniform1i(arenaUniLightmap_, 1);
+        glDisable(GL_LIGHTING);  // shade comes from the lightmap + soft fill
+    }
     auto drawBucket = [&](const ArenaBucket& bk, bool transparentPass) {
         if (!ArenaAabbVisible(bk.lo, bk.hi, f)) return false;
-        if (bk.texId >= 0) {
-            glEnable(GL_TEXTURE_2D);
-            glBindTexture(GL_TEXTURE_2D, GLuint(bk.texId));
-            // Textured glass samples the converted hex net (alpha in the
-            // texture); opaque diffuses ignore their mask alpha via blend off.
-            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-        } else {
-            glDisable(GL_TEXTURE_2D);
-            if (transparentPass)
-                glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2],
-                          kArenaGlassAlpha);
-            else
-                glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2], 1.0f);
-        }
-        // Emissive trim-light buckets render unlit (they ARE the lights);
-        // shaded they would go dark on their shadow side and read as ridges.
-        if (bk.unlit) glDisable(GL_LIGHTING);
-        else if (lightWas) glEnable(GL_LIGHTING);
         if (bk.decal) {
             glEnable(GL_POLYGON_OFFSET_FILL);
             glPolygonOffset(-1.5f, -2.0f);
         }
         glBindBuffer(GL_ARRAY_BUFFER, bk.vbo);
-        glVertexPointer(3, GL_FLOAT, stride, (const void*)0);
-        glNormalPointer(GL_FLOAT, stride, (const void*)(3 * sizeof(float)));
-        glTexCoordPointer(2, GL_FLOAT, stride, (const void*)(6 * sizeof(float)));
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bk.ibo);
+        if (useGlsl) {
+            const GLuint diff = bk.texId >= 0 ? GLuint(bk.texId) : arenaWhiteTex_;
+            const GLuint lm =
+                bk.lmTexId >= 0 ? GLuint(bk.lmTexId) : arenaWhiteTex_;
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, diff);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, lm);
+            glActiveTexture(GL_TEXTURE0);
+            float tint[3] = {bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2]};
+            if (transparentPass && bk.texId < 0) {
+                // keep glass veil colour; alpha handled in blend
+            } else if (bk.texId >= 0) {
+                tint[0] = tint[1] = tint[2] = 1.0f;
+            }
+            glUniform3f(arenaUniTint_, tint[0], tint[1], tint[2]);
+            glUniform3f(arenaUniLmScale_, bk.lmScale[0], bk.lmScale[1],
+                        bk.lmScale[2]);
+            glUniform1i(arenaUniUseDiff_, bk.texId >= 0 ? 1 : 0);
+            glUniform1i(arenaUniUseLm_, bk.lmTexId >= 0 ? 1 : 0);
+            glUniform1i(arenaUniAlphaTest_, bk.alphaTest ? 1 : 0);
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            glEnableVertexAttribArray(2);
+            glEnableVertexAttribArray(3);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (const void*)0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
+                                  (const void*)(3 * sizeof(float)));
+            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
+                                  (const void*)(6 * sizeof(float)));
+            glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride,
+                                  (const void*)(8 * sizeof(float)));
+        } else {
+            if (bk.texId >= 0) {
+                glEnable(GL_TEXTURE_2D);
+                glBindTexture(GL_TEXTURE_2D, GLuint(bk.texId));
+                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+            } else {
+                glDisable(GL_TEXTURE_2D);
+                if (transparentPass)
+                    glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2],
+                              kArenaGlassAlpha);
+                else
+                    glColor4f(bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2], 1.0f);
+            }
+            if (bk.unlit) glDisable(GL_LIGHTING);
+            else if (lightWas) glEnable(GL_LIGHTING);
+            glVertexPointer(3, GL_FLOAT, stride, (const void*)0);
+            glNormalPointer(GL_FLOAT, stride, (const void*)(3 * sizeof(float)));
+            glTexCoordPointer(2, GL_FLOAT, stride,
+                              (const void*)(6 * sizeof(float)));
+        }
         glDrawElements(GL_TRIANGLES, GLsizei(bk.idxCount), GL_UNSIGNED_INT,
                        (const void*)0);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -1599,24 +1926,17 @@ void Renderer::DrawArenaPack() {
         return true;
     };
     uint32_t visible = 0, culled = 0;
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_NORMAL_ARRAY);
-    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
-    // Pass 1 — opaque: the pack's DXT5 diffuses (grass) carry a near-zero
-    // alpha channel that is NOT opacity (UE3 mask); with the frame's default
-    // SRC_ALPHA blending the floor went fully transparent and only the grey
-    // behind showed. Draw unblended so texture alpha is ignored.
+    if (!useGlsl) {
+        glEnableClientState(GL_VERTEX_ARRAY);
+        glEnableClientState(GL_NORMAL_ARRAY);
+        glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    }
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
     for (const ArenaBucket& bk : arenaBuckets_) {
         if (bk.transparent) continue;
         if (drawBucket(bk, false)) ++visible; else ++culled;
     }
-    // Pass 2 — force-field/glass: blended veil, no depth write (so cars/ball
-    // behind it still draw over it — the goal-interior C5/C6 sandwich uses
-    // the same rule). Converted hex net carries its own alpha; untextured
-    // glass uses kArenaGlassAlpha. Depth test stays ON (LEQUAL) so the veil
-    // behind the opaque field is still occluded.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
@@ -1624,9 +1944,20 @@ void Renderer::DrawArenaPack() {
         if (!bk.transparent) continue;
         if (drawBucket(bk, true)) ++visible; else ++culled;
     }
-    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
-    glDisableClientState(GL_NORMAL_ARRAY);
-    glDisableClientState(GL_VERTEX_ARRAY);
+    if (useGlsl) {
+        glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+        glDisableVertexAttribArray(2);
+        glDisableVertexAttribArray(3);
+        glUseProgram(0);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
+    } else {
+        glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+        glDisableClientState(GL_NORMAL_ARRAY);
+        glDisableClientState(GL_VERTEX_ARRAY);
+    }
     glDepthMask(maskWas ? GL_TRUE : GL_FALSE);
     if (texWas) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
     if (blendWas) glEnable(GL_BLEND); else glDisable(GL_BLEND);
@@ -1648,6 +1979,16 @@ void Renderer::ShutdownArenaPack() {
     for (unsigned& t : arenaTextures_)
         if (t) glDeleteTextures(1, &t);
     arenaTextures_.clear();
+    if (arenaWhiteTex_) {
+        glDeleteTextures(1, &arenaWhiteTex_);
+        arenaWhiteTex_ = 0;
+    }
+    if (arenaProg_) {
+        glDeleteProgram(arenaProg_);
+        arenaProg_ = 0;
+    }
+    arenaUniDiffuse_ = arenaUniLightmap_ = arenaUniTint_ = -1;
+    arenaUniUseDiff_ = arenaUniUseLm_ = arenaUniAlphaTest_ = -1;
     arenaReady_ = false;
 }
 

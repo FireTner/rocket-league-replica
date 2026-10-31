@@ -789,11 +789,13 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
     std::string format;
     if (!GetString(root, "format", format) || format.empty()) {
       return fail("the manifest '" + manifestPath +
-                  "' has no 'format' string (expected \"rl-arena-pack/1\")");
+                  "' has no 'format' string (expected \"rl-arena-pack/1\" or "
+                  "\"rl-arena-pack/2\")");
     }
-    if (format != "rl-arena-pack/1") {
+    if (format != "rl-arena-pack/1" && format != "rl-arena-pack/2") {
       return fail("unknown arena pack format '" + format +
-                  "' (this reader understands \"rl-arena-pack/1\")");
+                  "' (this reader understands \"rl-arena-pack/1\" and "
+                  "\"rl-arena-pack/2\")");
     }
     out.format = format;
     int64_t version = 0;
@@ -801,11 +803,15 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
       return fail("the manifest '" + manifestPath +
                   "' has no 'format_version' integer");
     }
-    if (version != 1) {
-      return fail("arena pack version " + std::to_string(version) +
-                  " is not supported (this reader understands version 1)");
+    const bool v1 = (format == "rl-arena-pack/1" && version == 1);
+    const bool v2 = (format == "rl-arena-pack/2" && version == 2);
+    if (!v1 && !v2) {
+      return fail("arena pack " + format + " version " +
+                  std::to_string(version) +
+                  " is not supported (understands /1 v1 and /2 v2)");
     }
     out.formatVersion = static_cast<int>(version);
+    out.hasLightmaps = v2;
   }
 
   // The source identity (a basename + a GUID; never a path).
@@ -872,10 +878,11 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
       return fail("the blob 'arena.bin' has a bad magic (expected 'RLARENAP')");
     }
     const uint32_t headerVersion = LoadU32(blob + 8);
-    if (headerVersion != 1) {
+    if (headerVersion != static_cast<uint32_t>(out.formatVersion)) {
       return fail("the blob header carries format version " +
                   std::to_string(headerVersion) +
-                  " (this reader understands version 1)");
+                  " (manifest format_version is " +
+                  std::to_string(out.formatVersion) + ")");
     }
     const uint32_t headerSize = LoadU32(blob + 12);
     if (headerSize != 32) {
@@ -906,42 +913,60 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
     }
   }
 
-  // The six group arrays (positions/normals/tangents/uvs/indices/matrices) are
-  // checked when the manifest declares them: they must be 4-byte aligned and
-  // inside the blob.
+  // Group arrays must be 4-byte aligned and inside the blob when declared.
+  // /1: positions normals tangents uvs indices matrices
+  // /2: positions normals tangents uvs uvs_lm indices matrices
   struct GroupArray {
     ArrayRef ref;
     bool present = false;
+    const char* name = nullptr;
   };
-  GroupArray groups[6];
-  static const char* kGroupNames[6] = {"positions", "normals", "tangents",
-                                        "uvs", "indices", "matrices"};
-  if (const JsonValue* arrays = root.Find("arrays"); arrays && arrays->IsObject()) {
-    for (int i = 0; i < 6; ++i) {
-      if (!GetArrayRef(*arrays, kGroupNames[i], groups[i].ref)) continue;
-      groups[i].present = true;
-      const ArrayRef& r = groups[i].ref;
-      if ((r.offset % 4u) != 0u) {
-        return fail(std::string("the '") + kGroupNames[i] +
-                    "' array is not 4-byte aligned (offset " +
-                    std::to_string(r.offset) + ")");
-      }
-      if (r.offset > blobSize || r.length > blobSize - r.offset) {
-        return fail(std::string("the '") + kGroupNames[i] +
-                    "' array lies outside the blob (offset " +
-                    std::to_string(r.offset) + ", length " +
-                    std::to_string(r.length) + ", blob " +
-                    std::to_string(blobSize) + " bytes)");
-      }
-      if (r.stride != 0 && r.length != r.count * r.stride) {
-        return fail(std::string("the '") + kGroupNames[i] +
-                    "' array length (" + std::to_string(r.length) +
-                    ") does not match count*stride (" +
-                    std::to_string(r.count) + "*" + std::to_string(r.stride) +
-                    ")");
+  std::vector<GroupArray> groups;
+  {
+    std::vector<const char*> names = {
+        "positions", "normals", "tangents", "uvs"};
+    if (out.hasLightmaps) names.push_back("uvs_lm");
+    names.push_back("indices");
+    names.push_back("matrices");
+    if (const JsonValue* arrays = root.Find("arrays");
+        arrays && arrays->IsObject()) {
+      for (const char* gn : names) {
+        GroupArray g;
+        g.name = gn;
+        if (!GetArrayRef(*arrays, gn, g.ref)) {
+          groups.push_back(g);
+          continue;
+        }
+        g.present = true;
+        const ArrayRef& r = g.ref;
+        if ((r.offset % 4u) != 0u) {
+          return fail(std::string("the '") + gn +
+                      "' array is not 4-byte aligned (offset " +
+                      std::to_string(r.offset) + ")");
+        }
+        if (r.offset > blobSize || r.length > blobSize - r.offset) {
+          return fail(std::string("the '") + gn +
+                      "' array lies outside the blob (offset " +
+                      std::to_string(r.offset) + ", length " +
+                      std::to_string(r.length) + ", blob " +
+                      std::to_string(blobSize) + " bytes)");
+        }
+        if (r.stride != 0 && r.length != r.count * r.stride) {
+          return fail(std::string("the '") + gn +
+                      "' array length (" + std::to_string(r.length) +
+                      ") does not match count*stride (" +
+                      std::to_string(r.count) + "*" +
+                      std::to_string(r.stride) + ")");
+        }
+        groups.push_back(g);
       }
     }
   }
+  auto findGroup = [&](const char* n) -> const GroupArray* {
+    for (const GroupArray& g : groups)
+      if (g.name && std::strcmp(g.name, n) == 0) return &g;
+    return nullptr;
+  };
 
   // ---- 7. the textures ----------------------------------------------------
   if (const JsonValue* textures = root.Find("textures"); textures && textures->IsArray()) {
@@ -955,6 +980,14 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
       ArenaTexture tex;
       if (row.Find("name") && row.Find("name")->IsString())
         tex.name = row.Find("name")->str;
+      {
+        std::string usage;
+        if (GetString(row, "usage", usage) && usage == "lightmap")
+          tex.lightmap = true;
+        std::string cls;
+        if (GetString(row, "class", cls) && cls == "LightMapTexture2D")
+          tex.lightmap = true;
+      }
 
       int64_t w = 0, h = 0;
       if (!GetInt(row, "width", w) || !GetInt(row, "height", h) || w <= 0 || h <= 0) {
@@ -1105,7 +1138,7 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
       if (!arrays || !arrays->IsObject()) {
         return fail("the mesh '" + name + "' has no 'arrays' object");
       }
-      ArrayRef positions, normals, uvs, indices;
+      ArrayRef positions, normals, uvs, uvsLm, indices;
       if (!GetArrayRef(*arrays, "positions", positions) ||
           !GetArrayRef(*arrays, "normals", normals) ||
           !GetArrayRef(*arrays, "uvs", uvs) ||
@@ -1113,9 +1146,11 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
         return fail("the mesh '" + name +
                     "' does not declare all of its arrays");
       }
+      const bool haveLmUvs = GetArrayRef(*arrays, "uvs_lm", uvsLm);
       if (positions.count != static_cast<uint64_t>(numVerts) ||
           normals.count != static_cast<uint64_t>(numVerts) ||
-          uvs.count != static_cast<uint64_t>(numVerts)) {
+          uvs.count != static_cast<uint64_t>(numVerts) ||
+          (haveLmUvs && uvsLm.count != static_cast<uint64_t>(numVerts))) {
         return fail("the mesh '" + name + "' declares " +
                     std::to_string(numVerts) + " vertices but its arrays hold " +
                     std::to_string(positions.count) + " positions / " +
@@ -1128,20 +1163,22 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
                     "holds " + std::to_string(indices.count));
       }
       if (positions.stride != 12 || normals.stride != 12 || uvs.stride != 8 ||
-          indices.stride != 2) {
+          indices.stride != 2 || (haveLmUvs && uvsLm.stride != 8)) {
         return fail("the mesh '" + name + "' has an unexpected array stride");
       }
 
       struct Slice {
         const ArrayRef* ref;
         const char* name;
-        uint64_t group;  // index into `groups`, or 0xFF for none
+        bool active;
       };
-      const Slice slices[4] = {{&positions, "positions", 0},
-                                {&normals, "normals", 1},
-                                {&uvs, "uvs", 3},
-                                {&indices, "indices", 4}};
+      const Slice slices[5] = {{&positions, "positions", true},
+                                {&normals, "normals", true},
+                                {&uvs, "uvs", true},
+                                {&uvsLm, "uvs_lm", haveLmUvs},
+                                {&indices, "indices", true}};
       for (const Slice& s : slices) {
+        if (!s.active) continue;
         const ArrayRef& r = *s.ref;
         if (r.offset > blobSize || r.length > blobSize - r.offset) {
           return fail("the mesh '" + name + "' has its " + s.name +
@@ -1154,13 +1191,11 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
           return fail("the mesh '" + name + "' has a " + s.name +
                       " array whose length does not match count*stride");
         }
-        if (s.group < 6 && groups[s.group].present) {
-          const ArrayRef& g = groups[s.group].ref;
-          if (r.offset < g.offset ||
-              r.offset + r.length > g.offset + g.length) {
+        if (const GroupArray* g = findGroup(s.name); g && g->present) {
+          if (r.offset < g->ref.offset ||
+              r.offset + r.length > g->ref.offset + g->ref.length) {
             return fail("the mesh '" + name + "' has its " + s.name +
-                        " array outside the pack's '" + kGroupNames[s.group] +
-                        "' array");
+                        " array outside the pack's '" + s.name + "' array");
           }
         }
       }
@@ -1209,6 +1244,30 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
           }
           mesh.uvs[static_cast<size_t>(v) * 2u + static_cast<size_t>(c)] = f;
         }
+      }
+      if (haveLmUvs) {
+        mesh.uvsLm.resize(static_cast<size_t>(numVerts) * 2u);
+        for (int64_t v = 0; v < numVerts; ++v) {
+          for (int c = 0; c < 2; ++c) {
+            uint32_t bits = LoadU32(blob + uvsLm.offset +
+                                    static_cast<size_t>(v) * 8u +
+                                    static_cast<size_t>(c) * 4u);
+            float f;
+            std::memcpy(&f, &bits, 4);
+            if (!std::isfinite(f)) {
+              return fail("the mesh '" + name + "' has a non-finite lightmap uv");
+            }
+            mesh.uvsLm[static_cast<size_t>(v) * 2u +
+                       static_cast<size_t>(c)] = f;
+          }
+        }
+      }
+      {
+        int64_t dch = 0, lch = 0;
+        if (GetInt(row, "diffuse_uv_channel", dch))
+          mesh.diffuseUvChannel = static_cast<int>(dch);
+        if (GetInt(row, "lightmap_uv_channel", lch))
+          mesh.lightmapUvChannel = static_cast<int>(lch);
       }
       mesh.indices.resize(static_cast<size_t>(numIndices));
       for (int64_t i = 0; i < numIndices; ++i) {
@@ -1411,6 +1470,35 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
           auto it = materialByName.find(matName->str);
           if (it != materialByName.end())
             inst.materialSlots[static_cast<size_t>(slot)] = it->second;
+        }
+      }
+
+      // /2: optional baked lightmap (NormalizedAverageColor + UV scale/bias).
+      if (const JsonValue* lm = row.Find("lightmap"); lm && lm->IsObject()) {
+        int64_t tidx = -1;
+        if (GetInt(*lm, "texture_index", tidx) && tidx >= 0 &&
+            static_cast<size_t>(tidx) < out.textures.size()) {
+          inst.lightmap.texture = static_cast<int>(tidx);
+          auto read2 = [&](const char* key, float out2[2]) {
+            const JsonValue* a = lm->Find(key);
+            if (!a || !a->IsArray() || a->arr.size() < 2) return;
+            for (int i = 0; i < 2; ++i)
+              if (a->arr[static_cast<size_t>(i)].IsNumber())
+                out2[i] = static_cast<float>(
+                    a->arr[static_cast<size_t>(i)].number);
+          };
+          auto read3 = [&](const char* key, float out3[3]) {
+            const JsonValue* a = lm->Find(key);
+            if (!a || !a->IsArray() || a->arr.size() < 3) return;
+            for (int i = 0; i < 3; ++i)
+              if (a->arr[static_cast<size_t>(i)].IsNumber())
+                out3[i] = static_cast<float>(
+                    a->arr[static_cast<size_t>(i)].number);
+          };
+          read2("coord_scale", inst.lightmap.coordScale);
+          read2("coord_bias", inst.lightmap.coordBias);
+          read3("color_scale", inst.lightmap.colorScale);
+          inst.lightmap.valid = true;
         }
       }
 

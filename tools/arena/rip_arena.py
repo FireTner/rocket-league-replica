@@ -39,10 +39,12 @@ import rlmat                                                   # noqa: E402
 import rlmesh                                                  # noqa: E402
 import rlplace                                                 # noqa: E402
 import rlpkg                                                   # noqa: E402
+import rllightmap                                              # noqa: E402
 
 # ------------------------------------------------------------------ constants
-PACK_FORMAT = 'rl-arena-pack/1'
-FORMAT_VERSION = 1
+# /2 adds per-mesh lightmap UVs (`uvs_lm`) and per-instance lightmap bindings.
+PACK_FORMAT = 'rl-arena-pack/2'
+FORMAT_VERSION = 2
 GENERATOR = 'tools/arena/rip_arena.py'
 
 BLOB_MAGIC = b'RLARENAP'      # 8 bytes
@@ -54,16 +56,23 @@ MANIFEST_FILE = 'arena.json'
 DEFAULT_INDEX = '/tmp/rl_a3b/pkgindex.json'
 PACK_DIR_NAME = 'arena_assets'
 
+# Field-skin layout lives on UV2 (MEASURED). UV0 is a detail tile.
+FIELD_DIFFUSE_UV2 = frozenset({
+    'Field_STD_Floor_Team1', 'Field_STD_Floor_Team2',
+    'Field_CenterField_Team1', 'Field_CenterField_Team2',
+})
+
 # blob array kinds (the order they are laid down in the blob)
-ARRAY_KINDS = ('positions', 'normals', 'tangents', 'uvs', 'indices', 'matrices')
+ARRAY_KINDS = ('positions', 'normals', 'tangents', 'uvs', 'uvs_lm',
+               'indices', 'matrices')
 # the stride of every group array, in BYTES per record, and the number of
 # values one record holds (a matrix is 16 doubles = 128 bytes)
 ARRAY_STRIDE = {'positions': 12, 'normals': 12, 'tangents': 12, 'uvs': 8,
-                'indices': 2, 'matrices': 128}
+                'uvs_lm': 8, 'indices': 2, 'matrices': 128}
 ARRAY_VALUES = {'positions': 3, 'normals': 3, 'tangents': 3, 'uvs': 2,
-                'indices': 1, 'matrices': 16}
+                'uvs_lm': 2, 'indices': 1, 'matrices': 16}
 ARRAY_TYPE = {'positions': 'f32', 'normals': 'f32', 'tangents': 'f32',
-              'uvs': 'f32', 'indices': 'u16', 'matrices': 'f64'}
+              'uvs': 'f32', 'uvs_lm': 'f32', 'indices': 'u16', 'matrices': 'f64'}
 
 # mesh section / vertex stream layout (measured by tools/arena/rlmesh.py)
 SECTION_REC = 24
@@ -174,25 +183,60 @@ def _package_identity(pkg, path):
 
 
 # ---------------------------------------------------------------- mesh tables
-def _mesh_arrays(geo):
-    """The float/uint arrays of one parsed mesh."""
+def _prop_int(props, name, default=0):
+    """Read an IntProperty (or raw 4-byte little-endian) from a prop dict."""
+    if not props or name not in props:
+        return default
+    p = props[name]
+    v = getattr(p, 'value', p)
+    if isinstance(v, (bytes, bytearray)) and len(v) >= 4:
+        return struct.unpack_from('<i', v, 0)[0]
+    if isinstance(v, int):
+        return v
+    return default
+
+
+def _mesh_uv_plan(name, geo):
+    """Diffuse UV channel + lightmap UV channel for one mesh."""
+    props = geo.get('properties') or {}
+    nch = int(geo.get('uv_channels') or 0)
+    lmci = _prop_int(props, 'LightMapCoordinateIndex', 0)
+    if lmci < 0 or lmci >= nch:
+        lmci = 1 if nch > 1 else 0
+    diff = 2 if (name in FIELD_DIFFUSE_UV2 and nch > 2) else 0
+    if diff >= nch:
+        diff = 0
+    return diff, lmci
+
+
+def _mesh_arrays(geo, diffuse_ch=0, lm_ch=0):
+    """The float/uint arrays of one parsed mesh (diffuse UV + lightmap UV)."""
     n = geo['num_verts']
     positions = struct.pack('<%df' % (3 * n), *geo['positions'])
     normals = geo.get('normals')
     tangents = geo.get('tangents')
-    uvs = geo.get('uvs')
+    uvs_all = geo.get('uvs_all')
     normals = struct.pack('<%df' % (3 * n), *[c for v in normals for c in v]) \
         if normals else b'\x00' * (12 * n)
     tangents = struct.pack('<%df' % (3 * n), *[c for v in tangents for c in v]) \
         if tangents else b'\x00' * (12 * n)
-    uvs = struct.pack('<%df' % (2 * n), *[c for v in uvs for c in v]) \
-        if uvs else b'\x00' * (8 * n)
+    if uvs_all and 0 <= diffuse_ch < len(uvs_all):
+        uvs_src = uvs_all[diffuse_ch]
+    else:
+        uvs_src = geo.get('uvs')
+    uvs = struct.pack('<%df' % (2 * n), *[c for v in uvs_src for c in v]) \
+        if uvs_src else b'\x00' * (8 * n)
+    if uvs_all and 0 <= lm_ch < len(uvs_all):
+        lm_src = uvs_all[lm_ch]
+        uvs_lm = struct.pack('<%df' % (2 * n), *[c for v in lm_src for c in v])
+    else:
+        uvs_lm = b'\x00' * (8 * n)
     indices = struct.pack('<%dH' % len(geo['indices']), *geo['indices'])
-    return positions, normals, tangents, uvs, indices
+    return positions, normals, tangents, uvs, uvs_lm, indices
 
 
 def _mesh_entry(name, geo, source, package, file_name, export_index, ranges,
-                lod):
+                lod, diffuse_ch=0, lm_ch=0):
     """One manifest mesh record (ranges are filled in later)."""
     lo, hi = geo['position_bbox']
     return {
@@ -205,7 +249,9 @@ def _mesh_entry(name, geo, source, package, file_name, export_index, ranges,
         'num_tris': geo['num_tris'],
         'num_indices': len(geo['indices']),
         'uv_channels': int(geo.get('uv_channels') or 0),
-        'uv_stored_channels': 1,
+        'uv_stored_channels': 2,
+        'diffuse_uv_channel': int(diffuse_ch),
+        'lightmap_uv_channel': int(lm_ch),
         'bounds': {'min': [_f(v) for v in lo], 'max': [_f(v) for v in hi]},
         'arrays': ranges,
         'sections': [
@@ -710,7 +756,77 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
                 entry['_payload'] = rgba
             # the hash is of the bytes that are actually STORED
             entry['payload_sha256'] = hashlib.sha256(entry['_payload']).hexdigest()
+            entry['usage'] = 'diffuse'
             texture_index[tkey] = len(textures)
+            textures.append(entry)
+            texture_bytes += len(entry['_payload'])
+            texture_formats[entry['format']] = \
+                texture_formats.get(entry['format'], 0) + 1
+            texture_rgba8 += entry['rgba8_bytes']
+
+    # ---- lightmaps (NormalizedAverageColor only — the bake multiply) ------
+    lm_by_component = rllightmap.lightmap_index_by_component(mpkg)
+    # Shade lives in DirectionalMax (MEASURED on StadiumBase: lum range ~2.0
+    # after scale vs NormalizedAverage ~flat 0.8–1.0). Pack both; draw uses
+    # Directional for the multiply.
+    lm_export_needed = {}
+    for h in lm_by_component.values():
+        lm_export_needed[h['avg_export']] = h['avg_name']
+        lm_export_needed[h['dir_export']] = h['dir_name']
+    lm_tex_by_export = {}  # 1-based export idx -> pack texture index
+    if want_textures:
+        src_base = os.path.basename(pack_path)
+        for exp_idx, lm_name in sorted(lm_export_needed.items(),
+                                       key=lambda kv: (kv[1], kv[0])):
+            if exp_idx <= 0 or exp_idx > len(mpkg.upk.exports):
+                continue
+            if exp_idx in lm_tex_by_export:
+                continue
+            tex_export = mpkg.upk.exports[exp_idx - 1]
+            if mpkg.export_class_name(tex_export) != 'LightMapTexture2D':
+                continue
+            tinfo, payload = _texture_payload(mpkg, tex_export)
+            if payload is None:
+                continue
+            entry = {
+                'name': '%s#%d' % (lm_name, exp_idx),
+                'class': 'LightMapTexture2D',
+                'package': 'Stadium_Day_P',
+                'file': src_base,
+                'width': int(tinfo['width']),
+                'height': int(tinfo['height']),
+                'format': tinfo['format'],
+                'mip_count': int(tinfo['mip_count'] or 0),
+                'srgb': False,
+                'storage': 'compressed',
+                'usage': 'lightmap',
+                'rgba8_bytes': int(tinfo['width']) * int(tinfo['height']) * 4,
+                'payload_sha256': '',
+                '_payload': payload,
+                'export': exp_idx - 1,
+                'lightmap_kind': ('directional' if lm_name.startswith('Directional')
+                                  else 'average'),
+            }
+            try:
+                rgba = rldds.decode(payload, entry['width'], entry['height'],
+                                    entry['format'])
+            except ValueError as exc:
+                entry['decoded'] = False
+                entry['decode_error'] = str(exc)
+            else:
+                entry['decoded'] = (len(rgba) == entry['rgba8_bytes'])
+                if not entry['decoded']:
+                    entry['decode_error'] = 'size mismatch'
+            force_rgba = store == 'rgba' or entry['format'] not in (
+                'PF_DXT1', 'PF_DXT5')
+            if force_rgba:
+                if not entry.get('decoded'):
+                    continue
+                entry['storage'] = 'rgba8'
+                entry['_payload'] = rgba
+            entry['payload_sha256'] = hashlib.sha256(entry['_payload']).hexdigest()
+            lm_tex_by_export[exp_idx] = len(textures)
+            texture_index[(src_base, entry['name'])] = len(textures)
             textures.append(entry)
             texture_bytes += len(entry['_payload'])
             texture_formats[entry['format']] = \
@@ -720,7 +836,8 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
     # how many of the resolved slots point at a texture whose pixels really
     # decode (the reference resolution and the decoded pixels are two
     # different claims; the pack reports both)
-    decoded_keys = set((t['file'], t['name']) for t in textures if t.get('decoded'))
+    decoded_keys = set((t['file'], t['name']) for t in textures
+                       if t.get('decoded') and t.get('usage') != 'lightmap')
     decoded_slots = sum(1 for b in bindings
                         if b['scope'] == 'placement' and b['status'] == 'RESOLVED'
                         and (b['texture_file'], b['texture']) in decoded_keys)
@@ -734,11 +851,13 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
                    [(n, g, i, 'sibling', p, f)
                     for n, g, i, p, f, _path in ext_meshes])
     for name, geo, export_index, source, package, file_name in all_meshes:
-        positions, normals, tangents, uvs, indices = _mesh_arrays(geo)
+        diff_ch, lm_ch = _mesh_uv_plan(name, geo)
+        positions, normals, tangents, uvs, uvs_lm, indices = _mesh_arrays(
+            geo, diff_ch, lm_ch)
         ranges = {}
         for kind, data in (('positions', positions), ('normals', normals),
                            ('tangents', tangents), ('uvs', uvs),
-                           ('indices', indices)):
+                           ('uvs_lm', uvs_lm), ('indices', indices)):
             first = len(kind_buffers[kind]) // ARRAY_STRIDE[kind]
             kind_buffers[kind] += data
             ranges[kind] = {
@@ -747,7 +866,7 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
                 'stride': ARRAY_STRIDE[kind],
             }
         mesh_entries.append((name, geo, export_index, source, package,
-                             file_name, ranges))
+                             file_name, ranges, diff_ch, lm_ch))
 
     # the matrices of every instance (column-major, 16 doubles)
     all_instances = list(instances) + list(external_instances)
@@ -776,10 +895,11 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
     # absolute byte offsets per mesh
     meshes_json = []
     for (name, geo, export_index, source, package, file_name,
-         ranges) in mesh_entries:
+         ranges, diff_ch, lm_ch) in mesh_entries:
         entry = _mesh_entry(name, geo, source, package, file_name, export_index,
-                            {}, _lod_of(geo))
-        for kind in ('positions', 'normals', 'tangents', 'uvs', 'indices'):
+                            {}, _lod_of(geo), diff_ch, lm_ch)
+        for kind in ('positions', 'normals', 'tangents', 'uvs', 'uvs_lm',
+                     'indices'):
             r = ranges[kind]
             base = array_table[kind]['offset']
             entry['arrays'][kind] = {
@@ -810,7 +930,7 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
                 'texture': res['texture'],
             })
         mm = matrix_meta_i
-        return {
+        row = {
             'component_export': inst['export'],
             'mesh': inst['mesh'],
             'mesh_external': bool(mesh_is_external),
@@ -829,6 +949,29 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
             },
             'material_slots': slots,
         }
+        lm = lm_by_component.get(inst['export'])
+        if lm is not None:
+            # Prefer DirectionalMax for shade (MEASURED range >> Average).
+            tidx = lm_tex_by_export.get(lm['dir_export'])
+            if tidx is None:
+                tidx = lm_tex_by_export.get(lm['avg_export'])
+            if tidx is not None:
+                ds = lm['dir_scale']
+                row['lightmap'] = {
+                    'texture_index': tidx,
+                    'texture': lm['dir_name'],
+                    'avg_texture': lm['avg_name'],
+                    'dir_texture': lm['dir_name'],
+                    'coord_scale': [_f(lm['coord_scale'][0]),
+                                    _f(lm['coord_scale'][1])],
+                    'coord_bias': [_f(lm['coord_bias'][0]),
+                                   _f(lm['coord_bias'][1])],
+                    'color_scale': [_f(ds[0]), _f(ds[1]), _f(ds[2])],
+                    'avg_scale': [_f(lm['avg_scale'][0]),
+                                  _f(lm['avg_scale'][1]),
+                                  _f(lm['avg_scale'][2])],
+                }
+        return row
 
     instance_table = [instance_json(inst, matrix_meta[i], False)
                       for i, inst in enumerate(instances)]
@@ -1073,10 +1216,12 @@ def verify_pack(pack_dir):
     bad = []
     for mesh in all_meshes:
         n = mesh['num_verts']
-        if mesh['arrays']['positions']['count'] != n or \
-                mesh['arrays']['normals']['count'] != n or \
-                mesh['arrays']['tangents']['count'] != n or \
-                mesh['arrays']['uvs']['count'] != n:
+        arr = mesh['arrays']
+        if arr['positions']['count'] != n or \
+                arr['normals']['count'] != n or \
+                arr['tangents']['count'] != n or \
+                arr['uvs']['count'] != n or \
+                arr.get('uvs_lm', {}).get('count', n) != n:
             bad.append(mesh['name'] + ':vertex-count')
         if mesh['arrays']['indices']['count'] != mesh['num_indices'] or \
                 mesh['num_indices'] != mesh['num_tris'] * 3:

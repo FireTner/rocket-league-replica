@@ -3100,3 +3100,47 @@ Placement coverage **258/640** RESOLVED slots, **258/258 decode**. Stairs_Mat
 sections bind `Stairs_Pack`. Remaining miss is lightmap / vertex-colour path
 and multi-colour materials the cache cluster did not isolate cleanly.
 
+## Round H-draw (2026-10-29) — lightmaps + pack GLSL
+
+Owner override continues: finish a proper arena render.
+
+### Lightmap binding (65/1176)
+
+`tools/arena/rllightmap.py` finds FLightMap2D via the measured 32-byte
+signature, then `NormalizedAverage` + `DirectionalMax` export pair +
+CoordinateScale/Bias. **65** StaticMeshComponents match (floor Team1/Team2,
+Hex, Thick, DFH_Day_StadiumBase2, seats, …).
+
+### Pack format bump → `rl-arena-pack/2`
+
+- Group array `uvs_lm` (lightmap UV channel from `LightMapCoordinateIndex`)
+- Field floors store **UV2** as diffuse (FieldSkin layout; no world unwrap)
+- NormalizedAverage lightmaps in the texture table (`usage=lightmap`)
+- Per-instance `lightmap` block (texture index, scale/bias, color scale)
+- Re-rip: **27** textures, **63/451** instances with lightmap, coverage
+  **314/640** resolved diffuse slots. Verify **19/19 PASS**.
+
+MEASURED: applying component CoordinateScale/Bias as `uv*s+b` on Floor_Team1
+drops lit-texel hit rate from ~49% to ~9% and blacks the pitch. Draw uses
+**raw** lightmap UVs; scale/bias stay recorded for a later decode pass.
+
+### Pack-path draw
+
+One GLSL ≤ 4.50 program (compiled once) when `HasArenaPack()`:
+`albedo × lightmap` with atlas-black skip + soft fill. Fixed-function remains
+the no-pack default. Field unwrap removed for meshes with diffuse UV2.
+`Field_STD_Floor_Hex` draws when it has a lightmap. Tree/leaf name join sets
+alpha-test. Car/ball keep the live sun; the bowl does not add a second shadow.
+
+### Proof
+
+Cameras under `/tmp/arena_h/{top,corner,midfield,goal}.png` (seed 1, tick 48).
+Top/midfield show FieldSkin checker on the pitch (not solid black). Stadium
+bowl still mostly flat grey — lightmap multiply is present but subtle / atlas
+padding incomplete; crowd stays flat CustomColors (not claimed exact).
+
+VG1 (no pack): **PASS** `md5=30bbbe441a6fa32f4d58c43f30fbc65c` before and after
+(machine B: NVIDIA GeForce RTX 4060 Laptop, 4.6.0 NVIDIA 615.78.08).
+Short pack soak: `ticks=1200 drops=0 glerr=0`. Machine A / I7 not measured.
+
+

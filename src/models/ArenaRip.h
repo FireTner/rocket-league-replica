@@ -48,6 +48,7 @@ struct ArenaTexture {
   std::vector<uint8_t> rgba;  // decoded, width*height*4, always RGBA8
   bool valid = false;
   std::string name;  // A6a addition: the texture name (diagnostics / lookup)
+  bool lightmap = false;  // /2: NormalizedAverage bake (not a diffuse)
 };
 
 // One section of a mesh: a run of triangles in the mesh's index buffer that
@@ -70,7 +71,10 @@ struct ArenaMesh {
   std::string name;
   std::vector<float> positions;  // 3 per vertex
   std::vector<float> normals;    // 3 per vertex
-  std::vector<float> uvs;        // 2 per vertex
+  std::vector<float> uvs;        // 2 per vertex (diffuse channel)
+  std::vector<float> uvsLm;      // 2 per vertex (lightmap channel; /2)
+  int diffuseUvChannel = 0;
+  int lightmapUvChannel = 0;
   std::vector<uint16_t> indices;
   std::vector<ArenaSection> sections;
 };
@@ -84,12 +88,21 @@ struct ArenaMesh {
 //
 // `materialSlots` has one entry per section of the placed mesh: the index of
 // the bound material in ArenaPack::materials, or -1 when the slot is empty.
+struct ArenaLightmap {
+  int texture = -1;                   // index into ArenaPack::textures
+  float coordScale[2] = {1.f, 1.f};
+  float coordBias[2] = {0.f, 0.f};
+  float colorScale[3] = {1.f, 1.f, 1.f};
+  bool valid = false;
+};
+
 struct ArenaInstance {
   std::string mesh;
   std::string owner;                  // owning actor (e.g. DecalBlockingActor_TA
                                       // placements are invisible gameplay helpers)
   float matrix[16]{};                 // COLUMN-major, m[12..14]=translation
   std::vector<int> materialSlots;     // per section slot -> material index
+  ArenaLightmap lightmap;             // /2: baked NormalizedAverage binding
 };
 
 // One material of the pack's material table.  `texture` is the index into
@@ -117,6 +130,7 @@ struct ArenaMaterial {
 struct ArenaPack {
   std::string format;
   int formatVersion = 0;
+  bool hasLightmaps = false;  // /2 pack with uvs_lm + instance lightmap rows
   std::string sourcePackage, sourceGuid;
   std::vector<ArenaMesh> meshes;
   // name -> index into `meshes`.  A mesh NAME is not unique in a UE3 package

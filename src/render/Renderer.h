@@ -360,10 +360,13 @@ private:
         uint32_t idxCount = 0;
         uint64_t tris = 0;
         int texId = -1;      // -1 = a tinted fallback material (see tintRgb)
+        int lmTexId = -1;    // -1 = no baked lightmap (shader uses white)
+        float lmScale[3] = {1.f, 1.f, 1.f};  // DirectionalMax ScaleVectors
         float tintRgb[3] = {0.55f, 0.55f, 0.55f};
         bool unlit = false;  // emissive / fake-lit sections ignore scene lighting
         bool decal = false;  // field markings: polygon offset so they sit on the turf
         bool transparent = false;  // force-field/glass: blended pass, no depth write
+        bool alphaTest = false;    // tree cards / masked foliage
         std::string tag;   // first (mesh, material) baked here (diagnostics)
         int cell[3] = {0, 0, 0};
         float lo[3] = {0, 0, 0};  // world AABB (culling)
@@ -371,6 +374,15 @@ private:
     };
     std::vector<ArenaBucket> arenaBuckets_;
     std::vector<unsigned> arenaTextures_;
+    unsigned arenaWhiteTex_ = 0;   // 1x1 white for missing albedo/lightmap
+    unsigned arenaProg_ = 0;       // pack-only GLSL ≤ 4.50 program
+    int arenaUniDiffuse_ = -1;
+    int arenaUniLightmap_ = -1;
+    int arenaUniTint_ = -1;
+    int arenaUniLmScale_ = -1;
+    int arenaUniUseDiff_ = -1;
+    int arenaUniUseLm_ = -1;
+    int arenaUniAlphaTest_ = -1;
     ArenaPackStats arenaStats_;
     bool arenaReady_ = false;
 };
