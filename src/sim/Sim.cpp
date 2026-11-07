@@ -499,9 +499,9 @@ void Sim::ContainFallbackBodies() {
 	// Ball first (it moves fastest).
 	if (impl_->arena->ball) {
 		BallState bs = impl_->arena->ball->GetState();
-		Arena::Vec3 c{bs.pos.x, bs.pos.y, bs.pos.z};
-		Arena::Vec3 n{0, 0, 1};
-		if (Arena::CollideSphere(c, Arena::BALL_RADIUS, n)) {
+		::Arena::Vec3 c{bs.pos.x, bs.pos.y, bs.pos.z};
+		::Arena::Vec3 n{0, 0, 1};
+		if (::Arena::CollideSphere(c, ::Arena::BALL_RADIUS, n)) {
 			bs.pos = Vec(c.x, c.y, c.z);
 			if (n.z < 0.9f) {
 				// Walls/ceiling/nets: analytic reflect (no physical
@@ -515,7 +515,7 @@ void Sim::ContainFallbackBodies() {
 			}
 			impl_->arena->ball->SetState(bs);
 		}
-		if (Arena::IsGoal(Arena::Vec3{bs.pos.x, bs.pos.y, bs.pos.z}))
+		if (::Arena::IsGoal(::Arena::Vec3{bs.pos.x, bs.pos.y, bs.pos.z}))
 			impl_->goalLatched = true;
 	}
 	if (impl_->wallLatch.size() != impl_->cars.size())
@@ -527,13 +527,13 @@ void Sim::ContainFallbackBodies() {
 		if (!car)
 			continue;
 		CarState cs = car->GetState();
-		Arena::Vec3 c{cs.pos.x, cs.pos.y, cs.pos.z};
-		Arena::Vec3 n{0, 0, 1};
+		::Arena::Vec3 c{cs.pos.x, cs.pos.y, cs.pos.z};
+		::Arena::Vec3 n{0, 0, 1};
 		// Car center probe radius ~50uu. Floor contacts (n.z~+1) are
 		// skipped: the car rests at z=17 < 50 by design and the wheel
 		// raycasts own the ground. Walls/ceiling get push-out + normal
 		// velocity removal (plastic wall, e=0.1).
-		if (Arena::CollideSphere(c, 50.0f, n) && n.z < 0.9f) {
+		if (::Arena::CollideSphere(c, 50.0f, n) && n.z < 0.9f) {
 			// Same push as before. The latch is the probe contact
 			// (pushed center minus radius along the push normal).
 			impl_->wallLatch[ci].hit = true;
@@ -933,6 +933,15 @@ bool Sim::IsDemoed(int idx) const {
 	if (!impl_ || idx < 0 || idx >= (int)impl_->cars.size())
 		return false;
 	return impl_->cars[idx]->GetState().isDemoed;
+}
+
+bool Sim::HasFlipReset(int idx) const {
+	if (!impl_ || idx < 0 || idx >= (int)impl_->cars.size())
+		return false;
+	RocketSim::Car* car = impl_->cars[(size_t)idx];
+	if (!car)
+		return false;
+	return car->GetState().HasFlipReset();
 }
 
 namespace {

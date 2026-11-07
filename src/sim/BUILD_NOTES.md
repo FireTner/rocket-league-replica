@@ -314,3 +314,15 @@ A 400 uu/s turf slide settles at `w=(0, 2.9912, 0)`; the next 60 ticks
 move the mark `(0.5971,0,0.8022) → (0.8491,0,-0.5282)` about that axis.
 Fallback checksum `73db10410bd8a8ad` unchanged. `measured.py` 19 PASS /
 0 FAIL. `mesh_gates.py` 13 PASS / 0 FAIL, D4 `2bd44e5e8ede6e48` unchanged.
+
+## Flip reset read (2026-11-07)
+
+`Sim::HasFlipReset` returns `CarState::HasFlipReset` (`Car.cpp`):
+`!isOnGround && HasFlipOrJump() && !hasJumped`. It does not write car,
+ball, or world state. A jump dodge window stays false because `hasJumped`
+is still set. `ContainFallbackBodies` now spells `::Arena::` so that name
+is the analytic shell under `using namespace RocketSim` (clang treats the
+unqualified name as ambiguous; the calls are the same functions).
+
+`make /tmp/t_flip` → `FLIP RESET PASS`. Spawn and a held jump are not a
+reset. Wheels on the ball, then the ball moved away, leave the flag set.

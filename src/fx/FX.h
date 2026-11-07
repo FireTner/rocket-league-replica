@@ -49,8 +49,8 @@ public:
     // sparks (workstream G), separate from the supersonic black sparkles.
     // Call after camera Apply. Deterministic (sim time).
     void DrawDrift(Renderer& r, const Snapshot& s);
-    // Formerly airborne spin arcs and a stall ring. Now a no-op: a flip is
-    // readable from the car's motion, and the circles are not replaced.
+    // Flip-reset disc (src/fx/FlipReset) while Snapshot.flipReset is set.
+    // The old airborne spin arcs stay removed.
     void DrawAir(Renderer& r, const Snapshot& s);
 
     // Supersonic streak + black sparkles while Snapshot.supersonic is set
