@@ -915,6 +915,27 @@ inline bool ArenaSectionTransparent(const std::string& meshName,
            meshName == "FF_Roof" || meshName == "FFCage_Full";
 }
 
+// Fog cards, light shafts, cloud planes and glow sprites. Drawn in the
+// opaque pass they are slabs. They may join the existing transparent
+// bucket only — never a new blend mode.
+inline bool ArenaFxCardMesh(const std::string& meshName) {
+    return meshName.rfind("Sprite", 0) == 0 || meshName == "Circle_Sprite" ||
+           meshName.rfind("FogMesh", 0) == 0 ||
+           meshName.rfind("FieldSpotLights", 0) == 0 ||
+           meshName.rfind("CloudPlane", 0) == 0;
+}
+
+// The pack GLSL path blends with texel alpha. An opaque diffuse in the
+// transparent bucket is still a slab, so a card needs real translucency.
+bool ArenaDiffuseHasAlpha(const ArenaTexture& tex) {
+    if (!tex.valid || tex.rgba.size() < 4) return false;
+    const size_t n = tex.rgba.size() / 4u;
+    for (size_t i = 0; i < n; ++i) {
+        if (tex.rgba[i * 4u + 3u] < 250) return true;
+    }
+    return false;
+}
+
 // Pale ice-blue veil for untextured glass (matches the fallbackTint "glass"
 // bucket 0.45/0.55/0.60) and its draw alpha: faint enough to see buildings
 // through, strong enough to read as a wall. Drawn blended, depth-write off.
@@ -1303,6 +1324,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
     uint32_t skipped = 0;
     uint64_t tris = 0;
     uint32_t placements = 0, slots = 0;
+    std::vector<std::string> skippedCards;
+    std::vector<std::string> blendedCards;
+    auto noteCard = [](std::vector<std::string>& rows, const std::string& mesh,
+                       const std::string& mat) {
+        std::string row = mesh;
+        if (!mat.empty()) row += " / " + mat;
+        if (std::find(rows.begin(), rows.end(), row) == rows.end())
+            rows.push_back(std::move(row));
+    };
 
     // A mesh NAME is not unique in a UE3 package: the Stadium_Day pack holds
     // EIGHT exports called "Grass" (distinct ground tiles). The pack's
@@ -1401,19 +1431,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         return 0;
     };
 
-    // The 451 placements of the package itself. The 26 IMPORTED placements
-    // (externalInstances) are deliberately NOT drawn: none of them carries a
-    // diffuse (the pack records 0 resolved diffuses for them) and they are
-    // the sky sphere / billboard sprites of the sibling package, which the
-    // neutral fallback material would render as a grey dome around the
-    // camera. They are counted and reported, never silently dropped.
+    // Package placements, plus the imported sky and the external cards.
+    // A card is drawn later only when it can sit in the existing
+    // transparent bucket. Anything else would be an opaque slab.
     std::vector<const ArenaInstance*> toDraw;
     toDraw.reserve(pack.instances.size() + pack.externalInstances.size());
     for (const ArenaInstance& inst : pack.instances) toDraw.push_back(&inst);
     for (const ArenaInstance& inst : pack.externalInstances) {
-        // Sky dome only. The other external placements are sprites, fog
-        // cards and a second fog shell; drawn opaque they become slabs.
-        if (inst.mesh == "SkySphere01") toDraw.push_back(&inst);
+        if (inst.mesh == "SkySphere01" || ArenaFxCardMesh(inst.mesh))
+            toDraw.push_back(&inst);
     }
     for (const ArenaInstance* instPtr : toDraw) {
         const ArenaInstance& inst = *instPtr;
@@ -1422,17 +1448,6 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         // geometry. Drawing them would bury the field under opaque planes.
         if (inst.owner == "DecalBlockingActor_TA" || inst.owner == "FXActor_TA" ||
             inst.owner == "BoostPill_WarmUp_FXActor") {
-            ++skipped;
-            continue;
-        }
-        // Volumetric light shafts, fog cards and glow sprites (light-cone
-        // meshes, fog materials, sprite cards) are translucent/additive FX in
-        // game; drawn opaque they become giant slabs crossing the field (the
-        // dark X bands over midfield). Skip them, never silently: counted.
-        if (inst.mesh.rfind("Sprite", 0) == 0 ||
-            inst.mesh.rfind("FogMesh", 0) == 0 ||
-            inst.mesh.rfind("FieldSpotLights", 0) == 0 ||
-            inst.mesh.rfind("CloudPlane", 0) == 0) {
             ++skipped;
             continue;
         }
@@ -1603,13 +1618,6 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                     ++skipped;
                     continue;
                 }
-                // Light-shaft / fog sections that survive the placement
-                // filter (shared meshes): same skip, same counting.
-                if (matName.find("LightCone") != std::string::npos ||
-                    matName.find("Fog") != std::string::npos) {
-                    ++skipped;
-                    continue;
-                }
                 texId = pack.materials[size_t(matIdx)].texture;
                 // Reject non-albedo textures that slipped into the diffuse
                 // slot (normal maps, 1x1 stubs). Keep the section; shade via
@@ -1679,8 +1687,10 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 mesh->name.find("Leafy") != std::string::npos ||
                 mesh->name.find("Tree") != std::string::npos;
             const bool skyDome = mesh->name == "SkySphere01";
-            if (skyDome) {
-                texId = -1;
+            // Keep a resolved albedo. The pale day tint is only the fallback
+            // when the pack and the imported mesh have no real diffuse
+            // (curves, noise and flares are already rejected above).
+            if (skyDome && texId < 0) {
                 tint = 11;
                 tintRgb[0] = 0.73f; tintRgb[1] = 0.82f; tintRgb[2] = 0.90f;
             }
@@ -1700,11 +1710,30 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                                "BoostPad_", 0) == 0;
             // Force-field/glass transparency. The pack has no blend flag;
             // ArenaSectionTransparent is the exact material/mesh list.
+            // Fog, shafts, clouds and sprites join that same bucket only
+            // when their diffuse is actually translucent. Otherwise they
+            // stay skipped: an opaque draw is a slab, and the pack shaders
+            // are not given a new blend.
+            const bool volumetric =
+                ArenaFxCardMesh(mesh->name) ||
+                secMatName.find("LightCone") != std::string::npos ||
+                secMatName.find("Fog") != std::string::npos;
+            bool secTransparent =
+                ArenaSectionTransparent(mesh->name, secMatName);
+            if (volumetric && !secTransparent && texId >= 0 &&
+                size_t(texId) < pack.textures.size() &&
+                ArenaDiffuseHasAlpha(pack.textures[size_t(texId)]))
+                secTransparent = true;
+            if (volumetric && !secTransparent) {
+                ++skipped;
+                noteCard(skippedCards, mesh->name, secMatName);
+                continue;
+            }
+            if (volumetric)
+                noteCard(blendedCards, mesh->name, secMatName);
             // Transparent sections get their own buckets (key.transparent).
             // Team/hex glass keeps fallback tint 4. Other untextured glass
             // takes the ice-blue veil. Alpha is stamped at upload.
-            const bool secTransparent =
-                ArenaSectionTransparent(mesh->name, secMatName);
             if (secTransparent && texId < 0 && tint != 4 && tint != 8 &&
                 tint != 9) {
                 tintRgb[0] = kArenaGlass[0];
@@ -2149,6 +2178,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         if (g.transparent) ++arenaStats_.transparentBuckets;
     }
     arenaReady_ = !arenaBuckets_.empty();
+    auto printCards = [](const char* label, std::vector<std::string>& rows) {
+        std::sort(rows.begin(), rows.end());
+        std::fprintf(stderr, "[arena] %s:", label);
+        if (rows.empty()) std::fprintf(stderr, " (none)");
+        for (const std::string& row : rows) std::fprintf(stderr, " [%s]", row.c_str());
+        std::fprintf(stderr, "\n");
+    };
+    printCards("sky/cards blended", blendedCards);
+    printCards("sky/cards skipped (no blend)", skippedCards);
     std::fprintf(stderr,
                  "[arena] pack uploaded: buckets=%u (textured=%u fallback=%u "
                  "transparent=%u) "
