@@ -29,7 +29,9 @@ namespace rl {
 
 // How a texture's payload was stored in the pack.  The payload of a
 // compressed texture is decoded on the CPU into `rgba` (always RGBA8, row
-// major, 4 bytes per texel, top-left origin).
+// major, 4 bytes per texel, top-left origin) AND kept in `blocks` so the GL
+// upload can hand the driver the original S3TC blocks.  The decode stays:
+// the headless contract test compares `rgba` to tools/arena/rldds.py.
 enum class ArenaTexFormat : int {
   kRgba8 = 0,  // the pack stored the expanded RGBA8 bytes (storage = "rgba8")
   kDxt1 = 1,   // S3TC BC1 — 8 B per 4x4 block, 3 or 4 colours + 1-bit alpha
@@ -40,12 +42,14 @@ enum class ArenaTexFormat : int {
 //
 // `format` is the ORIGINAL storage format of the payload (the pack keeps the
 // compressed form); `rgba` always holds the DECODED pixels, exactly
-// `width * height * 4` bytes.  `valid` is true when the payload was present,
-// had the expected byte length and decoded without error.
+// `width * height * 4` bytes.  `blocks` is the original compressed payload
+// (empty when storage is already RGBA8).  `valid` is true when the payload
+// was present, had the expected byte length and decoded without error.
 struct ArenaTexture {
   int width = 0, height = 0;
   ArenaTexFormat format = ArenaTexFormat::kRgba8;
-  std::vector<uint8_t> rgba;  // decoded, width*height*4, always RGBA8
+  std::vector<uint8_t> rgba;    // decoded, width*height*4, always RGBA8
+  std::vector<uint8_t> blocks;  // original DXT1/DXT5 bytes; empty for rgba8
   bool valid = false;
   std::string name;  // A6a addition: the texture name (diagnostics / lookup)
   bool lightmap = false;  // /2: NormalizedAverage bake (not a diffuse)

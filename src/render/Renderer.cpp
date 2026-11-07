@@ -1065,6 +1065,15 @@ extern "C" void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
 #ifndef GLchar
 typedef char GLchar;
 #endif
+// S3TC block formats (GL_EXT_texture_compression_s3tc). DXT1 uses the RGBA
+// enum so a c0<=c1 block stays punch-through alpha, matching the CPU decoder.
+#ifndef GL_COMPRESSED_RGBA_S3TC_DXT1_EXT
+#define GL_COMPRESSED_RGBA_S3TC_DXT1_EXT 0x83F1
+#define GL_COMPRESSED_RGBA_S3TC_DXT5_EXT 0x83F3
+#endif
+#ifndef GL_TEXTURE_COMPRESSED
+#define GL_TEXTURE_COMPRESSED 0x86A1
+#endif
 
 // Pack-only GLSL ≤ 4.50. Compiled once at upload. The no-pack path never
 // builds this program.
@@ -1204,6 +1213,80 @@ GLuint ArenaLinkProgram(GLuint vs, GLuint fs) {
         return 0;
     }
     return p;
+}
+
+bool ArenaExtensionHas(const char* exts, const char* needle) {
+    if (!exts || !needle || needle[0] == '\0') return false;
+    const size_t n = std::strlen(needle);
+    for (const char* p = exts; (p = std::strstr(p, needle)) != nullptr; p += n) {
+        const bool left = (p == exts) || p[-1] == ' ';
+        const bool right = p[n] == '\0' || p[n] == ' ';
+        if (left && right) return true;
+    }
+    return false;
+}
+
+bool ArenaDriverHasS3tc() {
+    const GLubyte* ext = glGetString(GL_EXTENSIONS);
+    if (!ext) return false;
+    return ArenaExtensionHas(reinterpret_cast<const char*>(ext),
+                             "GL_EXT_texture_compression_s3tc");
+}
+
+const char* ArenaPackFormatName(ArenaTexFormat format) {
+    if (format == ArenaTexFormat::kDxt1) return "PF_DXT1";
+    if (format == ArenaTexFormat::kDxt5) return "PF_DXT5";
+    return "RGBA8";
+}
+
+GLenum ArenaS3tcInternalFormat(ArenaTexFormat format) {
+    if (format == ArenaTexFormat::kDxt1) return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+    if (format == ArenaTexFormat::kDxt5) return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    return 0;
+}
+
+const char* ArenaS3tcEnumName(GLenum format) {
+    if (format == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT)
+        return "GL_COMPRESSED_RGBA_S3TC_DXT1_EXT";
+    if (format == GL_COMPRESSED_RGBA_S3TC_DXT5_EXT)
+        return "GL_COMPRESSED_RGBA_S3TC_DXT5_EXT";
+    return nullptr;
+}
+
+// Level 0 of the bound texture becomes the S3TC payload. Mips are generated
+// for diffuse textures (lightmaps stay a single level). False means the
+// driver refused the format; `why` says which call, and the GL error is drained.
+bool ArenaUploadCompressedLevel(const ArenaTexture& t, GLenum internalFormat,
+                                bool withMips, char* why, size_t whyLen) {
+    while (glGetError() != GL_NO_ERROR) {}
+    glCompressedTexImage2D(GL_TEXTURE_2D, 0, internalFormat, t.width, t.height,
+                           0, static_cast<GLsizei>(t.blocks.size()),
+                           t.blocks.data());
+    GLenum err = glGetError();
+    if (err != GL_NO_ERROR) {
+        while (glGetError() != GL_NO_ERROR) {}
+        std::snprintf(why, whyLen, "glCompressedTexImage2D error 0x%04x", err);
+        return false;
+    }
+    if (withMips) {
+        glGenerateMipmap(GL_TEXTURE_2D);
+        err = glGetError();
+        if (err != GL_NO_ERROR) {
+            while (glGetError() != GL_NO_ERROR) {}
+            std::snprintf(why, whyLen, "glGenerateMipmap error 0x%04x", err);
+            return false;
+        }
+    }
+    GLint isCompressed = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_COMPRESSED,
+                             &isCompressed);
+    err = glGetError();
+    if (err != GL_NO_ERROR || isCompressed != GL_TRUE) {
+        while (glGetError() != GL_NO_ERROR) {}
+        std::snprintf(why, whyLen, "driver did not keep the compressed format");
+        return false;
+    }
+    return true;
 }
 }  // namespace
 
@@ -1817,6 +1900,10 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         }
     }
     std::vector<int> texGlId(pack.textures.size(), -1);
+    const bool s3tcOk = ArenaDriverHasS3tc();
+    bool loggedMissingS3tc = false;
+    int compressedDxt1 = 0, compressedDxt5 = 0, rgbaUploads = 0;
+    int rewrittenUploads = 0, refusedUploads = 0;
     for (size_t ti = 0; ti < pack.textures.size(); ++ti) {
         const ArenaTexture& t = pack.textures[ti];
         if (!t.valid || t.rgba.empty() || t.width <= 0 || t.height <= 0) continue;
@@ -1886,16 +1973,67 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         glGenTextures(1, &tex);
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.width, t.height, 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, px);
+        // Pixel rewrites (hex mask, field lift, boost-pad gold) are not the
+        // stored blocks, so those stay RGBA8. Everything else with a DXT
+        // payload is uploaded as S3TC when the driver accepts it.
+        const bool rewritten = !converted.empty();
+        const GLenum s3tcFormat = ArenaS3tcInternalFormat(t.format);
+        bool compressed = false;
+        if (rewritten) {
+            std::fprintf(stderr,
+                         "[arena] texture '%s' stays RGBA8 (pixels rewritten "
+                         "at upload)\n",
+                         t.name.c_str());
+            ++rewrittenUploads;
+        } else if (s3tcFormat != 0 && !t.blocks.empty()) {
+            char why[96];
+            why[0] = '\0';
+            if (!s3tcOk) {
+                if (!loggedMissingS3tc) {
+                    std::fprintf(stderr,
+                                 "[arena] GL_EXT_texture_compression_s3tc is "
+                                 "absent — DXT textures stay RGBA8\n");
+                    loggedMissingS3tc = true;
+                }
+                std::fprintf(stderr,
+                             "[arena] texture '%s' %s refused (S3TC extension "
+                             "absent) — RGBA8\n",
+                             t.name.c_str(), ArenaPackFormatName(t.format));
+                ++refusedUploads;
+            } else if ((t.width % 4) != 0 || (t.height % 4) != 0) {
+                std::fprintf(stderr,
+                             "[arena] texture '%s' %s refused (size %dx%d is "
+                             "not a multiple of 4) — RGBA8\n",
+                             t.name.c_str(), ArenaPackFormatName(t.format),
+                             t.width, t.height);
+                ++refusedUploads;
+            } else if (ArenaUploadCompressedLevel(t, s3tcFormat, !t.lightmap,
+                                                  why, sizeof(why))) {
+                compressed = true;
+                if (t.format == ArenaTexFormat::kDxt1) ++compressedDxt1;
+                else ++compressedDxt5;
+            } else {
+                std::fprintf(stderr,
+                             "[arena] texture '%s' %s refused (%s) — RGBA8\n",
+                             t.name.c_str(), ArenaPackFormatName(t.format), why);
+                ++refusedUploads;
+            }
+        } else {
+            ++rgbaUploads;
+        }
+        if (!compressed) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.width, t.height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, px);
+        }
         // Lightmaps are atlas-packed: mipmaps average across chart borders
         // and paint purple/blue padding onto seams (goal frames, dome edge).
         // Diffuse keeps G4 trilinear; lightmaps stay linear + clamp.
+        // A compressed diffuse already has its mip chain.
         if (t.lightmap) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         } else {
-            glGenerateMipmap(GL_TEXTURE_2D);
+            if (!compressed) glGenerateMipmap(GL_TEXTURE_2D);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                             GL_LINEAR_MIPMAP_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -1906,6 +2044,19 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         texGlId[ti] = int(tex);
         arenaTextures_.push_back(tex);
     }
+    std::fprintf(stderr, "[arena] compressed upload:");
+    if (compressedDxt1 > 0) {
+        std::fprintf(stderr, " PF_DXT1 x%d as %s", compressedDxt1,
+                     ArenaS3tcEnumName(GL_COMPRESSED_RGBA_S3TC_DXT1_EXT));
+    }
+    if (compressedDxt5 > 0) {
+        std::fprintf(stderr, " PF_DXT5 x%d as %s", compressedDxt5,
+                     ArenaS3tcEnumName(GL_COMPRESSED_RGBA_S3TC_DXT5_EXT));
+    }
+    if (compressedDxt1 == 0 && compressedDxt5 == 0)
+        std::fprintf(stderr, " none");
+    std::fprintf(stderr, " (rgba8=%d rewrite=%d refused=%d)\n", rgbaUploads,
+                 rewrittenUploads, refusedUploads);
 
     // ---- GL upload: the buckets (GL_STATIC_DRAW, uploaded once) -----------
     // The map is ordered by the bucket key, so the draw order is deterministic.
