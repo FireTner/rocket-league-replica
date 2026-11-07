@@ -5,8 +5,14 @@
 # game geometry). Attribution ships beside the output.
 #
 # Output: assets/models/fennec.bin
-#   magic "FEN1" | u32 vertexCount | interleaved f32 x,y,z,nx,ny,nz per vertex
-#   | u32 indexCount | u32 indices
+#   magic "FEN2" | u32 partCount
+#   per part: u32 flags (bit0 = front wheel, steers) | f32 pivot x,y,z
+#             | u32 vertexCount | interleaved f32 x,y,z,nx,ny,nz
+#             | u32 indexCount | u32 indices (part-local)
+#   Part 0 is the body (pivot 0, flags 0). Parts 1..4 are the GLB wheel
+#   assemblies Alpha - FR, FL, BR, BL. Wheel vertices are car-local minus the
+#   assembly origin so a spin about +Y and a steer about +Z leave the hub put.
+#   Adding each pivot back reproduces the old FEN1 rest pose.
 #
 # Baked transform (car-local frame FROZEN by Models.cpp CarFrame:
 # local +x = forward, +y = LEFT, +z = up, origin = RocketSim car origin):
@@ -126,37 +132,51 @@ def main():
             return (0.0, 0.0, 1.0)
         return (x / l, y / l, z / l)
 
-    verts = []  # (x,y,z,nx,ny,nz) in OUR frame
-    indices = []
+    # Part 0 = body. Parts 1..4 = FR, FL, BR, BL (GLB node prefixes).
+    WHEEL_NAMES = ("Alpha - FR", "Alpha - FL", "Alpha - BR", "Alpha - BL")
+    parts = [{"flags": 0, "pivot": (0.0, 0.0, 0.0), "verts": [], "indices": []}
+             for _ in range(5)]
     scene = j["scenes"][j.get("scene", 0)]
 
-    def walk(ni, parent, stats):
+    def car_of(wp, wn):
+        return (wp[0], wp[2], wp[1] - Z_OFF, wn[0], wn[2], wn[1])
+
+    def walk(ni, parent, wheel):
         n = j["nodes"][ni]
         m = mul(parent, node_matrix(n))
         nm = normal_matrix(m)
+        name = n.get("name", "")
+        here = wheel
+        if here is None:
+            for wi, prefix in enumerate(WHEEL_NAMES):
+                if name.startswith(prefix):
+                    g = xform(m, (0.0, 0.0, 0.0))
+                    pivot = (g[0], g[2], g[1] - Z_OFF)
+                    parts[wi + 1]["pivot"] = pivot
+                    parts[wi + 1]["flags"] = 1 if wi < 2 else 0
+                    here = wi + 1
+                    break
         if "mesh" in n:
             mesh = j["meshes"][n["mesh"]]
+            part = parts[0 if here is None else here]
+            px, py, pz = part["pivot"]
             for prim in mesh["primitives"]:
                 pos = read_accessor(prim["attributes"]["POSITION"])
                 nor = read_accessor(prim["attributes"].get("NORMAL", prim["attributes"]["POSITION"]))
-                base = len(verts)
+                base = len(part["verts"])
                 for p, nn in zip(pos, nor):
-                    wp = xform(m, p)
-                    wn = nrm(nm, nn)
-                    vx, vy, vz = wp
-                    nx, ny, nz = wn
-                    # world -> car-local: (x, z, y) with the lateral sign kept
-                    verts.append((vx, vz, vy - Z_OFF, nx, nz, ny))
+                    vx, vy, vz, nx, ny, nz = car_of(xform(m, p), nrm(nm, nn))
+                    part["verts"].append((vx - px, vy - py, vz - pz, nx, ny, nz))
                 idxs = read_accessor(prim["indices"]) if "indices" in prim else []
                 for t in range(0, len(idxs), 3):
-                    a, b, c = idxs[t][0] + base, idxs[t + 1][0] + base, idxs[t + 2][0] + base
-                    # cull degenerate
+                    a = idxs[t][0] + base
+                    b = idxs[t + 1][0] + base
+                    c = idxs[t + 2][0] + base
                     if a == b or b == c or a == c:
                         continue
-                    indices.extend((a, b, c))
+                    part["indices"].extend((a, b, c))
                     stats["tris"] += 1
-                    # degenerate-after-transform check (zero area)
-                    pa, pb, pc = verts[a], verts[b], verts[c]
+                    pa, pb, pc = part["verts"][a], part["verts"][b], part["verts"][c]
                     e1 = (pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2])
                     e2 = (pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2])
                     cx = e1[1] * e2[2] - e1[2] * e2[1]
@@ -165,26 +185,44 @@ def main():
                     if math.sqrt(cx * cx + cy * cy + cz * cz) < 1e-9:
                         stats["degenerate"] += 1
         for ci in n.get("children", []):
-            walk(ci, m, stats)
+            walk(ci, m, here)
 
     ident = [[1 if i == j else 0 for j in range(4)] for i in range(4)]
     stats = {"tris": 0, "degenerate": 0}
     for root in scene["nodes"]:
-        walk(root, ident, stats)
+        walk(root, ident, None)
+
+    for i, part in enumerate(parts):
+        if not part["verts"] or not part["indices"]:
+            print("FAIL: empty part %d" % i)
+            return 1
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "wb") as f:
-        f.write(b"FEN1")
-        f.write(struct.pack("<I", len(verts)))
-        for v in verts:
-            f.write(struct.pack("<6f", *v))
-        f.write(struct.pack("<I", len(indices)))
-        f.write(struct.pack("<%dI" % len(indices), *indices))
-    xs = [v[0] for v in verts]; ys = [v[1] for v in verts]; zs = [v[2] for v in verts]
-    nl = [math.sqrt(v[3] * v[3] + v[4] * v[4] + v[5] * v[5]) for v in verts]
+        f.write(b"FEN2")
+        f.write(struct.pack("<I", len(parts)))
+        for part in parts:
+            f.write(struct.pack("<I3f", part["flags"], *part["pivot"]))
+            f.write(struct.pack("<I", len(part["verts"])))
+            for v in part["verts"]:
+                f.write(struct.pack("<6f", *v))
+            f.write(struct.pack("<I", len(part["indices"])))
+            f.write(struct.pack("<%dI" % len(part["indices"]), *part["indices"]))
+    rest = []
+    for part in parts:
+        px, py, pz = part["pivot"]
+        for v in part["verts"]:
+            rest.append((v[0] + px, v[1] + py, v[2] + pz, v[3], v[4], v[5]))
+    xs = [v[0] for v in rest]; ys = [v[1] for v in rest]; zs = [v[2] for v in rest]
+    nl = [math.sqrt(v[3] * v[3] + v[4] * v[4] + v[5] * v[5]) for v in rest]
     bad = sum(1 for l in nl if abs(l - 1.0) > 0.01)
-    print("vertices=%d triangles=%d degenerate=%d" % (len(verts), len(indices) // 3, stats["degenerate"]))
-    print("bbox x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f] (uu, car-local)"
+    print("vertices=%d triangles=%d degenerate=%d parts=%d"
+          % (len(rest), stats["tris"], stats["degenerate"], len(parts)))
+    for i, part in enumerate(parts):
+        print("  part %d flags=%d pivot=(%.2f,%.2f,%.2f) verts=%d tris=%d"
+              % (i, part["flags"], part["pivot"][0], part["pivot"][1],
+                 part["pivot"][2], len(part["verts"]), len(part["indices"]) // 3))
+    print("bbox x[%.2f,%.2f] y[%.2f,%.2f] z[%.2f,%.2f] (uu, car-local rest)"
           % (min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)))
     print("normals: non-unit=%d/%d  |n| min=%.4f max=%.4f" % (bad, len(nl), min(nl), max(nl)))
     print("wrote %s (%d bytes)" % (OUT, os.path.getsize(OUT)))
