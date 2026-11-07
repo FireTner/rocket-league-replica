@@ -82,6 +82,7 @@ int main() {
         fx.DrawPads(renderer, pads, 4);
         fx.DrawBoostFlame(renderer, s);
         fx.DrawTrail(renderer, s);
+        fx.DrawWheelEmbers(renderer, s);
         // Spinning proof box at center.
         renderer.DrawBox(0, 0, 200, 120, 120, 120, t, 0.9f, 0.3f, 0.2f);
         renderer.EndFrame();

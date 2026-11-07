@@ -85,6 +85,7 @@ void FX::Update(float dt, const Snapshot& s) {
         trail_[0][0]=s.carPos[0]; trail_[0][1]=s.carPos[1]; trail_[0][2]=s.carPos[2];
         if (trailN_ < kTrail) trailN_++;
     }
+    wheelEmbers_.Update(dt, s);
 }
 
 void FX::OnPickup(bool big) { burst_ = big ? 0.6f : 0.3f; burstBig_ = big; }
@@ -487,6 +488,10 @@ void FX::DrawTrail(Renderer& r, const Snapshot& s) {
         r.DrawRing(s.carPos[0], s.carPos[1], 6.0f, 260.0f * (1.2f - k),
                    300.0f * (1.2f - k), 32, 0.85f, 0.95f, 1.0f, 0.7f * k);
     }
+}
+
+void FX::DrawWheelEmbers(Renderer& r, const Snapshot& s) {
+    wheelEmbers_.Draw(r, s);
 }
 
 void FX::DrawBallTrail(Renderer& r, const Snapshot& s) {

@@ -1121,6 +1121,7 @@ int main(int argc, char** argv) {
 		fx.DrawAir(renderer, snap);
 		fx.DrawTrail(renderer, snap);
 		goalBurst.Draw(renderer);
+		fx.DrawWheelEmbers(renderer, snap);
 		fx.DrawContactSparks(renderer, contactSparks);
 		if (menu.IsOpen()) {
 			// RL-style SETTINGS panel: full-screen dim, centered card with a
