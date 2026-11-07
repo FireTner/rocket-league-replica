@@ -203,7 +203,7 @@ public:
     // DrawArenaBuckets emits draws 1..7 ((a+d)->turf->wallbase->ceiling->
     // skirt->B2->glass); DrawArenaGoalInteriors emits draws 8..9 (C5+C6,
     // depth-write OFF) and must stay AFTER cars/ball in the frame.
-    void DrawArenaBuckets(bool meshMode, bool noHexNet);
+    void DrawArenaBuckets(bool meshMode, bool noHexNet, float wallOpacity);
     void DrawArenaGoalInteriors(bool meshMode);
 
     // ---- A6b: the ripped-arena draw path -----------------------------------

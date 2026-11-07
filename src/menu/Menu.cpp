@@ -132,6 +132,7 @@ void Menu::BuildItems() {
     AddFloat("camera.swivel_speed", "Swivel speed", settings_.camera.swivelSpeed, 1, 10, 0.5f);
     AddBool("camera.shake", "Camera shake", settings_.camera.shake);
     AddBool("camera.invert_swivel", "Invert swivel", settings_.camera.invertSwivel);
+    AddFloat("render.wall_opacity", "Wall opacity", settings_.render.wallOpacity, 0.0f, 1.0f, 0.05f);
 
     AddHeader("INPUT");
     AddAxisBinding("input.throttle", "Throttle fwd/back", settings_.input.throttle);

@@ -112,6 +112,10 @@ struct RenderSettings {
     // the shipped fixed-function path byte-identical; true enables the
     // specular + roughness + IBL-lift car/ball material (src/render/PbrGl.*).
     bool pbr = false;
+    // Glass-wall alpha on the fixed-function shell. 0.40 matches the baked
+    // glass vertex alpha (ArenaShell kGlassA) so a missing key leaves the
+    // current walls unchanged. CROSS_CHECK's "0.30" is the pre-ledger value.
+    float wallOpacity = 0.40f;
 };
 
 struct Settings {

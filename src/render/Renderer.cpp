@@ -789,8 +789,8 @@ void Renderer::DrawText2D(int px, int py, const char* text, int scale, float r, 
 }
 
 // ---- arena bucket VBOs (G3b; bake lives in src/models/ArenaShell.cpp) ----
-void Renderer::DrawArenaBuckets(bool meshMode, bool noHexNet) {
-    ArenaShell::DrawArenaBuckets(*this, meshMode, noHexNet);
+void Renderer::DrawArenaBuckets(bool meshMode, bool noHexNet, float wallOpacity) {
+    ArenaShell::DrawArenaBuckets(*this, meshMode, noHexNet, wallOpacity);
 }
 
 void Renderer::DrawArenaGoalInteriors(bool meshMode) {

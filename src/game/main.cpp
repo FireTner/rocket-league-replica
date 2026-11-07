@@ -1000,7 +1000,8 @@ int main(int argc, char** argv) {
 		if (renderer.HasArenaPack())
 			renderer.DrawArenaPack();
 		else
-			renderer.DrawArenaBuckets(sim->usingRealSoccar(), noHexNet);
+			renderer.DrawArenaBuckets(sim->usingRealSoccar(), noHexNet,
+			                          settings.render.wallOpacity);
 		// Pads.
 		{
 			int n = sim->NumPads();

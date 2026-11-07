@@ -27,7 +27,10 @@ namespace ArenaShell {
 // mesh vs fallback VBO set (built once on first use after GL context exists).
 // noHexNet selects the PlainGlass bind for the glass draw (geometry+UVs are
 // shared; only the bind swaps, as today).
-void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet);
+// wallOpacity is the glass-bucket alpha (0..1). The baked default is 0.40;
+// that value keeps the existing modulate path. Any other value replaces only
+// the glass alpha for this draw.
+void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet, float wallOpacity);
 
 // Draws 8..9 (C5 interior shells + C6 weave backs) with the depth-write-off
 // sandwich. Call after cars/ball, exactly where main.cpp:1568-1592 draws

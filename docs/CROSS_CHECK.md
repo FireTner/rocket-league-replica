@@ -85,7 +85,7 @@ Ours = vendored RocketSim `RLConst.h` + `measured.py` MEASURED (16/16 green).
 | Supersonic wheel embers | rl-opus | we have a position trail (FX::DrawTrail) — visual polish candidate |
 | Camera settings ranges (Liquipedia) + v1.74 defaults | CarBaller | 1:1 defaults kept (FOV 110, dist 270, h 100, angle −3, stiffness 0.45); ADDED this round: swivel 1..10 d5.0, transition 1..2 d1.2, shake dON, invert dOFF + Rocket-Science stiffness dynamics (see §8) |
 | Ball-arrow / indicator / flip-reset disc | CarBaller (documents as RL features) | not present — candidates |
-| Wall opacity slider | CarBaller | our walls are fixed 0.30 alpha — candidate |
+| Wall opacity slider | CarBaller | ADDED: `[render] wall_opacity` 0..1, default 0.40 (baked glass alpha; the old 0.30 note is stale) |
 | Ball launch any angle / shot presets | CarBaller | we have `--shot-at-tick/--shot-path` + F1–F5; interactive launcher is a candidate |
 | Flip-reset indicator | CarBaller | not present (needs wall/ceiling reset detection) — candidate |
 | Multiplayer | rl-like (WebRTC host-authoritative), rl-opus (Cloudflare WS) | out of scope for now (single-process sim) |
