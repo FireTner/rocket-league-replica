@@ -985,3 +985,15 @@ compressed storage is re-uploaded as RGBA8 and named on stderr. Hexagons,
 `FieldSkin_FutureGrid_D`, and `BoostPad_*` stay RGBA8 because the upload
 rewrites their pixels. Mesh buckets are unchanged. No pack still uploads
 nothing, so the no-pack VG1 capture stays put.
+
+## Pitch overlays (2026-11-07)
+
+`BuildArenaPack` no longer drops `Field_Center` or `Field_STD_Floor_Hex`.
+`Field_Center` keeps the existing FieldSkin bind (`Hexagons_Pack_B` is still
+rejected as albedo). `Field_STD_Floor_Hex` keeps its baked lightmap after
+that same rejection. `Field_Center_Trim` stays skipped: section 0's resolved
+texture is the `ENV_CarbonFiber_N` normal and section 1 (`TrimLight_None`)
+has no texture and no lightmap. `OOBFloor` stays the grey-green tint; its
+only resolved texture is `Hexagons_Pack_B`, which is not a colour bind.
+FieldSkin on the main pitch meshes is unchanged. No-pack frames do not
+enter this path.
