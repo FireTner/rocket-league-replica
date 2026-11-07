@@ -23,6 +23,7 @@
 #include "audio/Audio.h"
 #include "camera/Camera.h"
 #include "fx/FX.h"
+#include "fx/GoalBurst.h"
 #include "input/Keyboard.h"
 #include "input/Gamepad.h"
 #include "menu/Menu.h"
@@ -428,6 +429,7 @@ int main(int argc, char** argv) {
 			gamepad.openCount());
 	}
 	rl::FX fx;
+	rl::GoalBurst goalBurst;
 	rlbot::BotStub bot(ParseBot(botName));
 	bool unlimitedBoost = false;
 	if (calibrate) {
@@ -762,6 +764,8 @@ int main(int argc, char** argv) {
 				audio.PlayGoal();
 			Sim::BodySample gb;
 			sim->GetBall(&gb);
+			// Visual burst only. The horn and the shockwave stay in FX.
+			goalBurst.Trigger(gb.x, gb.y, gb.z);
 			std::fprintf(stderr, "[game] GOAL tick=%llu ball=(%.0f,%.0f,%.0f)\n",
 				(unsigned long long)sim->tick(), (double)gb.x, (double)gb.y, (double)gb.z);
 			sim->ResetBall();
@@ -998,12 +1002,15 @@ int main(int argc, char** argv) {
 				? float(tk - lastFxTick) * float(Sim::kTickDt) : 0.0f;
 			lastFxTick = tk;
 			fx.Update(fdt, snap);
+			goalBurst.Update(fdt);
 		}
 		// Harness FX probe (W5 gates): arm one effect on a fixed, scripted
 		// tick so its geometry can be captured deterministically.
 		if (!fxProbe.empty() && (long long)sim->tick() == fxProbeTick) {
-			if (fxProbe == "goal")
+			if (fxProbe == "goal") {
 				fx.OnGoal();
+				goalBurst.Trigger(snap.ballPos[0], snap.ballPos[1], snap.ballPos[2]);
+			}
 			else if (fxProbe == "demo")
 				fx.OnDemo();
 			else if (fxProbe == "pickup")
@@ -1113,6 +1120,7 @@ int main(int argc, char** argv) {
 		fx.DrawDrift(renderer, snap);
 		fx.DrawAir(renderer, snap);
 		fx.DrawTrail(renderer, snap);
+		goalBurst.Draw(renderer);
 		fx.DrawContactSparks(renderer, contactSparks);
 		if (menu.IsOpen()) {
 			// RL-style SETTINGS panel: full-screen dim, centered card with a

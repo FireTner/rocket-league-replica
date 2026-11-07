@@ -34,3 +34,10 @@ PASS freeplay ball
 
 Did not edit `src/sim`, `src/arena`, `src/physics`, or tapes. Did not
 run a 30-minute soak. Did not change how the ball is drawn.
+
+## Goal burst (presentation)
+
+`GoalBurst` arms from the same `PollGoal()` latch as the horn and
+`FX::OnGoal`. It keeps the ball point from before `ResetBall`. Rings and
+points are fixed-function. Life `0.80 s` and the orange/blue colours are
+UNVERIFIED. No car impulse and no change to the sim tick.
