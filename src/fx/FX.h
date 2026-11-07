@@ -7,6 +7,7 @@
 // every timer, pulse and burst is deterministic for offscreen capture.
 #pragma once
 #include "fx/ContactSparks.h"
+#include "fx/WheelEmbers.h"
 #include "render/Renderer.h"
 
 namespace rl {
@@ -57,6 +58,10 @@ public:
     // (RocketSim's flag, not a speed threshold). Also the goal shockwave
     // ring and demo flash, which are not part of that streak.
     void DrawTrail(Renderer& r, const Snapshot& s);
+
+    // Supersonic wheel embers. Own particles at the four tyre contacts.
+    // Not the position streak above and not the boost flame.
+    void DrawWheelEmbers(Renderer& r, const Snapshot& s);
 
     // Contact sparks (workstream G). Own draw: not the boost flame, not
     // DrawTrail's streak or black sparkles, not the ball path streak.
@@ -117,6 +122,7 @@ private:
     // Contact-spark burst (workstream G). Sim-time deadline + last hit point.
     float ballSparkUntil_ = 0;
     float ballSparkX_ = 0, ballSparkY_ = 0, ballSparkZ_ = 0;
+    WheelEmbers wheelEmbers_;
 };
 
 } // namespace rl

@@ -713,6 +713,15 @@ midfield toward a goal, goal mouth toward midfield). The cook still has
 no albedo for the crowd, the poplar cards, or most of the concrete, so
 those stay flat tints.
 
+## Supersonic wheel embers (2026-11-07)
+
+`FX::DrawWheelEmbers` draws a short-lived quad at each procedural wheel
+contact while `Snapshot.supersonic` is set and the car is not airborne.
+Life 0.10 s, emit gap 0.05 s, four embers, orange-white, drift 160 uu/s
+back. Length, count, and colour are **UNVERIFIED**. The particles live in
+`src/fx/WheelEmbers.cpp`. They do not write `trail_[]`, the boost flame,
+or contact sparks. `make /tmp/t_embers` checks the flag and the airborne gate.
+
 ## Contact sparks (worker G, 2026-10-29)
 
 `FX::DrawContactSparks` draws its own spheres from `ContactSparkFrame`.
