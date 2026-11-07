@@ -912,6 +912,27 @@ the existing `GL_MODULATE` path. Any other value sets a `GL_COMBINE` alpha of
 texture alpha × the setting for that one draw, then restores the tex env.
 RGB is unchanged. Goal-interior shells stay on their baked alpha.
 
+## DFH goal nets and force-field glass (2026-11-07)
+
+Pack path only. `FF_Goal` / `FF_Side` / `FF_Roof` / `FFCage_Full` are drawn.
+They used to be skipped: `Beach_NetFence_MIC` samples `Hexagons_Pack_01_T`,
+and an opaque sample of that mask is a slab across the goal.
+
+The day-pack material table has no blend, opacity, or masked field.
+`ArenaSectionTransparent` is an exact list, not a substring: the six
+materials `Beach_NetFence_MIC`, `ForceField_HexGage_MIC`,
+`Glass_Projected_V2_Mat`, `Glass_Projected_V2_Team2_MIC`,
+`HexGlass_WithArrows_Team1_MIC`, `HexGlass_WithArrows_Team2_MIC`, plus
+those four mesh names for an empty slot. `Stadium_GlassSupports` and the
+goal grate stay opaque.
+
+Nets use the existing hex conversion (ice-blue, alpha = G*80/255, peak
+0.31) in the blended pass. An `uAlphaTest` cutoff of 0.5 would discard
+the whole mask, so `kArenaFs` is unchanged. Untextured glass has no mask
+and the shader's untextured alpha is 1; upload writes a 1x1 texel at
+`kArenaGlassAlpha` (0.18) so that same blend is see-through. Pitch
+overlays and the Floor_Team1 lightmap skip are untouched.
+
 ## Free-play match clock (2026-11-07)
 
 `src/render/MatchHud` draws `mm:ss` from `tick/120` and a 3-2-1 countdown for
