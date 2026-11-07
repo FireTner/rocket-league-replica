@@ -97,6 +97,40 @@ static void TestTurf() {
     }
     CHECK(wrapX, "turf sheet does not wrap continuously in X");
     (void)wrapY;  // band pitch is the Y seam by design; no continuity expected
+
+    // Side-of-field wash: v=0 is the blue (-Y) end, v=max is orange (+Y).
+    // The blue end must carry a higher B/R than the orange end. Amplitude is
+    // UNVERIFIED; this only locks the direction of the wash.
+    auto meanBR = [&](int y0, int y1) {
+        double br = 0;
+        int n = 0;
+        for (int y = y0; y < y1; y++)
+            for (int x = 8; x < kTurfW; x += 16) {
+                float r, g, b;
+                RgbAt(img.data(), kTurfW, x, y, r, g, b);
+                if (r > 1e-4f) { br += (double)b / (double)r; n++; }
+            }
+        return n ? br / n : 0.0;
+    };
+    const double blueBR = meanBR(bandH / 4, bandH / 2);
+    const double orangeBR = meanBR(kTurfH - bandH / 2, kTurfH - bandH / 4);
+    CHECK(blueBR > orangeBR + 0.05,
+          "side tint blue B/R %.3f vs orange %.3f", blueBR, orangeBR);
+}
+
+static void TestFieldLamps() {
+    CHECK(kFieldLampCount == 16, "lamp count %d", kFieldLampCount);
+    int outside = 0, high = 0;
+    for (int i = 0; i < kFieldLampCount; i++) {
+        const FieldLamp& lamp = kFieldLamps[i];
+        if (std::fabs(lamp.x) > 4096.0f || std::fabs(lamp.y) > 5120.0f)
+            outside++;
+        if (lamp.z > kGlassZ0 && lamp.z < kGlassZ1)
+            high++;
+    }
+    CHECK(outside == kFieldLampCount, "lamps inside the glass (%d outside)",
+          outside);
+    CHECK(high == kFieldLampCount, "lamps off the glass band (%d ok)", high);
 }
 
 // --- 2. Turf markings sheet ------------------------------------------------
@@ -770,6 +804,7 @@ static void TestMeshField() {
 
 int main() {
     TestTurf();
+    TestFieldLamps();
     TestMarkings();
     TestHexNet();
     TestHexLatticeInterlocks();

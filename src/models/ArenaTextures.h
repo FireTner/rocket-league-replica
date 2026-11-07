@@ -118,6 +118,27 @@ constexpr float kHexSpan = kHexSpanY;
 // Fill a caller-provided buffer. These are the exact functions the GL builders
 // call, so a test that asserts on their output asserts on the uploaded bytes.
 void FillTurf(unsigned char* rgb);                 // kTurfW*kTurfH*3
+
+// Stadium lamps on the clean-room shell (presentation only). Centres sit
+// just outside the glass so they read as bowl lights and never enter the
+// play volume. Colours are applied at the draw site and are UNVERIFIED.
+struct FieldLamp { float x, y, z; };
+constexpr int kFieldLampCount = 16;
+constexpr FieldLamp kFieldLamps[kFieldLampCount] = {
+    { 4180.0f, -3200.0f, 1680.0f}, { 4180.0f, -1600.0f, 1680.0f},
+    { 4180.0f,     0.0f, 1680.0f}, { 4180.0f,  1600.0f, 1680.0f},
+    { 4180.0f,  3200.0f, 1680.0f},
+    {-4180.0f, -3200.0f, 1680.0f}, {-4180.0f, -1600.0f, 1680.0f},
+    {-4180.0f,     0.0f, 1680.0f}, {-4180.0f,  1600.0f, 1680.0f},
+    {-4180.0f,  3200.0f, 1680.0f},
+    {-1800.0f,  5220.0f, 1680.0f}, {    0.0f,  5220.0f, 1680.0f},
+    { 1800.0f,  5220.0f, 1680.0f},
+    {-1800.0f, -5220.0f, 1680.0f}, {    0.0f, -5220.0f, 1680.0f},
+    { 1800.0f, -5220.0f, 1680.0f},
+};
+// Housing and bulb extents (uu). Two boxes per lamp, fixed-function.
+constexpr float kLampHousingX = 36.0f, kLampHousingY = 18.0f, kLampHousingZ = 18.0f;
+constexpr float kLampBulbX = 16.0f, kLampBulbY = 8.0f, kLampBulbZ = 10.0f;
 void FillTurfMarkings(unsigned char* rgba);        // kMarkW*kMarkH*4
 void FillHexNet(unsigned char* rgb);               // kHexW*kHexH*3
 void FillPlainGlass(unsigned char* rgb);           // kHexW*kHexH*3 (no net)
