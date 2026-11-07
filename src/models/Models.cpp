@@ -46,6 +46,37 @@ void CarFrame(const float pos[3], const float fwd[3], const float up[3]) {
 // deterministic and needs no sim coupling.
 struct WheelVis { float spin = 0, steer = 0; uint64_t lastTick = 0; bool init = false; };
 WheelVis g_wheel[2];
+} // namespace
+
+WheelMotion UpdateWheelMotion(const Snapshot& s, int slot) {
+    if (slot < 0) slot = 0;
+    if (slot > 1) slot = 1;
+    WheelVis& wv = g_wheel[slot];
+    float dt = 0.0f;
+    if (wv.init && s.tick > wv.lastTick)
+        dt = float(s.tick - wv.lastTick) * (1.0f / 120.0f);
+    if (dt > 0.25f) dt = 0.25f;
+    wv.init = true;
+    wv.lastTick = s.tick;
+    float f[3] = {s.carForward[0], s.carForward[1], s.carForward[2]};
+    float u[3] = {s.carUp[0], s.carUp[1], s.carUp[2]};
+    float l[3] = {u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2],
+                  u[0] * f[1] - u[1] * f[0]};
+    float fwdSp = s.carVel[0] * f[0] + s.carVel[1] * f[1] + s.carVel[2] * f[2];
+    float latSp = s.carVel[0] * l[0] + s.carVel[1] * l[1] + s.carVel[2] * l[2];
+    float target = -std::atan2(latSp, std::fabs(fwdSp) + 200.0f);
+    if (target > 0.6f) target = 0.6f;
+    if (target < -0.6f) target = -0.6f;
+    float k = dt > 0 ? (dt * 14.0f > 1.0f ? 1.0f : dt * 14.0f) : 0.0f;
+    wv.steer += (target - wv.steer) * k;
+    const float R = 17.0f;
+    wv.spin += (fwdSp / R) * dt;
+    if (wv.spin > 1000.0f) wv.spin -= 1000.0f;
+    if (wv.spin < -1000.0f) wv.spin += 1000.0f;
+    return {wv.steer, wv.spin};
+}
+
+namespace {
 
 // One procedural wheel: tire tread + rim + a bright spoke bar that rotates
 // with spin, so the spin is actually legible (a flat box would not be).
@@ -105,33 +136,8 @@ void DrawCar(Renderer& r, const Snapshot& s, bool blueTeam) {
     float tb = blueTeam ? 1.0f : 0.45f;
 
     int slot = blueTeam ? 0 : 1;
-    WheelVis& wv = g_wheel[slot];
-    float dt = 0.0f;
-    if (wv.init && s.tick > wv.lastTick)
-        dt = float(s.tick - wv.lastTick) * (1.0f / 120.0f);
-    if (dt > 0.25f) dt = 0.25f;
-    wv.init = true;
-    wv.lastTick = s.tick;
-
-    // Local axes.
-    float f[3] = {s.carForward[0], s.carForward[1], s.carForward[2]};
-    float u[3] = {s.carUp[0], s.carUp[1], s.carUp[2]};
-    float l[3] = {u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2],
-                  u[0] * f[1] - u[1] * f[0]};
-    float fwdSp = s.carVel[0] * f[0] + s.carVel[1] * f[1] + s.carVel[2] * f[2];
-    float latSp = s.carVel[0] * l[0] + s.carVel[1] * l[1] + s.carVel[2] * l[2];
-    // Steer from the velocity slip angle (nose vs travel). Front wheels only;
-    // smoothed so a single tick of noise cannot snap them.
-    float target = -std::atan2(latSp, std::fabs(fwdSp) + 200.0f);
-    if (target > 0.6f) target = 0.6f;
-    if (target < -0.6f) target = -0.6f;
-    float k = dt > 0 ? (dt * 14.0f > 1.0f ? 1.0f : dt * 14.0f) : 0.0f;
-    wv.steer += (target - wv.steer) * k;
-
-    const float R = 17.0f; // wheel radius: rest height 17 == wheel radius
-    wv.spin += (fwdSp / R) * dt;
-    if (wv.spin > 1000.0f) wv.spin -= 1000.0f;
-    if (wv.spin < -1000.0f) wv.spin += 1000.0f;
+    WheelMotion wv = UpdateWheelMotion(s, slot);
+    const float R = 17.0f;
 
     glPushMatrix();
     CarFrame(s.carPos, s.carForward, s.carUp);

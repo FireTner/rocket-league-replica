@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """tools/verify/mesh_integrity.py — baked Fennec asset integrity (VG13 backend).
 
-Asserts, on `assets/models/fennec.bin`:
+Asserts, on `assets/models/fennec.bin` (FEN2: body + four wheel parts;
+rest pose is each wheel vertex plus its hub pivot):
   (a) every baked normal is unit length (| |n| - 1 | <= 0.01);
   (b) the bbox min-z is within +/-1.0 uu of -17.00 (ground plane datum, see
       tools/convert_fennec.py header);
   (c) the footprint matches the source GLB's documented MEASURED dimensions
       140.42 (length) x 72.47 (width) x 51.65 (height) within +/-1 uu;
-  (d) there are no zero-area (degenerate) triangles.
+  (d) there are no zero-area (degenerate) triangles;
+  (e) parts 1..4 are the FR/FL/BR/BL wheels (front pair flags bit0 set) and
+      none of them is empty.
 
 The hitbox (Octane, src/physics/CarPresets.h kCarPresets[0]) is reported as a
 delta for the record but NOT asserted: the mesh is a detailed recreation that
@@ -46,27 +49,50 @@ HITBOX = (120.507, 86.6994, 38.6591)
 
 
 def load(path):
+    """Return rest-pose vertices, a flat index buffer, and per-part records.
+
+    Wheel vertices are stored hub-local. Rest pose adds the pivot so the
+    bbox checks still describe the whole car.
+    """
     with open(path, "rb") as f:
         d = f.read()
-    if d[:4] != b"FEN1":
-        raise ValueError("bad magic %r (expected FEN1)" % d[:4])
-    nv = struct.unpack_from("<I", d, 4)[0]
+    if d[:4] != b"FEN2":
+        raise ValueError("bad magic %r (expected FEN2)" % d[:4])
+    nparts = struct.unpack_from("<I", d, 4)[0]
+    if nparts < 1 or nparts > 8:
+        raise ValueError("part count %d" % nparts)
     off = 8
-    need = off + nv * 24 + 4
-    if len(d) < need:
-        raise ValueError("truncated: %d bytes, need >= %d" % (len(d), need))
-    verts = [struct.unpack_from("<6f", d, off + i * 24) for i in range(nv)]
-    off += nv * 24
-    ni = struct.unpack_from("<I", d, off)[0]
-    off += 4
-    if len(d) < off + ni * 4:
-        raise ValueError("truncated index block")
-    idx = struct.unpack_from("<%dI" % ni, d, off)
-    return verts, idx
+    verts = []
+    idx = []
+    parts = []
+    for _ in range(nparts):
+        if len(d) < off + 20:
+            raise ValueError("truncated part header")
+        flags, px, py, pz = struct.unpack_from("<I3f", d, off)
+        off += 16
+        nv = struct.unpack_from("<I", d, off)[0]
+        off += 4
+        if len(d) < off + nv * 24 + 4:
+            raise ValueError("truncated vertex block")
+        base = len(verts)
+        for i in range(nv):
+            x, y, z, nx, ny, nz = struct.unpack_from("<6f", d, off + i * 24)
+            verts.append((x + px, y + py, z + pz, nx, ny, nz))
+        off += nv * 24
+        ni = struct.unpack_from("<I", d, off)[0]
+        off += 4
+        if len(d) < off + ni * 4:
+            raise ValueError("truncated index block")
+        raw = struct.unpack_from("<%dI" % ni, d, off)
+        off += ni * 4
+        idx.extend(i + base for i in raw)
+        parts.append({"flags": flags, "pivot": (px, py, pz),
+                      "vertices": nv, "triangles": ni // 3})
+    return verts, idx, parts
 
 
 def check():
-    verts, idx = load(MESH)
+    verts, idx, parts = load(MESH)
     nv = len(verts)
     res = {"mesh": MESH, "vertices": nv, "indices": len(idx),
            "triangles": len(idx) // 3, "failures": []}
@@ -116,6 +142,22 @@ def check():
     if degen:
         res["failures"].append("degenerate triangles: %d" % degen)
 
+    # (e) four wheel parts. Front pair (FR, FL) steer; rear pair does not.
+    res["parts"] = [{"flags": p["flags"], "pivot": list(p["pivot"]),
+                     "vertices": p["vertices"], "triangles": p["triangles"]}
+                    for p in parts]
+    if len(parts) != 5:
+        res["failures"].append("parts: %d, expected body + 4 wheels" % len(parts))
+    else:
+        for i, steer in ((1, 1), (2, 1), (3, 0), (4, 0)):
+            p = parts[i]
+            if p["triangles"] <= 0 or p["vertices"] <= 0:
+                res["failures"].append("wheel part %d is empty" % i)
+            if (p["flags"] & 1) != steer:
+                res["failures"].append(
+                    "wheel part %d flags=%d, expected steer bit %d"
+                    % (i, p["flags"], steer))
+
     res["pass"] = not res["failures"]
     return res
 
@@ -142,6 +184,10 @@ def main():
         print("  hitbox delta L/W/H = %.2f / %.2f / %.2f uu (informational)"
               % tuple(res["hitbox_delta"]))
         print("  degenerate triangles=%d" % res["degenerate_triangles"])
+        print("  parts=%d" % len(res.get("parts", [])))
+        for i, p in enumerate(res.get("parts", [])):
+            print("  part %d flags=%d tris=%d pivot=(%.2f,%.2f,%.2f)"
+                  % (i, p["flags"], p["triangles"], *p["pivot"]))
         for f in res["failures"]:
             print("  FAIL %s" % f)
     return 0 if res["pass"] else 1

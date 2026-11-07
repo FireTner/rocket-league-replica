@@ -11,15 +11,23 @@
 namespace rl {
 
 namespace {
-struct Mesh {
-    std::vector<float> data;   // interleaved 6f: pos3 + normal3
+struct Part {
+    std::vector<float> data;   // interleaved 6f: pos3 + normal3, hub-local for wheels
     std::vector<uint32_t> idx;
     std::vector<float> colO;   // baked paint, orange team (3f/vert)
     std::vector<float> colB;   // baked paint, blue team (3f/vert)
+    float pivot[3] = {0, 0, 0};
+    bool steers = false;
     GLuint vbo = 0, ibo = 0, cboO = 0, cboB = 0;
-    bool ok = false;
 };
-Mesh g_mesh;
+std::vector<Part> g_parts;
+bool g_ok = false;
+
+int PartTris() {
+    int n = 0;
+    for (const Part& p : g_parts) n += int(p.idx.size() / 3);
+    return n;
+}
 
 float Smooth01(float a, float b, float x) {
     float t = (x - a) / (b - a);
@@ -33,14 +41,14 @@ float Smooth01(float a, float b, float x) {
 // Baked ONCE at load into color VBOs — zero per-frame CPU. Masks are pure
 // functions of car-local position + normal (bbox x[-65.9,74.5] nose+x,
 // y +/-36, z[-17,34.7] per tools/verify/mesh_integrity.py).
-void BakePaint(std::vector<float>& out, bool orange) {
-    size_t nv = g_mesh.data.size() / 6;
+void BakePaint(Part& part, std::vector<float>& out, bool orange) {
+    size_t nv = part.data.size() / 6;
     out.resize(nv * 3);
     for (size_t i = 0; i < nv; i++) {
-        float x = g_mesh.data[i * 6 + 0];
-        float y = g_mesh.data[i * 6 + 1];
-        float z = g_mesh.data[i * 6 + 2];
-        float nz = g_mesh.data[i * 6 + 5];
+        float x = part.data[i * 6 + 0] + part.pivot[0];
+        float y = part.data[i * 6 + 1] + part.pivot[1];
+        float z = part.data[i * 6 + 2] + part.pivot[2];
+        float nz = part.data[i * 6 + 5];
         float ay = std::fabs(y);
         // Base coat.
         float r = orange ? 1.0f : 0.15f;
@@ -149,119 +157,143 @@ void DrawTrim(bool orange, Renderer& r) {
     if (r.LightingOn()) glEnable(GL_LIGHTING);
 }
 
-void DrawBody(float orange, Renderer& r) {
-    // Baked procedural paint (color VBO / client array). The vertex colours
-    // drive ambient+diffuse through GL_COLOR_MATERIAL — no per-frame cost.
-    bool isO = orange > 0.5f;
+void DrawPart(const Part& part, bool orange) {
+    if (part.idx.empty()) return;
     glEnableClientState(GL_VERTEX_ARRAY);
     glEnableClientState(GL_NORMAL_ARRAY);
     glEnableClientState(GL_COLOR_ARRAY);
-    glVertexPointer(3, GL_FLOAT, 6 * sizeof(float), (const void*)0);
-    glNormalPointer(GL_FLOAT, 6 * sizeof(float),
-                    (const void*)(3 * sizeof(float)));
-    if (g_mesh.vbo) {
-        glBindBuffer(GL_ARRAY_BUFFER, g_mesh.vbo);
+    if (part.vbo) {
+        glBindBuffer(GL_ARRAY_BUFFER, part.vbo);
         glVertexPointer(3, GL_FLOAT, 6 * sizeof(float), (const void*)0);
         glNormalPointer(GL_FLOAT, 6 * sizeof(float),
                         (const void*)(3 * sizeof(float)));
-        glBindBuffer(GL_ARRAY_BUFFER, isO ? g_mesh.cboO : g_mesh.cboB);
+        glBindBuffer(GL_ARRAY_BUFFER, orange ? part.cboO : part.cboB);
         glColorPointer(3, GL_FLOAT, 0, (const void*)0);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_mesh.ibo);
-        glDrawElements(GL_TRIANGLES, (GLsizei)g_mesh.idx.size(),
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, part.ibo);
+        glDrawElements(GL_TRIANGLES, (GLsizei)part.idx.size(),
                        GL_UNSIGNED_INT, (const void*)0);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
     } else {
-        glVertexPointer(3, GL_FLOAT, 6 * sizeof(float), g_mesh.data.data());
-        glNormalPointer(GL_FLOAT, 6 * sizeof(float),
-                        g_mesh.data.data() + 3);
-        glColorPointer(3, GL_FLOAT, 0, (isO ? g_mesh.colO : g_mesh.colB).data());
-        glDrawElements(GL_TRIANGLES, (GLsizei)g_mesh.idx.size(),
-                       GL_UNSIGNED_INT, g_mesh.idx.data());
+        glVertexPointer(3, GL_FLOAT, 6 * sizeof(float), part.data.data());
+        glNormalPointer(GL_FLOAT, 6 * sizeof(float), part.data.data() + 3);
+        glColorPointer(3, GL_FLOAT, 0, (orange ? part.colO : part.colB).data());
+        glDrawElements(GL_TRIANGLES, (GLsizei)part.idx.size(),
+                       GL_UNSIGNED_INT, part.idx.data());
     }
     glDisableClientState(GL_COLOR_ARRAY);
     glDisableClientState(GL_NORMAL_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
-    DrawTrim(orange > 0.5f, r);
+}
+
+void DrawBody(float orange, Renderer& r, float steerRad, float spinRad) {
+    // Baked procedural paint (color VBO / client array). The vertex colours
+    // drive ambient+diffuse through GL_COLOR_MATERIAL — no per-frame cost.
+    bool isO = orange > 0.5f;
+    if (!g_parts.empty()) DrawPart(g_parts[0], isO);
+    // Same angles as the procedural box wheels: steer about +Z, spin about +Y.
+    float steerDeg = steerRad * 180.0f / (float)M_PI;
+    float spinDeg = spinRad * 180.0f / (float)M_PI;
+    for (size_t i = 1; i < g_parts.size(); i++) {
+        const Part& w = g_parts[i];
+        glPushMatrix();
+        glTranslatef(w.pivot[0], w.pivot[1], w.pivot[2]);
+        if (w.steers) glRotatef(steerDeg, 0, 0, 1);
+        glRotatef(spinDeg, 0, 1, 0);
+        DrawPart(w, isO);
+        glPopMatrix();
+    }
+    DrawTrim(isO, r);
 }
 } // namespace
 
+bool ReadPart(FILE* f, Part& part) {
+    uint32_t flags = 0, nv = 0, ni = 0;
+    if (std::fread(&flags, 4, 1, f) != 1 ||
+        std::fread(part.pivot, 4, 3, f) != 3)
+        return false;
+    part.steers = (flags & 1u) != 0;
+    if (std::fread(&nv, 4, 1, f) != 1 || nv == 0 || nv > 4u << 20)
+        return false;
+    part.data.resize(size_t(nv) * 6);
+    if (std::fread(part.data.data(), 6 * sizeof(float), nv, f) != nv)
+        return false;
+    if (std::fread(&ni, 4, 1, f) != 1 || ni == 0 || ni > 8u << 20)
+        return false;
+    part.idx.resize(ni);
+    return std::fread(part.idx.data(), 4, ni, f) == ni;
+}
+
+void UploadPart(Part& part) {
+    BakePaint(part, part.colO, true);
+    BakePaint(part, part.colB, false);
+    glGenBuffers(1, &part.vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, part.vbo);
+    glBufferData(GL_ARRAY_BUFFER, part.data.size() * sizeof(float),
+                 part.data.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glGenBuffers(1, &part.ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, part.ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, part.idx.size() * sizeof(uint32_t),
+                 part.idx.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glGenBuffers(1, &part.cboO);
+    glBindBuffer(GL_ARRAY_BUFFER, part.cboO);
+    glBufferData(GL_ARRAY_BUFFER, part.colO.size() * sizeof(float),
+                 part.colO.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glGenBuffers(1, &part.cboB);
+    glBindBuffer(GL_ARRAY_BUFFER, part.cboB);
+    glBufferData(GL_ARRAY_BUFFER, part.colB.size() * sizeof(float),
+                 part.colB.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
 bool FennecLoad(const char* path) {
-    if (g_mesh.ok) return true;
+    if (g_ok) return true;
     FILE* f = std::fopen(path ? path : "assets/models/fennec.bin", "rb");
     if (!f) return false;
     char magic[4];
-    uint32_t nv = 0, ni = 0;
+    uint32_t nparts = 0;
     if (std::fread(magic, 1, 4, f) != 4 || magic[0] != 'F' || magic[1] != 'E' ||
-        magic[2] != 'N' || magic[3] != '1' ||
-        std::fread(&nv, 4, 1, f) != 1 || nv == 0 || nv > 4u << 20) {
+        magic[2] != 'N' || magic[3] != '2' ||
+        std::fread(&nparts, 4, 1, f) != 1 || nparts < 5 || nparts > 8) {
         std::fclose(f);
         return false;
     }
-    g_mesh.data.resize(size_t(nv) * 6);
-    if (std::fread(g_mesh.data.data(), 6 * sizeof(float), nv, f) != nv) {
-        std::fclose(f);
-        return false;
-    }
-    if (std::fread(&ni, 4, 1, f) != 1 || ni == 0 || ni > 8u << 20) {
-        std::fclose(f);
-        return false;
-    }
-    g_mesh.idx.resize(ni);
-    if (std::fread(g_mesh.idx.data(), 4, ni, f) != ni) {
-        std::fclose(f);
-        return false;
+    g_parts.resize(nparts);
+    for (uint32_t i = 0; i < nparts; i++) {
+        if (!ReadPart(f, g_parts[i])) {
+            g_parts.clear();
+            std::fclose(f);
+            return false;
+        }
     }
     std::fclose(f);
-    g_mesh.ok = true;
-    // Procedural paint bake (CPU once, ~60k verts — negligible one-time).
-    BakePaint(g_mesh.colO, true);
-    BakePaint(g_mesh.colB, false);
-    // VBO upload (optional; falls back to client arrays).
-    glGenBuffers(1, &g_mesh.vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, g_mesh.vbo);
-    glBufferData(GL_ARRAY_BUFFER,
-                 g_mesh.data.size() * sizeof(float), g_mesh.data.data(),
-                 GL_STATIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glGenBuffers(1, &g_mesh.ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_mesh.ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 g_mesh.idx.size() * sizeof(uint32_t), g_mesh.idx.data(),
-                 GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glGenBuffers(1, &g_mesh.cboO);
-    glBindBuffer(GL_ARRAY_BUFFER, g_mesh.cboO);
-    glBufferData(GL_ARRAY_BUFFER,
-                 g_mesh.colO.size() * sizeof(float), g_mesh.colO.data(),
-                 GL_STATIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glGenBuffers(1, &g_mesh.cboB);
-    glBindBuffer(GL_ARRAY_BUFFER, g_mesh.cboB);
-    glBufferData(GL_ARRAY_BUFFER,
-                 g_mesh.colB.size() * sizeof(float), g_mesh.colB.data(),
-                 GL_STATIC_DRAW);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    std::fprintf(stderr, "[fennec] loaded %s: %u verts, %u tris (CC-BY-4.0 Jako/fairlight51)\n",
-                 path, nv, ni / 3);
+    for (Part& part : g_parts) UploadPart(part);
+    g_ok = true;
+    std::fprintf(stderr,
+                 "[fennec] loaded %s: %d verts, %d tris, %u parts (CC-BY-4.0 Jako/fairlight51)\n",
+                 path, FennecVertCount(), PartTris(), nparts);
     return true;
 }
 
-bool FennecAvailable() { return g_mesh.ok; }
+bool FennecAvailable() { return g_ok; }
 
-void FennecDraw(Renderer& r, const float pos[3], float yaw, bool orange) {
-    if (!g_mesh.ok) return;
+void FennecDraw(Renderer& r, const float pos[3], float yaw, bool orange,
+                float steerRad, float spinRad) {
+    if (!g_ok) return;
     glPushMatrix();
     glTranslatef(pos[0], pos[1], pos[2]);
     glRotatef(yaw * 180.0f / (float)M_PI, 0, 0, 1);
-    DrawBody(orange ? 1.0f : 0.0f, r);
+    DrawBody(orange ? 1.0f : 0.0f, r, steerRad, spinRad);
     glPopMatrix();
-    r.NoteExternalDraw(uint64_t(g_mesh.idx.size() / 3));
+    r.NoteExternalDraw(uint64_t(PartTris()));
 }
 
 void FennecDraw(Renderer& r, const float pos[3], const float fwd[3],
-                const float up[3], bool orange) {
-    if (!g_mesh.ok) return;
+                const float up[3], bool orange, float steerRad, float spinRad) {
+    if (!g_ok) return;
     float f[3] = {fwd[0], fwd[1], fwd[2]};
     float u[3] = {up[0], up[1], up[2]};
     float fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
@@ -282,12 +314,17 @@ void FennecDraw(Renderer& r, const float pos[3], const float fwd[3],
     glPushMatrix();
     glTranslatef(pos[0], pos[1], pos[2]);
     glMultMatrixf(m);
-    DrawBody(orange ? 1.0f : 0.0f, r);
+    DrawBody(orange ? 1.0f : 0.0f, r, steerRad, spinRad);
     glPopMatrix();
-    r.NoteExternalDraw(uint64_t(g_mesh.idx.size() / 3));
+    r.NoteExternalDraw(uint64_t(PartTris()));
 }
 
-int FennecTriCount() { return g_mesh.ok ? int(g_mesh.idx.size() / 3) : 0; }
-int FennecVertCount() { return g_mesh.ok ? int(g_mesh.data.size() / 6) : 0; }
+int FennecTriCount() { return g_ok ? PartTris() : 0; }
+int FennecVertCount() {
+    if (!g_ok) return 0;
+    int n = 0;
+    for (const Part& p : g_parts) n += int(p.data.size() / 6);
+    return n;
+}
 
 } // namespace rl

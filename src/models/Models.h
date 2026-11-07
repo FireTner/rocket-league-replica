@@ -20,6 +20,13 @@ namespace dims {
 // steer/spin are derived from carVel + tick only (no sim coupling).
 void DrawCar(Renderer& r, const Snapshot& s, bool blueTeam = true);
 
+// Procedural front-steer / four-wheel spin for one car slot (0 blue, 1 orange).
+// Integrated from Snapshot velocity and tick only. The Fennec hubs use the
+// same angles. Calling this twice in one tick for the same slot is stable:
+// the second call sees lastTick == s.tick and adds no step.
+struct WheelMotion { float steer = 0; float spin = 0; };
+WheelMotion UpdateWheelMotion(const Snapshot& s, int slot);
+
 // W6 instrument (--debug-colliders): oriented car hitbox wireframes for both
 // cars + the ball collision sphere (r = 91.25, i.e. NOT the 92.75 visual).
 void DrawDebugColliders(Renderer& r, const Snapshot& player, const Snapshot& bot);

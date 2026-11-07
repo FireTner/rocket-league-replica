@@ -1027,8 +1027,12 @@ int main(int argc, char** argv) {
 		// Orientation now carries pitch/roll (carForward/carUp), so rolls and
 		// flips are visible instead of being flattened to a 2D yaw.
 		if (rl::FennecAvailable() && !noFennec) {
-			rl::FennecDraw(renderer, snap.carPos, snap.carForward, snap.carUp, false);
-			rl::FennecDraw(renderer, osnap.carPos, osnap.carForward, osnap.carUp, true);
+			rl::WheelMotion blueW = rl::UpdateWheelMotion(snap, 0);
+			rl::WheelMotion orangeW = rl::UpdateWheelMotion(osnap, 1);
+			rl::FennecDraw(renderer, snap.carPos, snap.carForward, snap.carUp, false,
+			               blueW.steer, blueW.spin);
+			rl::FennecDraw(renderer, osnap.carPos, osnap.carForward, osnap.carUp, true,
+			               orangeW.steer, orangeW.spin);
 		} else {
 			rl::DrawCar(renderer, snap, true);
 			rl::DrawCar(renderer, osnap, false);

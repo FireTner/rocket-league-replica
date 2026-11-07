@@ -14,12 +14,17 @@ bool FennecLoad(const char* path = "assets/models/fennec.bin");
 
 // Draw at car origin with yaw (z-up radians) in team paint. Falls back to
 // drawing nothing if not loaded (caller keeps the box car as fallback).
-void FennecDraw(Renderer& r, const float pos[3], float yaw, bool orange);
+// steerRad / spinRad are the procedural wheel angles (Models.cpp): front
+// hubs yaw about local +Z, every hub rolls about local +Y. Zero leaves the
+// wheels in the baked rest pose.
+void FennecDraw(Renderer& r, const float pos[3], float yaw, bool orange,
+                float steerRad = 0, float spinRad = 0);
 
 // Orientation-aware variant (W3): full pitch/roll from the Snapshot's
 // forward/up unit vectors. Same mesh, same paint, same bake transform.
 void FennecDraw(Renderer& r, const float pos[3], const float fwd[3],
-                const float up[3], bool orange);
+                const float up[3], bool orange, float steerRad = 0,
+                float spinRad = 0);
 
 // Total triangles in the loaded mesh (0 when absent) — feeds the V2 budget
 // report so the Fennec overage is a measured number, not an estimate.
