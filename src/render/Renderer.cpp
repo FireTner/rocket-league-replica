@@ -850,6 +850,7 @@ struct ArenaKey {
     bool decal = false;
     bool alphaTest = false;
     bool lmLuma = false;  // greyscale lightmap (StadiumBase only)
+    bool nearEdge = false;  // goal trim: fade out when it frames the camera
     bool color = false;   // vertex colours are stored on these verts
     float lmScale[3] = {1.f, 1.f, 1.f};
     bool operator<(const ArenaKey& o) const {
@@ -858,6 +859,7 @@ struct ArenaKey {
         if (decal != o.decal) return decal < o.decal;
         if (alphaTest != o.alphaTest) return alphaTest < o.alphaTest;
         if (lmLuma != o.lmLuma) return lmLuma < o.lmLuma;
+        if (nearEdge != o.nearEdge) return nearEdge < o.nearEdge;
         if (color != o.color) return color < o.color;
         if (tex != o.tex) return tex < o.tex;
         if (lm != o.lm) return lm < o.lm;
@@ -1208,7 +1210,9 @@ void main() {
   float near = smoothstep(1400.0, 2600.0, vEyeDist);
   vec3 emit = uEmit * mix(0.0, 1.0, near);
   if (uNearVeil != 0) alpha *= mix(0.08, 1.0, near);
-  if (uGlowFade != 0) alpha *= mix(0.05, 1.0, near);
+  // 0 inside 1400 uu drops the goal-mouth trim. Past 2600 uu (chase
+  // side trim, far goal) the shell is solid again.
+  if (uGlowFade != 0) alpha *= near;
   gl_FragColor = vec4(albedo * lm * shade + emit, alpha);
 }
 )";
@@ -1814,6 +1818,12 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             key.lmLuma = useLm &&
                 (mesh->name.find("StadiumBase") != std::string::npos ||
                  neighbourLm);
+            // Goal_STD_Trim / Goal_STD_Frame sit on the goal camera. Their
+            // lightmap is a lime chart, so the rounded shell frames that
+            // view in pale green. Fade it in the blended pass. The nets
+            // (FF_Goal) and the far hex glass are not these meshes.
+            key.nearEdge = mesh->name == "Goal_STD_Trim" ||
+                           mesh->name == "Goal_STD_Frame";
             key.color = hasColor;
             if (useLm) {
                 key.lmScale[0] = inst.lightmap.colorScale[0];
@@ -2159,6 +2169,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.transparent = key.transparent;
         g.alphaTest = key.alphaTest;
         g.nearVeil = false;
+        g.nearEdge = key.nearEdge;
         g.tag = b.tag;
         // Untextured glass has no mask and the pack shader writes alpha 1
         // when there is no diffuse. A 1x1 texel at kArenaGlassAlpha puts
@@ -2311,7 +2322,7 @@ void Renderer::DrawArenaPack() {
             glUniform1i(arenaUniAlphaTest_, bk.alphaTest ? 1 : 0);
             glUniform1i(arenaUniUseColor_, bk.useColor ? 1 : 0);
             glUniform1i(arenaUniNearVeil_, bk.nearVeil ? 1 : 0);
-            glUniform1i(arenaUniGlowFade_, bk.emit ? 1 : 0);
+            glUniform1i(arenaUniGlowFade_, (bk.emit || bk.nearEdge) ? 1 : 0);
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
             glEnableVertexAttribArray(2);
@@ -2372,14 +2383,14 @@ void Renderer::DrawArenaPack() {
     for (const ArenaBucket& bk : arenaBuckets_) {
         // Team glow is drawn blended: up close it is the goal-mouth
         // border, and an opaque pass would ignore the distance alpha.
-        if (bk.transparent || bk.emit) continue;
+        if (bk.transparent || bk.emit || bk.nearEdge) continue;
         if (drawBucket(bk, false)) ++visible; else ++culled;
     }
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     for (const ArenaBucket& bk : arenaBuckets_) {
-        if (!bk.transparent && !bk.emit) continue;
+        if (!bk.transparent && !bk.emit && !bk.nearEdge) continue;
         if (drawBucket(bk, true)) ++visible; else ++culled;
     }
     if (useGlsl) {

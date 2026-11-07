@@ -375,6 +375,7 @@ private:
         bool lmLuma = false;       // this bucket's lightmap stays greyscale
         bool emit = false;         // add tintRgb as an emissive term
         bool nearVeil = false;     // untextured glass: thin the alpha up close
+        bool nearEdge = false;     // goal trim: fade the lightmap shell up close
         bool useColor = false;     // mesh stored vertex colours
         int floatsPerVert = 13;    // +3 when useColor
         std::string tag;   // first (mesh, material) baked here (diagnostics)

@@ -967,13 +967,14 @@ truss shade stays grey. `Stadium_Supports` (`DarkMetal_Mat`) and
 not skipped and are not dropped; the missing girders were this hue
 replacing the lattice shade.
 
-The goal camera sits inside `Goal_STD_Glass`, the FF cage, and the
-team glow (`TrimLight_Glow` / `GoalGenerator`, tint 8 and 9). That glow
-is drawn in the blended pass. Untextured glass (`nearVeil`) and the glow
-alpha both fade from 1400 uu to full strength at 2600 uu, so the
-near frame is a thin veil. Far trim lights stay solid (alpha 1). Textured nets (`Beach_NetFence_MIC` /
-`Hexagons_Pack_01_T`) are not `nearVeil`. Pitch floors, the shadow
-ellipse, and the no-pack path are unchanged.
+The goal camera sits inside `Goal_STD_Glass`, the FF cage, the team
+glow, and `Goal_STD_Trim` / `Goal_STD_Frame`. That trim's lightmap is
+a lime chart, so it frames the mouth in pale green. The trim, the
+frame, and the glow are drawn blended and fade to nothing inside
+1400 uu (full strength again at 2600 uu). Untextured glass
+(`nearVeil`) fades on the same distance. Textured nets
+(`Beach_NetFence_MIC` / `Hexagons_Pack_01_T`) are not in that fade.
+Pitch floors, the shadow ellipse, and the no-pack path are unchanged.
 
 ## Pack stadium shader (2026-11-07)
 
