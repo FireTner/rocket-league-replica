@@ -498,6 +498,8 @@ int main(int argc, char** argv) {
 	bool running = true, menuLogged = false;
 	bool freeCam = false;
 	float lastSpeed = 0;
+	float prevEar[3] = {0, 0, 0};
+	bool haveEar = false;
 	float freeEye[3] = {-270, -2600, 400}, freeCenter[3] = {0, -2000, 100};
 	if (camSet) {
 		freeCam = true;
@@ -715,12 +717,8 @@ int main(int argc, char** argv) {
 			// Harness hook: hold a known boost value for gauge captures.
 			sim->SetBoost(player, forcedBoost);
 		}
-		// Audio: continuous engine + event blips.
+		// Audio events (engine spatial state is applied after the eye exists).
 		if (audioOn) {
-			float s01 = lastSpeed / 2300.0f;
-			if (s01 > 1)
-				s01 = 1;
-			audio.Engine(s01, sim->IsBoosting(player));
 			if (drive.jump && !prevJumpHeld)
 				audio.PlayJump();
 			float pb = sim->GetBoost(player);
@@ -955,6 +953,33 @@ int main(int argc, char** argv) {
 				ctr[0] += sh[0] * 0.5f; ctr[1] += sh[1] * 0.5f;
 				camera.SetFreeView(eye, ctr);
 			}
+		}
+		// Ear is the published camera eye (after shake). Engine and the goal
+		// horn attenuate from it; doppler uses the car's radial speed vs that
+		// eye. Constants are UNVERIFIED (src/audio/Audio.cpp).
+		if (audioOn) {
+			float eye[3];
+			camera.Eye(eye);
+			float s01 = speed / 2300.0f;
+			if (s01 > 1)
+				s01 = 1;
+			float cdx = cs.x - eye[0], cdy = cs.y - eye[1], cdz = cs.z - eye[2];
+			float carDist = sqrtf(cdx * cdx + cdy * cdy + cdz * cdz);
+			float bdx = bl.x - eye[0], bdy = bl.y - eye[1], bdz = bl.z - eye[2];
+			float ballDist = sqrtf(bdx * bdx + bdy * bdy + bdz * bdz);
+			float radial = 0;
+			if (haveEar && dtf > 1e-4f && carDist > 1.0f) {
+				float evx = (eye[0] - prevEar[0]) / dtf;
+				float evy = (eye[1] - prevEar[1]) / dtf;
+				float evz = (eye[2] - prevEar[2]) / dtf;
+				float inv = 1.0f / carDist;
+				radial = ((cs.vx - evx) * cdx + (cs.vy - evy) * cdy + (cs.vz - evz) * cdz) * inv;
+			}
+			prevEar[0] = eye[0];
+			prevEar[1] = eye[1];
+			prevEar[2] = eye[2];
+			haveEar = true;
+			audio.Engine(s01, sim->IsBoosting(player), carDist, ballDist, radial);
 		}
 		// FX advance on SIM time (tick delta), not wall time: FX timers, pulses
 		// and the slow-mo beat are deterministic for capture and independent
