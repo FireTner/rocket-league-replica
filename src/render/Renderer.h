@@ -374,6 +374,8 @@ private:
         bool alphaTest = false;    // tree cards / masked foliage
         bool lmLuma = false;       // this bucket's lightmap stays greyscale
         bool emit = false;         // add tintRgb as an emissive term
+        bool nearVeil = false;     // untextured glass: thin the alpha up close
+        bool nearEdge = false;     // goal trim: fade the lightmap shell up close
         bool useColor = false;     // mesh stored vertex colours
         int floatsPerVert = 13;    // +3 when useColor
         std::string tag;   // first (mesh, material) baked here (diagnostics)
@@ -398,6 +400,8 @@ private:
     int arenaUniLmLuma_ = -1;
     int arenaUniAlphaTest_ = -1;
     int arenaUniUseColor_ = -1;
+    int arenaUniNearVeil_ = -1;
+    int arenaUniGlowFade_ = -1;
     ArenaPackStats arenaStats_;
     bool arenaReady_ = false;
 };
