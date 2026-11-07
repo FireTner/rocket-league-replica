@@ -826,8 +826,11 @@ constexpr int kArenaCell = 8192;
 // (392 of the 640 used section slots in the DFH Stadium day pack). A mid
 // grey: it reads as "unpainted" without competing with the textured parts.
 constexpr float kArenaFallback[3] = {0.55f, 0.55f, 0.55f};
-// Vertex layout: pos(3) normal(3) uvDiff(2) uvLm(2) = 10 floats.
-constexpr int kArenaStride = 10;
+// Vertex layout: pos(3) normal(3) uvDiff(2) uvLm(2) tangent(3) = 13 floats.
+// A mesh that actually stores vertex colours appends rgb (16). This cook
+// does not, so the colour slot stays off.
+constexpr int kArenaStrideNoColor = 13;
+constexpr int kArenaStrideColor = 16;
 
 // Bucket key: (transparency, texture id, spatial cell). The pack's materials
 // carry no colour, only a diffuse texture, so the TEXTURE is the material id
@@ -838,20 +841,28 @@ constexpr int kArenaStride = 10;
 struct ArenaKey {
     int tex = -1;
     int lm = -1;   // lightmap texture id (-1 = none)
+    int nrm = -1;  // normal-map texture id (-1 = none)
+    int nrmMode = 0;  // 1 = RGB, 2 = XY + reconstructed Z
     int tint = 0;  // fallback colour category when tex == -1 (0 = neutral)
     int cx = 0, cy = 0, cz = 0;
     bool transparent = false;
     bool unlit = false;
     bool decal = false;
     bool alphaTest = false;
+    bool lmLuma = false;  // greyscale lightmap (StadiumBase only)
+    bool color = false;   // vertex colours are stored on these verts
     float lmScale[3] = {1.f, 1.f, 1.f};
     bool operator<(const ArenaKey& o) const {
         if (transparent != o.transparent) return transparent < o.transparent;
         if (unlit != o.unlit) return unlit < o.unlit;
         if (decal != o.decal) return decal < o.decal;
         if (alphaTest != o.alphaTest) return alphaTest < o.alphaTest;
+        if (lmLuma != o.lmLuma) return lmLuma < o.lmLuma;
+        if (color != o.color) return color < o.color;
         if (tex != o.tex) return tex < o.tex;
         if (lm != o.lm) return lm < o.lm;
+        if (nrm != o.nrm) return nrm < o.nrm;
+        if (nrmMode != o.nrmMode) return nrmMode < o.nrmMode;
         if (tint != o.tint) return tint < o.tint;
         for (int i = 0; i < 3; ++i)
             if (lmScale[i] != o.lmScale[i]) return lmScale[i] < o.lmScale[i];
@@ -911,13 +922,26 @@ constexpr float kArenaGlass[3] = {0.45f, 0.55f, 0.60f};
 constexpr float kArenaGlassAlpha = 0.18f;
 
 struct ArenaCpuBucket {
-    std::vector<float> v;       // kArenaStride floats per vertex
+    std::vector<float> v;       // stride floats per vertex
     std::vector<uint32_t> idx;  // 3 per triangle
+    int stride = kArenaStrideNoColor;
     float lo[3] = {1e30f, 1e30f, 1e30f};
     float hi[3] = {-1e30f, -1e30f, -1e30f};
     float tintRgb[3] = {0.55f, 0.55f, 0.55f};  // fallback colour (tex == -1)
     std::string tag;  // first (mesh, material) baked here (diagnostics)
 };
+
+// V8U8 normals are stored with a constant B=128 (Z is not in the texture).
+// RGB tangent normals (DXT1/DXT5 in this pack) have B near 230–250.
+bool ArenaNormalIsXY(const ArenaTexture& td) {
+    const size_t n = td.rgba.size() / 4u;
+    if (n == 0 || !td.valid) return false;
+    const size_t step = std::max<size_t>(n / 32u, 1u);
+    for (size_t i = 0; i < n; i += step) {
+        if (td.rgba[i * 4u + 2u] != 128) return false;
+    }
+    return true;
+}
 
 // Normal matrix = transpose(inverse(upper-left 3x3 of the column-major
 // matrix)). Returns false for a singular matrix.
@@ -1036,39 +1060,58 @@ extern "C" void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_TEXTURE0 0x84C0
 #define GL_TEXTURE1 0x84C1
+#define GL_TEXTURE2 0x84C2
 #endif
 #ifndef GLchar
 typedef char GLchar;
 #endif
 
-// Pack-only GLSL ≤ 4.50: albedo × tint × lightmap. Compiled once at upload.
+// Pack-only GLSL ≤ 4.50. Compiled once at upload. The no-pack path never
+// builds this program.
+//   colour = albedo * vertexColour? * lightmap * wrap + emissive
+// Vertex colour is multiplied only when the mesh stored one (this cook does
+// not). Lightmap hue is kept, except DFH_Day_StadiumBase2 (uLmLuma).
 namespace {
 constexpr const char* kArenaVs = R"(#version 450 compatibility
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNrm;
 layout(location = 2) in vec2 aUv0;
 layout(location = 3) in vec2 aUv1;
+layout(location = 4) in vec3 aTan;
+layout(location = 5) in vec3 aColor;
 out vec2 vUv0;
 out vec2 vUv1;
 out vec3 vNrm;
+out vec3 vTan;
+out vec3 vColor;
 void main() {
   vUv0 = aUv0;
   vUv1 = aUv1;
-  vNrm = normalize(gl_NormalMatrix * aNrm);
+  vNrm = gl_NormalMatrix * aNrm;
+  vTan = gl_NormalMatrix * aTan;
+  vColor = aColor;
   gl_Position = gl_ModelViewProjectionMatrix * vec4(aPos, 1.0);
 }
 )";
 constexpr const char* kArenaFs = R"(#version 450 compatibility
 uniform sampler2D uDiffuse;
 uniform sampler2D uLightmap;
+uniform sampler2D uNormal;
 uniform vec3 uTint;
 uniform vec3 uLmScale;
+uniform vec3 uEmit;
 uniform int uUseDiff;
 uniform int uUseLm;
+uniform int uUseNrm;
+uniform int uNrmMode;
+uniform int uLmLuma;
 uniform int uAlphaTest;
+uniform int uUseColor;
 in vec2 vUv0;
 in vec2 vUv1;
 in vec3 vNrm;
+in vec3 vTan;
+in vec3 vColor;
 void main() {
   vec3 albedo = uTint;
   float alpha = 1.0;
@@ -1077,24 +1120,50 @@ void main() {
     albedo = t.rgb;
     alpha = t.a;
   }
+  if (uUseColor != 0) albedo *= vColor;
   if (uAlphaTest != 0 && alpha < 0.5) discard;
   vec3 lm = vec3(1.0);
   if (uUseLm != 0) {
-    // DirectionalMax * ScaleVectors — MEASURED shade carrier (StadiumBase
-    // uv*s+b lit=70.5% lum~0..2.1; raw UV1 only 26%). Luminance only so
-    // sky-blue bake does not tint concrete purple. Near-black atlas
-    // padding → neutral 0.88 (not lm=1 wash, not lm=0.18 blackout).
+    // DirectionalMax * ScaleVectors. Hue is kept. DFH_Day_StadiumBase2
+    // (uLmLuma) stays greyscale: its live chart is cyan (~0.67, 1.18, 1.18)
+    // and that cast paints the grey concrete purple. Near-black atlas
+    // padding stays the neutral 0.72, not a wash and not a blackout.
     vec3 raw = texture(uLightmap, vUv1).rgb * uLmScale;
     float lum = dot(raw, vec3(0.3333));
-            float live = smoothstep(0.0, 0.06, lum);
-    // Wide gain so grey concrete/sidewalk albedos still show bowl shade.
-    float sh = mix(0.72, clamp(lum * 1.15, 0.28, 1.70), live);
-    lm = vec3(sh);
+    float live = smoothstep(0.0, 0.06, lum);
+    float gain = clamp(lum * 1.15, 0.28, 1.70);
+    float sh = mix(0.72, gain, live);
+    if (uLmLuma != 0 || lum <= 0.0001) {
+      lm = vec3(sh);
+    } else {
+      lm = mix(vec3(0.72), raw * (gain / lum), live);
+    }
   }
   vec3 n = normalize(vNrm);
+  if (uUseNrm != 0) {
+    vec3 t = vTan;
+    float tl = length(t);
+    if (tl > 0.00001) {
+      t /= tl;
+      t = t - n * dot(n, t);
+      if (length(t) > 0.00001) {
+        t = normalize(t);
+        vec3 b = cross(n, t);
+        vec3 s = texture(uNormal, vUv0).rgb;
+        vec3 tn;
+        if (uNrmMode == 2) {
+          tn.xy = s.xy * 2.0 - 1.0;
+          tn.z = sqrt(max(0.0, 1.0 - dot(tn.xy, tn.xy)));
+        } else {
+          tn = s * 2.0 - 1.0;
+        }
+        n = normalize(t * tn.x + b * tn.y + n * tn.z);
+      }
+    }
+  }
   float ndl = max(dot(n, normalize(vec3(0.35, 0.2, 0.9))), 0.0);
   float shade = mix(0.92, 1.0, ndl);
-  gl_FragColor = vec4(albedo * lm * shade, alpha);
+  gl_FragColor = vec4(albedo * lm * shade + uEmit, alpha);
 }
 )";
 
@@ -1122,6 +1191,8 @@ GLuint ArenaLinkProgram(GLuint vs, GLuint fs) {
     glBindAttribLocation(p, 1, "aNrm");
     glBindAttribLocation(p, 2, "aUv0");
     glBindAttribLocation(p, 3, "aUv1");
+    glBindAttribLocation(p, 4, "aTan");
+    glBindAttribLocation(p, 5, "aColor");
     glLinkProgram(p);
     GLint ok = 0;
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
@@ -1324,6 +1395,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         const bool mirrored = (det < 0.0);
         const size_t nv = mesh->positions.size() / 3;
         const bool hasN = mesh->normals.size() >= nv * 3;
+        const bool hasT = mesh->tangents.size() >= nv * 3;
+        const bool hasColor = mesh->colors.size() >= nv * 3;
         const bool hasUv = mesh->uvs.size() >= nv * 2;
         const bool hasUvLm = mesh->uvsLm.size() >= nv * 2;
         const bool hasPackedLm = inst.lightmap.valid && inst.lightmap.texture >= 0;
@@ -1334,8 +1407,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             mesh->name == "Field_STD_Floor_Team2" ||
             mesh->name == "Field_CenterField_Team1" ||
             mesh->name == "Field_CenterField_Team2";
-        // Transform the mesh into world space once (positions + normals).
-        std::vector<float> wp(nv * 3), wn(nv * 3);
+        // Transform the mesh into world space once (positions, normals, tangents).
+        std::vector<float> wp(nv * 3), wn(nv * 3), wt(nv * 3, 0.f);
         double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
         for (size_t v = 0; v < nv; ++v) {
             const double x = mesh->positions[v * 3 + 0];
@@ -1384,6 +1457,25 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             wn[v * 3 + 0] = tx;
             wn[v * 3 + 1] = ty;
             wn[v * 3 + 2] = tz;
+            // Tangents use the instance 3x3, not the inverse-transpose.
+            // A mirrored placement flips the bitangent; negate T so
+            // cross(N, T) follows the swapped winding.
+            float lx = hasT ? mesh->tangents[v * 3 + 0] : 0.f;
+            float ly = hasT ? mesh->tangents[v * 3 + 1] : 0.f;
+            float lz = hasT ? mesh->tangents[v * 3 + 2] : 0.f;
+            float sx = inst.matrix[0] * lx + inst.matrix[4] * ly +
+                       inst.matrix[8] * lz;
+            float sy = inst.matrix[1] * lx + inst.matrix[5] * ly +
+                       inst.matrix[9] * lz;
+            float sz = inst.matrix[2] * lx + inst.matrix[6] * ly +
+                       inst.matrix[10] * lz;
+            if (mirrored) { sx = -sx; sy = -sy; sz = -sz; }
+            const float sl = std::sqrt(sx * sx + sy * sy + sz * sz);
+            if (sl > 1e-8f) { sx /= sl; sy /= sl; sz /= sl; }
+            else { sx = 0.f; sy = 0.f; sz = 0.f; }
+            wt[v * 3 + 0] = sx;
+            wt[v * 3 + 1] = sy;
+            wt[v * 3 + 2] = sz;
         }
         // The spatial cell: the 8192 uu grid cell of the placement's world
         // AABB centre.
@@ -1406,6 +1498,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 size_t(sec.materialSlot) < inst.materialSlots.size())
                 matIdx = inst.materialSlots[size_t(sec.materialSlot)];
             int texId = -1;
+            int nrmId = -1;
+            int nrmMode = 0;
             float tintRgb[3] = {kArenaFallback[0], kArenaFallback[1],
                                 kArenaFallback[2]};
             int tint = 0;
@@ -1460,6 +1554,12 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                         tn == "FillFlare" ||
                         tn == "Hexagons_Pack_B";
                     const bool tinyStub = td.width <= 4 && td.height <= 4;
+                    // A real normal map in the diffuse slot is not albedo.
+                    // Sample it as a tangent-space normal instead.
+                    if (looksNormal) {
+                        nrmId = texId;
+                        nrmMode = ArenaNormalIsXY(td) ? 2 : 1;
+                    }
                     if (looksNormal || looksJunk || tinyStub || td.lightmap)
                         texId = -1;
                 }
@@ -1551,11 +1651,20 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             ArenaKey key;
             key.tex = texId;
             key.lm = useLm ? inst.lightmap.texture : -1;
+            key.nrm = nrmId;
+            key.nrmMode = nrmMode;
             key.tint = (texId < 0) ? tint : 0;
             key.transparent = secTransparent;
             key.unlit = unlit;
             key.decal = decal;
             key.alphaTest = alphaTest;
+            // DFH_Day_StadiumBase2's live DirectionalMax chart is cyan
+            // (~0.67, 1.18, 1.18). On the grey concrete that cast reads
+            // purple, so this mesh keeps luminance. Every other chart
+            // keeps its colour.
+            key.lmLuma = useLm &&
+                mesh->name.find("StadiumBase") != std::string::npos;
+            key.color = hasColor;
             if (useLm) {
                 key.lmScale[0] = inst.lightmap.colorScale[0];
                 key.lmScale[1] = inst.lightmap.colorScale[1];
@@ -1568,6 +1677,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 bi = cpu.size();
                 bucketIndex[key] = bi;
                 cpu.emplace_back();
+                cpu.back().stride = key.color ? kArenaStrideColor
+                                              : kArenaStrideNoColor;
                 cpu.back().tintRgb[0] = tintRgb[0];
                 cpu.back().tintRgb[1] = tintRgb[1];
                 cpu.back().tintRgb[2] = tintRgb[2];
@@ -1596,7 +1707,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                     const uint32_t vi = corner[q];
                     if (stamp[vi] != stampCounter) {
                         stamp[vi] = stampCounter;
-                        remap[vi] = int32_t(b.v.size() / kArenaStride);
+                        remap[vi] = int32_t(b.v.size() / size_t(b.stride));
                         b.v.push_back(wp[vi * 3 + 0]);
                         b.v.push_back(wp[vi * 3 + 1]);
                         b.v.push_back(wp[vi * 3 + 2]);
@@ -1626,8 +1737,16 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                         b.v.push_back(v);
                         b.v.push_back(lu);
                         b.v.push_back(lv);
+                        b.v.push_back(wt[vi * 3 + 0]);
+                        b.v.push_back(wt[vi * 3 + 1]);
+                        b.v.push_back(wt[vi * 3 + 2]);
+                        if (key.color) {
+                            b.v.push_back(mesh->colors[vi * 3 + 0]);
+                            b.v.push_back(mesh->colors[vi * 3 + 1]);
+                            b.v.push_back(mesh->colors[vi * 3 + 2]);
+                        }
                         for (int c = 0; c < 3; ++c) {
-                            const float p = b.v[b.v.size() - kArenaStride + size_t(c)];
+                            const float p = b.v[b.v.size() - size_t(b.stride) + size_t(c)];
                             if (p < b.lo[c]) b.lo[c] = p;
                             if (p > b.hi[c]) b.hi[c] = p;
                         }
@@ -1655,6 +1774,21 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         glBindTexture(GL_TEXTURE_2D, 0);
         arenaWhiteTex_ = wtex;
     }
+    // The cook's static-mesh stream is packed tangent + packed normal + UVs
+    // (stride 8+4*channels). This pack has no `colors` array, so the shader
+    // does not multiply a fabricated vertex colour.
+    {
+        bool anyColor = false;
+        for (const ArenaMesh& m : pack.meshes)
+            if (!m.colors.empty()) anyColor = true;
+        for (const ArenaMesh& m : pack.externalMeshes)
+            if (!m.colors.empty()) anyColor = true;
+        if (!anyColor) {
+            std::fprintf(stderr,
+                         "[arena] no vertex colours in this pack (cook stream "
+                         "is packed tangent + normal + UVs; not inventing any)\n");
+        }
+    }
     // Pack-only GLSL program (compiled once; never per frame).
     {
         GLuint vs = ArenaCompileShader(GL_VERTEX_SHADER, kArenaVs);
@@ -1665,11 +1799,17 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         if (arenaProg_) {
             arenaUniDiffuse_ = glGetUniformLocation(arenaProg_, "uDiffuse");
             arenaUniLightmap_ = glGetUniformLocation(arenaProg_, "uLightmap");
+            arenaUniNormal_ = glGetUniformLocation(arenaProg_, "uNormal");
             arenaUniTint_ = glGetUniformLocation(arenaProg_, "uTint");
             arenaUniLmScale_ = glGetUniformLocation(arenaProg_, "uLmScale");
+            arenaUniEmit_ = glGetUniformLocation(arenaProg_, "uEmit");
             arenaUniUseDiff_ = glGetUniformLocation(arenaProg_, "uUseDiff");
             arenaUniUseLm_ = glGetUniformLocation(arenaProg_, "uUseLm");
+            arenaUniUseNrm_ = glGetUniformLocation(arenaProg_, "uUseNrm");
+            arenaUniNrmMode_ = glGetUniformLocation(arenaProg_, "uNrmMode");
+            arenaUniLmLuma_ = glGetUniformLocation(arenaProg_, "uLmLuma");
             arenaUniAlphaTest_ = glGetUniformLocation(arenaProg_, "uAlphaTest");
+            arenaUniUseColor_ = glGetUniformLocation(arenaProg_, "uUseColor");
             std::fprintf(stderr, "[arena] pack GLSL program ready\n");
         } else {
             std::fprintf(stderr,
@@ -1780,6 +1920,14 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.lmTexId = (key.lm >= 0 && size_t(key.lm) < texGlId.size())
                         ? texGlId[size_t(key.lm)]
                         : -1;
+        g.nrmTexId = (key.nrm >= 0 && size_t(key.nrm) < texGlId.size())
+                         ? texGlId[size_t(key.nrm)]
+                         : -1;
+        g.nrmMode = g.nrmTexId >= 0 ? key.nrmMode : 0;
+        g.lmLuma = key.lmLuma;
+        g.emit = (key.tint == 8 || key.tint == 9);
+        g.useColor = key.color;
+        g.floatsPerVert = b.stride;
         g.lmScale[0] = key.lmScale[0];
         g.lmScale[1] = key.lmScale[1];
         g.lmScale[2] = key.lmScale[2];
@@ -1869,7 +2017,6 @@ void Renderer::DrawArenaPack() {
     const GLfloat dayAmb[4] = {0.62f, 0.64f, 0.62f, 1.0f};
     glLightModelfv(GL_LIGHT_MODEL_AMBIENT, dayAmb);
     const ArenaFrustum f = ExtractArenaFrustum();
-    const GLsizei stride = kArenaStride * int(sizeof(float));
     const GLboolean texWas = glIsEnabled(GL_TEXTURE_2D);
     const GLboolean blendWas = glIsEnabled(GL_BLEND);
     const GLboolean lightWas = glIsEnabled(GL_LIGHTING);
@@ -1880,6 +2027,7 @@ void Renderer::DrawArenaPack() {
         glUseProgram(arenaProg_);
         glUniform1i(arenaUniDiffuse_, 0);
         glUniform1i(arenaUniLightmap_, 1);
+        glUniform1i(arenaUniNormal_, 2);
         glDisable(GL_LIGHTING);  // shade comes from the lightmap + soft fill
     }
     auto drawBucket = [&](const ArenaBucket& bk, bool transparentPass) {
@@ -1890,14 +2038,19 @@ void Renderer::DrawArenaPack() {
         }
         glBindBuffer(GL_ARRAY_BUFFER, bk.vbo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bk.ibo);
+        const GLsizei stride = bk.floatsPerVert * int(sizeof(float));
         if (useGlsl) {
             const GLuint diff = bk.texId >= 0 ? GLuint(bk.texId) : arenaWhiteTex_;
             const GLuint lm =
                 bk.lmTexId >= 0 ? GLuint(bk.lmTexId) : arenaWhiteTex_;
+            const GLuint nrm =
+                bk.nrmTexId >= 0 ? GLuint(bk.nrmTexId) : arenaWhiteTex_;
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, diff);
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, lm);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, nrm);
             glActiveTexture(GL_TEXTURE0);
             float tint[3] = {bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2]};
             if (transparentPass && bk.texId < 0) {
@@ -1905,16 +2058,28 @@ void Renderer::DrawArenaPack() {
             } else if (bk.texId >= 0) {
                 tint[0] = tint[1] = tint[2] = 1.0f;
             }
+            float emit[3] = {0.f, 0.f, 0.f};
+            if (bk.emit) {
+                emit[0] = bk.tintRgb[0];
+                emit[1] = bk.tintRgb[1];
+                emit[2] = bk.tintRgb[2];
+            }
             glUniform3f(arenaUniTint_, tint[0], tint[1], tint[2]);
             glUniform3f(arenaUniLmScale_, bk.lmScale[0], bk.lmScale[1],
                         bk.lmScale[2]);
+            glUniform3f(arenaUniEmit_, emit[0], emit[1], emit[2]);
             glUniform1i(arenaUniUseDiff_, bk.texId >= 0 ? 1 : 0);
             glUniform1i(arenaUniUseLm_, bk.lmTexId >= 0 ? 1 : 0);
+            glUniform1i(arenaUniUseNrm_, bk.nrmTexId >= 0 ? 1 : 0);
+            glUniform1i(arenaUniNrmMode_, bk.nrmMode);
+            glUniform1i(arenaUniLmLuma_, bk.lmLuma ? 1 : 0);
             glUniform1i(arenaUniAlphaTest_, bk.alphaTest ? 1 : 0);
+            glUniform1i(arenaUniUseColor_, bk.useColor ? 1 : 0);
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
             glEnableVertexAttribArray(2);
             glEnableVertexAttribArray(3);
+            glEnableVertexAttribArray(4);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (const void*)0);
             glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
                                   (const void*)(3 * sizeof(float)));
@@ -1922,6 +2087,15 @@ void Renderer::DrawArenaPack() {
                                   (const void*)(6 * sizeof(float)));
             glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride,
                                   (const void*)(8 * sizeof(float)));
+            glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, stride,
+                                  (const void*)(10 * sizeof(float)));
+            if (bk.useColor) {
+                glEnableVertexAttribArray(5);
+                glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, stride,
+                                      (const void*)(13 * sizeof(float)));
+            } else {
+                glDisableVertexAttribArray(5);
+            }
         } else {
             if (bk.texId >= 0) {
                 glEnable(GL_TEXTURE_2D);
@@ -1974,7 +2148,11 @@ void Renderer::DrawArenaPack() {
         glDisableVertexAttribArray(1);
         glDisableVertexAttribArray(2);
         glDisableVertexAttribArray(3);
+        glDisableVertexAttribArray(4);
+        glDisableVertexAttribArray(5);
         glUseProgram(0);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);
@@ -2012,8 +2190,10 @@ void Renderer::ShutdownArenaPack() {
         glDeleteProgram(arenaProg_);
         arenaProg_ = 0;
     }
-    arenaUniDiffuse_ = arenaUniLightmap_ = arenaUniTint_ = -1;
-    arenaUniUseDiff_ = arenaUniUseLm_ = arenaUniAlphaTest_ = -1;
+    arenaUniDiffuse_ = arenaUniLightmap_ = arenaUniNormal_ = arenaUniTint_ = -1;
+    arenaUniEmit_ = -1;
+    arenaUniUseDiff_ = arenaUniUseLm_ = arenaUniUseNrm_ = arenaUniNrmMode_ = -1;
+    arenaUniLmLuma_ = arenaUniAlphaTest_ = arenaUniUseColor_ = -1;
     arenaReady_ = false;
 }
 

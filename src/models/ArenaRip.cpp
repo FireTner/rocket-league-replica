@@ -1138,7 +1138,7 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
       if (!arrays || !arrays->IsObject()) {
         return fail("the mesh '" + name + "' has no 'arrays' object");
       }
-      ArrayRef positions, normals, uvs, uvsLm, indices;
+      ArrayRef positions, normals, tangents, colors, uvs, uvsLm, indices;
       if (!GetArrayRef(*arrays, "positions", positions) ||
           !GetArrayRef(*arrays, "normals", normals) ||
           !GetArrayRef(*arrays, "uvs", uvs) ||
@@ -1146,11 +1146,15 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
         return fail("the mesh '" + name +
                     "' does not declare all of its arrays");
       }
+      const bool haveTangents = GetArrayRef(*arrays, "tangents", tangents);
+      const bool haveColors = GetArrayRef(*arrays, "colors", colors);
       const bool haveLmUvs = GetArrayRef(*arrays, "uvs_lm", uvsLm);
       if (positions.count != static_cast<uint64_t>(numVerts) ||
           normals.count != static_cast<uint64_t>(numVerts) ||
           uvs.count != static_cast<uint64_t>(numVerts) ||
-          (haveLmUvs && uvsLm.count != static_cast<uint64_t>(numVerts))) {
+          (haveLmUvs && uvsLm.count != static_cast<uint64_t>(numVerts)) ||
+          (haveTangents && tangents.count != static_cast<uint64_t>(numVerts)) ||
+          (haveColors && colors.count != static_cast<uint64_t>(numVerts))) {
         return fail("the mesh '" + name + "' declares " +
                     std::to_string(numVerts) + " vertices but its arrays hold " +
                     std::to_string(positions.count) + " positions / " +
@@ -1163,7 +1167,9 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
                     "holds " + std::to_string(indices.count));
       }
       if (positions.stride != 12 || normals.stride != 12 || uvs.stride != 8 ||
-          indices.stride != 2 || (haveLmUvs && uvsLm.stride != 8)) {
+          indices.stride != 2 || (haveLmUvs && uvsLm.stride != 8) ||
+          (haveTangents && tangents.stride != 12) ||
+          (haveColors && colors.stride != 12)) {
         return fail("the mesh '" + name + "' has an unexpected array stride");
       }
 
@@ -1172,8 +1178,10 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
         const char* name;
         bool active;
       };
-      const Slice slices[5] = {{&positions, "positions", true},
+      const Slice slices[7] = {{&positions, "positions", true},
                                 {&normals, "normals", true},
+                                {&tangents, "tangents", haveTangents},
+                                {&colors, "colors", haveColors},
                                 {&uvs, "uvs", true},
                                 {&uvsLm, "uvs_lm", haveLmUvs},
                                 {&indices, "indices", true}};
@@ -1229,6 +1237,42 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
           }
           mesh.normals[static_cast<size_t>(v) * 3u +
                        static_cast<size_t>(c)] = f;
+        }
+      }
+      if (haveTangents) {
+        mesh.tangents.resize(static_cast<size_t>(numVerts) * 3u);
+        for (int64_t v = 0; v < numVerts; ++v) {
+          for (int c = 0; c < 3; ++c) {
+            uint32_t bits = LoadU32(blob + tangents.offset +
+                                    static_cast<size_t>(v) * 12u +
+                                    static_cast<size_t>(c) * 4u);
+            float f;
+            std::memcpy(&f, &bits, 4);
+            if (!std::isfinite(f)) {
+              return fail("the mesh '" + name + "' has a non-finite tangent");
+            }
+            mesh.tangents[static_cast<size_t>(v) * 3u +
+                          static_cast<size_t>(c)] = f;
+          }
+        }
+      }
+      // Optional. The stadium cook's vertex stream has no colour channel, so
+      // a missing array leaves `colors` empty — nothing is invented.
+      if (haveColors) {
+        mesh.colors.resize(static_cast<size_t>(numVerts) * 3u);
+        for (int64_t v = 0; v < numVerts; ++v) {
+          for (int c = 0; c < 3; ++c) {
+            uint32_t bits = LoadU32(blob + colors.offset +
+                                    static_cast<size_t>(v) * 12u +
+                                    static_cast<size_t>(c) * 4u);
+            float f;
+            std::memcpy(&f, &bits, 4);
+            if (!std::isfinite(f)) {
+              return fail("the mesh '" + name + "' has a non-finite vertex colour");
+            }
+            mesh.colors[static_cast<size_t>(v) * 3u +
+                        static_cast<size_t>(c)] = f;
+          }
         }
       }
       mesh.uvs.resize(static_cast<size_t>(numVerts) * 2u);
