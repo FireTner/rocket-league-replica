@@ -1746,19 +1746,25 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                                tint == 11 || tint == 16;
             const bool decal = (tint == 7);
 
-            // Lightmap: skip on sky / glass (atlas strips read as purple
-            // moiré) and when the component's atlas rect is the known-empty
-            // Floor_Team half (scale≈0.5 bias≈0/0.5 on Color1) — those
-            // rects measure ~1.7% lit and raw UV1 wrongly samples neighbours.
+            // Lightmap: skip sky / glass (atlas strips read as purple moiré).
+            // Floor_Team1 and Floor_Team2 stay on FieldSkin. Their FLightMap2D
+            // charts are structurally empty (MEASURED 2026-11-07, Stadium_Day_P,
+            // DirectionalMax * scale, lum > 0.06): Team1 scale (0.498, 0.498)
+            // bias (0.00098, 0.00098) rect lit 1.19% (average 1.68%), uv*s+b
+            // vertex lit 8.21%. Team2 bias (0.501, 0.501) rect lit 1.14%.
+            // The component references no other LightMapTexture2D, and the
+            // grass MIC's LightMap parameter is None. A v-bias of +0.5 lands
+            // in an unclaimed neighbour quadrant (45.8% lit, half the samples
+            // still black). StadiumBase on the same decode is uv*s+b 70.9% lit.
             bool useLm = hasPackedLm && !skyDome && !secTransparent;
             if (useLm) {
                 const float sx = inst.lightmap.coordScale[0];
                 const float sy = inst.lightmap.coordScale[1];
                 const float bx = inst.lightmap.coordBias[0];
                 const float by = inst.lightmap.coordBias[1];
-                // Tiny stamps (boost pads etc.) are fine; the empty Team
-                // floor rects are ~0.5 with bias near 0 or 0.5 and belong
-                // to pitch overlays that keep FieldSkin without LM.
+                // The empty half-field charts are the ~0.5 scale rects with
+                // bias near 0 (Team1) or near 0.5 (Team2). Smaller pitch
+                // stamps (Thick, Hex, CenterField) keep their bakes.
                 if (isPitchMesh && sx > 0.4f && sx < 0.55f &&
                     sy > 0.4f && sy < 0.55f &&
                     ((bx < 0.05f && by < 0.05f) ||

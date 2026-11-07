@@ -15,6 +15,14 @@ signature below, then:
 65 of 1176 StaticMeshComponents carry a valid pair. Floor Team1/Team2 and
 DFH_Day_StadiumBase2 are among them.
 
+Floor_Team1's only pair is that NormalizedAverage / DirectionalMax binding.
+On the licensee-34 Stadium_Day cook the chart is structurally empty
+(MEASURED 2026-11-07): directional rect lit 1.19%, average rect lit 1.68%,
+uv*s+b vertex lit 8.21%. Team2's quadrant is 1.14% lit. StadiumBase on the
+same path is 70.9% lit. The Team1 component's blob references no second
+lightmap. Shifting its UVs into the atlas's other populated quadrant samples
+a neighbour (45.8% lit, half the vertices still black). Leave that mesh unbound.
+
 Accepts either `rlmat.RLMatPackage` (preferred — has try_properties) or a
 raw `rlupk.Package` (falls back to name-only mesh identification).
 """
