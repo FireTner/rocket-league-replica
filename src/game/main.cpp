@@ -33,6 +33,7 @@
 #include "models/ArenaTextures.h"
 #include "render/Renderer.h"
 #include "render/MatchHud.h"
+#include "render/PitchShadow.h"
 #include "settings/Settings.h"
 #include "sim/Sim.h"
 #include "game/FreeplayBall.h"
@@ -1064,6 +1065,11 @@ int main(int argc, char** argv) {
 			if (!pads.empty() && !renderer.HasArenaPack())
 				fx.DrawPads(renderer, pads.data(), int(pads.size()));
 		}
+		// Loaded-pack only. The bowl's sun is already in the lightmap, so this
+		// is a pitch-plane blob under the cars and the ball. No call, and no
+		// extra GL, on the analytic shell.
+		if (renderer.HasArenaPack())
+			rl::DrawPitchSunShadows(renderer, snap, osnap);
 		// Cars: Fennec GLB body when available (CC-BY-4.0), box fallback else.
 		// Orientation now carries pitch/roll (carForward/carUp), so rolls and
 		// flips are visible instead of being flattened to a 2D yaw.

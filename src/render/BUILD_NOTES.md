@@ -919,3 +919,16 @@ RGB is unchanged. Goal-interior shells stay on their baked alpha.
 not step the sim. `Draw` is skipped when `--shot-at-tick` is set so gated
 captures (VG1) keep the previous pixels. `tests/test_match_hud.cpp` covers
 the formatting.
+
+## Pack pitch sun shadow (stand-in)
+
+`src/render/PitchShadow` draws one key-light shadow of each car and of the
+ball, and only when a stadium pack is loaded. `DrawArenaPack` leaves
+`GL_LIGHTING` off because the bowl's shade is the baked lightmap; this pass
+does not add a second live shadow on the stands. It is a soft ellipse on
+z = 3, projected along `GL_LIGHT0` (0.25, −0.40, 0.88) and clipped to the
+Soccar floor plus the goal mouths (`ArenaGeometry.h`). A shadow map would
+need a framebuffer this renderer does not have, so the ellipse is a
+stand-in, not a mesh silhouette. The analytic shell never calls it.
+`tests/test_pitch_shadow.cpp` checks the ray, the height offset, and that a
+blob past the pitch is dropped.
