@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """tools/verify/mesh_integrity.py — baked Fennec asset integrity (VG13 backend).
 
-Asserts, on `assets/models/fennec.bin` (FEN2: body + four wheel parts;
-rest pose is each wheel vertex plus its hub pivot):
+Asserts, on `assets/models/fennec.bin`:
   (a) every baked normal is unit length (| |n| - 1 | <= 0.01);
   (b) the bbox min-z is within +/-1.0 uu of -17.00 (ground plane datum, see
       tools/convert_fennec.py header);
   (c) the footprint matches the source GLB's documented MEASURED dimensions
       140.42 (length) x 72.47 (width) x 51.65 (height) within +/-1 uu;
   (d) there are no zero-area (degenerate) triangles;
-  (e) parts 1..4 are the FR/FL/BR/BL wheels (front pair flags bit0 set) and
-      none of them is empty.
+  (e) FEN1 carries a TEX1 block with the rim and chassis albedo sheets.
+      FEN2 is body + four wheel parts (front pair flags bit0 set).
 
 The hitbox (Octane, src/physics/CarPresets.h kCarPresets[0]) is reported as a
 delta for the record but NOT asserted: the mesh is a detailed recreation that
@@ -49,16 +48,57 @@ SRC_TOL = 1.0
 HITBOX = (120.507, 86.6994, 38.6591)
 
 
+def load_fen1(d):
+    """FEN1 positions are already in rest pose. TEX1 follows the index block."""
+    nv = struct.unpack_from("<I", d, 4)[0]
+    off = 8
+    if nv == 0 or off + nv * 24 + 4 > len(d):
+        raise ValueError("truncated FEN1 vertices")
+    verts = [struct.unpack_from("<6f", d, off + i * 24) for i in range(nv)]
+    off += nv * 24
+    ni = struct.unpack_from("<I", d, off)[0]
+    off += 4
+    if ni == 0 or off + ni * 4 > len(d):
+        raise ValueError("truncated FEN1 indices")
+    idx = list(struct.unpack_from("<%dI" % ni, d, off))
+    off += ni * 4
+    if d[off:off + 4] != b"TEX1":
+        raise ValueError("FEN1 file has no TEX1 albedo block")
+    off += 4
+    nuv = struct.unpack_from("<I", d, off)[0]
+    off += 4
+    if nuv != nv:
+        raise ValueError("TEX1 uv count %d != %d verts" % (nuv, nv))
+    off += nuv * 8
+    nimg = struct.unpack_from("<I", d, off)[0]
+    off += 4
+    names = []
+    for _ in range(nimg):
+        if off + 20 > len(d):
+            raise ValueError("truncated TEX1 image")
+        name = d[off:off + 16].split(b"\0", 1)[0].decode("ascii", "replace")
+        off += 16
+        ln = struct.unpack_from("<I", d, off)[0]
+        off += 4
+        if off + ln > len(d):
+            raise ValueError("truncated TEX1 png")
+        off += ln
+        names.append(name)
+    return verts, idx, [], names
+
+
 def load(path):
     """Return rest-pose vertices, a flat index buffer, and per-part records.
 
-    Wheel vertices are stored hub-local. Rest pose adds the pivot so the
-    bbox checks still describe the whole car.
+    FEN2 wheel vertices are stored hub-local. Rest pose adds the pivot so the
+    bbox checks still describe the whole car. FEN1 vertices are already there.
     """
     with open(path, "rb") as f:
         d = f.read()
+    if d[:4] == b"FEN1":
+        return load_fen1(d)
     if d[:4] != b"FEN2":
-        raise ValueError("bad magic %r (expected FEN2)" % d[:4])
+        raise ValueError("bad magic %r (expected FEN1 or FEN2)" % d[:4])
     nparts = struct.unpack_from("<I", d, 4)[0]
     if nparts < 1 or nparts > 8:
         raise ValueError("part count %d" % nparts)
@@ -89,11 +129,11 @@ def load(path):
         idx.extend(i + base for i in raw)
         parts.append({"flags": flags, "pivot": (px, py, pz),
                       "vertices": nv, "triangles": ni // 3})
-    return verts, idx, parts
+    return verts, idx, parts, []
 
 
 def check():
-    verts, idx, parts = load(MESH)
+    verts, idx, parts, sheets = load(MESH)
     nv = len(verts)
     res = {"mesh": MESH, "vertices": nv, "indices": len(idx),
            "triangles": len(idx) // 3, "failures": []}
@@ -143,11 +183,16 @@ def check():
     if degen:
         res["failures"].append("degenerate triangles: %d" % degen)
 
-    # (e) four wheel parts. Front pair (FR, FL) steer; rear pair does not.
+    # (e) FEN1 must carry the albedo sheets. FEN2 must be body + four wheels.
+    res["sheets"] = sheets
     res["parts"] = [{"flags": p["flags"], "pivot": list(p["pivot"]),
                      "vertices": p["vertices"], "triangles": p["triangles"]}
                     for p in parts]
-    if len(parts) != 5:
+    if sheets:
+        for name in ("rim", "chassis"):
+            if name not in sheets:
+                res["failures"].append("TEX1 missing the %s sheet" % name)
+    elif len(parts) != 5:
         res["failures"].append("parts: %d, expected body + 4 wheels" % len(parts))
     else:
         for i, steer in ((1, 1), (2, 1), (3, 0), (4, 0)):
@@ -185,6 +230,8 @@ def main():
         print("  hitbox delta L/W/H = %.2f / %.2f / %.2f uu (informational)"
               % tuple(res["hitbox_delta"]))
         print("  degenerate triangles=%d" % res["degenerate_triangles"])
+        if res.get("sheets"):
+            print("  sheets=%s" % ",".join(res["sheets"]))
         print("  parts=%d" % len(res.get("parts", [])))
         for i, p in enumerate(res.get("parts", [])):
             print("  part %d flags=%d tris=%d pivot=(%.2f,%.2f,%.2f)"
