@@ -1,6 +1,8 @@
 // Spatial audio probe: UNVERIFIED gain/doppler curves + dummy-driver mute path.
 #include "audio/Audio.h"
 
+#include <SDL2/SDL.h>
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

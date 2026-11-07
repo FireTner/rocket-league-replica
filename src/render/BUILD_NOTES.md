@@ -4,13 +4,306 @@ Owner: A4 (presentation). Peers: `src/sim` (read-only via `Snapshot`),
 `src/settings` (INI), `src/game/main.cpp` (coordinator), `tools/verify`
 (harness). Nothing here may alter a sim code path.
 
+## Force field (2026-11-06)
+
+Pack `arena_assets/stadium_day`. Census command `/tmp/ff_census` (loads
+`LoadArenaPack`, no draw). Filter: mesh starts with `FF` or the name
+contains Glass, Cage, Fence, or Roof, or the material contains glass,
+force, cage, fence, hexglass, or projected. Fate is the draw path as it
+stood before the wall pass.
+
+Predicted names: `FF_Roof`, `FF_Side`, and `FF_Goal` are in the pack.
+`FFCage` is absent. The pack's cage mesh is `FFCage_Full`. That is
+recorded here and not invented as a stand-in wall.
+
+### Census
+
+| Mesh | Section | Material | Tris | Texture | World box | Fate before |
+|---|---|---|---|---|---|---|
+| `FF_Side` | 0 | `Beach_NetFence_MIC` | 26 | `Hexagons_Pack_01_T` | four halves, x ±3584..4100, y ±0..3584, z 73..2052 | skipped |
+| `FF_Goal` | 0 | `Beach_NetFence_MIC` | 330 | `Hexagons_Pack_01_T` | four goal-end halves, x ±0..4100, y ±3584..5124, z 256..2052 | skipped |
+| `FF_Roof` | 0 | `Beach_NetFence_MIC` | 19 | `Hexagons_Pack_01_T` | four quadrants, x ±0..3584, y ±0..4608, z 2052 | skipped |
+| `FFCage_Full` | 0 | `ForceField_HexGage_MIC` | 2012 | none | four quadrants, x ±4..4116, y ±0..5140, z 254..2074 | skipped |
+| `Goal_STD_Glass` | 0 | `HexGlass_WithArrows_Team*_MIC` | 453 | none | x ±1536, y ±5121..6002, z −2..639 | masked-net |
+| `Goal_STD_Glass` | 1 | `CrossHatched_Grate_TL_Mat` | 444 | `Noise_Smoke_03_Pack` | x ±3604, the mouth panel | opaque |
+| `Goal_STD_Glass_Outer` | 0 | `HexGlass_WithArrows_Team*_MIC` | 635 | none | x ±1536, y ±5137..6018, z −18..658 | masked-net |
+| `Field_STD_Glass` | 0 | `HexGlass_WithArrows_Team*_MIC` | 64 | none | four side strips, x ±4074..4108, y ±128..1019, z 136..256 | masked-net |
+| `Stadium_Base_Glass` | 0 | `HexGlass_WithArrows_Team*_MIC` | 82 | none | x −7924..−1201, y ±12361..15156, z 1320..3787 | masked-net |
+| `Stadium_Glass` | 0 | `Glass_Projected_V2_Mat` or `Team2` | 1696 | none | outer bowl, x −24272..14541, \|y\| 6706..25797, z 2191..11612 | flat-veil |
+| `Stadium_Glass_02` | 0 | `Glass_Projected_V2_Mat` or `Team2` | 480 | none | outer bowl, x −23508..12383, \|y\| 8321..25787, z 368..11611 | flat-veil |
+| `Stadium_GlassSupports` | 0 | `DarkMetal_Mat` | 1328 | none | same outer bowl, z 2845..11622 | opaque |
+| `Stadium_GlassSupports` | 1 | `MetalBeam_SoftEdge_Mat` | 174 | none | same outer bowl | opaque |
+
+`FF_Side` ×4 = 104 tris, `FF_Goal` ×4 = 1320, `FF_Roof` ×4 = 76,
+`FFCage_Full` ×4 = 8048. The long-wall quad of `FF_Side` is the plane
+at x=±4100, y 0..3584, z 256..1536. Its UV runs about 14 by 5, so
+3584 uu is 14 repeats (~256 uu per cell). `FF_Roof`'s main quad is the
+same 256 uu repeat at z=2052. `FFCage_Full` puts one 0..1 UV on every
+triangle (~274 uu) and binds no sheet. Its centroids all land on the
+side, the goal end, or the roof that `FF_*` already cover.
+
+Donor: `Goal_STD_Glass` section 0 (`HexGlass_WithArrows_Team*_MIC`).
+That is the goal-mouth patch already drawn as the mask. `Field_STD_Glass`
+and `Stadium_Base_Glass` are the same treatment and stay as they are.
+`Goal_STD_Glass` section 1 is the grate, opaque. `Stadium_GlassSupports`
+is metal. The ad boards, the white band, and the trim are not in this
+table.
+
+Blank wall runs: `FF_Side` (long wall) and `FF_Goal` (goal-end wall).
+Ceiling: `FF_Roof` at z=2052. `Glass_Projected` is the outer bowl, not
+that roof, so it stays the veil. `FFCage` is absent. `FFCage_Full` stays
+skipped so the wall and roof are not drawn twice.
+
+### Pass 1 — wall
+
+`FF_Side` and `FF_Goal` leave the skip and take the HexGlass mask path:
+`Hexagons_Pack_01_T` as the mask, blend mode 2, unlit, ice veil
+`(0.45, 0.55, 0.60)` because `Beach_NetFence_MIC` has no team token.
+The sheet is not the albedo. The alpha cap stays `G*80/255`. The donor
+materials are not retinted. `FF_Roof` and `FFCage_Full` stayed skipped
+for this shot.
+
+Upload `tris=558291` (was `556867`; the added 1424 are `FF_Side` 104 and
+`FF_Goal` 1320). `skipped=95` (was 103). `transparent=16`.
+
+Seed 7, tick 120. There is no car-place flag, so the side view is a
+fixed eye beside the wall, not the chase rig's own update. Machine B:
+`GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`. `glerr=0` `drops=0`. Machine A
+`NOT MEASURED`. No live Rocket League frame.
+
+| View | Eye → target | Path | md5 | Result |
+|---|---|---|---|---|
+| Along the side wall | `-2800,-900,450` → `-4100,600,900` | `/tmp/arena_vis/ff_wall_side.ppm` | `ab93499628605b6d64491e13cb03543e` | PASS. The long run above the white band is the hex net. Sky and stands show through the openings. The band itself stays solid. |
+| Inside the −Y goal | `400,-5600,220` → `0,-4200,160` | `/tmp/arena_vis/ff_wall_inside.ppm` | `51112032ab856fdae76a30bc262a54b7` | PASS. Mouth stays open. No purple slab. Donor floor hex stays red. |
+| High corner | `4200,-3800,2400` → `-200,800,200` | `/tmp/arena_vis/ff_wall_corner.ppm` | `e4a635e5227a23053e6b476bd4335e65` | Net in front of the pitch from this outside eye. Curb, marks, and floor hex still read. |
+
+### Pass 2 — ceiling
+
+`FF_Roof` takes the same mask. `Glass_Projected` stays the veil. The
+alpha cap is unchanged.
+
+Upload `tris=558367` (the added 76 are `FF_Roof` × 4). `placements=391`
+`skipped=91`. Before any lattice: `tris=556867` `skipped=103`.
+
+Same machine, seed, and tick. `glerr=0` `drops=0`.
+
+| View | Path | md5 | Result |
+|---|---|---|---|
+| Looking up | `/tmp/arena_vis/ff_ceil_up.ppm` | `572ed6fa8b295df01d15e5175ee785bf` | PASS. Hex cells across the roof. Openings show the sky. The pre-ceiling frame was open sky (`ff_wall_up.ppm` `31dbce519ab97c959f6afa29aaf67786`). |
+| Side wall again | `/tmp/arena_vis/ff_ceil_side.ppm` | `95207999811d355efe1227dad1314f46` | PASS. Wall net still there. y 420..720 is byte-identical to the pass 1 side shot. The ceiling net is in the upper frame. |
+| Inside the −Y goal | `/tmp/arena_vis/ff_ceil_inside.ppm` | `02d10547e7d4f6cb8b31c74ba69acd64` | PASS. Still no slab across the mouth. |
+| High corner | `/tmp/arena_vis/ff_ceil_corner.ppm` | `e76031b40311d36dae281e191d3aeb23` | PASS. Wall net and ceiling net together. Curb lip, white marks, centre circle, and the mouth hex are still in the frame. |
+
+High corner before any lattice: `/tmp/arena_vis/ff_corner_before.ppm`
+`1e6c607aca1f57f715df26abb6a72eef` (the pitch-detail corner hash).
+After the ceiling, 637880 of 921600 pixels are identical. Sampled grass
+`(81, 103, 45)` and a light pitch pixel `(211, 209, 201)` match. The
+pixels that moved are the ice veil over the previous colour (the camera
+sits outside the wall, so the net is in front of the pitch). The curb,
+the marks, and the floor hex were not repainted.
+
+Shell / no pack, same camera, same seed and tick:
+before `632a0906a760a5eeef36d99610e17a46`,
+after `632a0906a760a5eeef36d99610e17a46`.
+`glerr=0` `drops=0`. Machine A `NOT MEASURED`. No live Rocket League
+frame. Physics gates were not run. This change does not touch
+`src/sim`, `src/arena`, or `src/physics`. `gates_visual.json` was not
+rewritten.
+
+## Pitch detail (2026-11-06)
+
+Pack `arena_assets/stadium_day`. Filter for the census: a section world
+box overlaps `|x|<4500`, `|y|<6400`, and `z` in `(0, 80)`. 385 section
+rows hit that filter. Boost pads, decal blockers, fog, sprites, and
+collision proxies in that set stay skipped. `FieldSkin_FutureGrid_D`
+is 2048², mean `(84.4, 141.4, 70.6)`, and one texel is near-white, so
+the grass lift was not retouched.
+
+`Field_STD_Floor_Thick` upward faces away from the centre cross sit at
+`z>=5`, and the mesh tops out at `z=10`. The lip, the painted lines
+(`z=0.5`), and the hex sheets (`z=0`) are under that cap. They are
+lifted `10.5` uu (`kPitchClear`).
+
+### Rows the three passes draw
+
+| Mesh | Section | Material | Tris | Texture | World box | Fate before |
+|---|---|---|---|---|---|---|
+| `Field_STD_Trim` | 0 | `Frame_01_V2_Mat` | 3392 | `ENV_CarbonFiber_N` | x ±4076, y 110..4866 and the −Y mirror, z 0..156.8 | frame-metal |
+| `Side_Trim` | 0 | `Frame_01_V2_Mat` | 570 | `ENV_CarbonFiber_N` | four side halves, z 0..429 | frame-metal |
+| `Side_Trim` | 1 | `TrimLight_Glow_Team*_MIC` | 54 | none | z 64..529 | team-glow (wall) |
+| `Side_Trim` | 2 | `Frame_01_V2_Mat` | 568 | `ENV_CarbonFiber_N` | z 51..466 | frame-metal |
+| `Field_STD_Glow` | 0 | `TrimLight_Glow_Team*_MIC` | 288 | none | z 72.5..400 | team-glow (wall) |
+| `Field_Center_Lines` | 0 | `PaintedLine_Mat` | 320 | none | x,y ±675, z 0.5 | white-decal |
+| `Field_Side_Lines` | 0 | `PaintedLine_Mat` | 181 | none | four side strips, z 0.5 | white-decal |
+| `Goal_Lines` | 0 | `PaintedLine_Mat` | 262 | none | four goal-box quadrants, z 0.5 | white-decal |
+| `Field_Center_Trim` | 0 | `Frame_01_V2_Mat` | 2514 | `ENV_CarbonFiber_N` | ±743, z −32..1 | skipped |
+| `Field_Center_Trim` | 1 | `TrimLight_None_Mat` | 350 | none | ±725, z 0..64 | skipped |
+| `Field_Center` | 0 | `Reflective_Floor_V2_Mat` | 207 | `Hexagons_Pack_B` | ±707, z 0 | skipped |
+| `Field_STD_Floor_Hex` | 0 and 1 | `Reflective_Floor_V2_Mat` | 274 each | `Hexagons_Pack_B` | x ±3840, y ±146..4181, z 0 | skipped |
+| `Goal_STD_Floor` | 0 | `Reflective_Floor_V2_Mat` | 332 | `Hexagons_Pack_B` | x ±2053, the approach slab | field-skin + mouth copy |
+| `Goal_STD_Floor` | 1 | `Reflective_Floor_B_Mat` | 124 | `Hexagons_N` | x ±928, 862 uu in from the line | field-skin + mouth copy |
+| `Field_STD_TrimB` | 0 | `Frame_01_V2_Mat` | 3060 | `ENV_CarbonFiber_N` | interior lattice, z −1.5..2 | other (light metal) |
+
+`Field_STD_Trim` uv `v` runs −61.4..0.68. `FrameTexture_PACK` stays
+unbound. The 0.029 lightmap stamp stays off. `Goal_STD_Glow` and
+`Goal_STD_Outer` stay undrawn. Of the 3392 trim tris, 3296 have
+centroid `z<20` (the ground rail). The other 96 rise to z 156.8 and
+stay frame metal. `Side_Trim` section 0 has 156 tris in that same band.
+
+`TrimLight_None` is the only trim-light whose box is on the pitch. It
+stays skipped. There is no second centre-ring material with a team
+token. `Field_STD_TrimB` is an interior lattice, not the curb lip, and
+was left as light metal.
+
+### Pass 1 — curb lip
+
+The `z<20` band of `Field_STD_Trim` and `Side_Trim` (`Frame_01_*`) is
+unlit team colour, lifted onto the grass cap. −Y is orange
+`(1, 0.12, 0.04)`, +Y is blue `(0.15, 0.45, 1)`. The wall above stays
+the frame metal and the carbon normal.
+
+Shots, seed 7, tick 120. Machine B:
+`GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`. `glerr=0` `drops=0`.
+
+| View | Path | md5 |
+|---|---|---|
+| Side of the −Y goal | `/tmp/arena_vis/final_side.ppm` | `b833188c5d29cd781442675e8ae68e7b` |
+| Inside that goal | `/tmp/arena_vis/final_inside.ppm` | `32a69410dc09020ee6974decb6105330` |
+| Midfield | `/tmp/arena_vis/final_mid.ppm` | `e6319ddede5bc751f8e5b8418d28a151` |
+| High corner | `/tmp/arena_vis/pass3b_corner.ppm` | `1e6c607aca1f57f715df26abb6a72eef` |
+| Chase, centre spawn | `/tmp/arena_vis/pass3b_chase.ppm` | `af9a7c349dc7c7e065da57f6dee005cc` |
+
+Pass 1: the side and corner show an orange lip on the −Y curb and a
+blue lip on the +Y curb, with the light-metal wall beside them. The
+inside shot still has the red hex mouth and a thin post edge, and no
+glow shell in the floor. Corner vs the pre-change frame differs by
+9308 pixels, and the new pixels are the team blue `(38, 115, 255)`.
+
+### Pass 2 — white marks
+
+`Field_Center_Lines`, `Field_Side_Lines`, and `Goal_Lines` were already
+unlit white. They were buried at `z=0.5`. The same `10.5` uu lift puts
+them on the cap. Midfield and the chase show the centre circle, the
+centre line, and the goal-box marks. `TrimLight_None` is still dark.
+
+### Pass 3 — hex
+
+`Field_Center` and `Field_STD_Floor_Hex` are no longer skipped and are
+not field-skinned. `Hexagons_N` is the normal. `Hexagons_Pack_B` is
+B-heavy purple, so the neutral sheets sample a luminance copy of that
+sheet multiplied by the frame metal `(0.80, 0.79, 0.76)`. The mouth
+still multiplies the original sheet by the team colour. Neither
+material name carries a team token. The sheets were face-down; the
+vertex normal is flipped so they take the overhead light. The approach
+slab (`Goal_STD_Floor` section 0) stays the field skin. The mouth clip
+is unchanged.
+
+Upload before: `tris=556112` placements skipped 105.
+Upload after: `buckets=187 (textured=70 fallback=117 transparent=12) textures=45 placements=379 skipped=103 slots=504 tris=556867`.
+The added 755 tris are `Field_STD_Floor_Hex` (548) and `Field_Center` (207).
+
+Corner and chase show a metal hex disc at centre and dark metal hex
+tiles in the grass. The inside shot shows red hex in the mouth and
+grass on the approach. No purple sheet on the pitch.
+
+Shell / no pack, same camera, same seed and tick:
+before `632a0906a760a5eeef36d99610e17a46`,
+after `632a0906a760a5eeef36d99610e17a46`.
+`glerr=0` `drops=0`. Machine A `NOT MEASURED`. No live Rocket League
+frame. Physics gates were not run; this change does not touch
+`src/sim`, `src/arena`, or `src/physics`.
+
+## Car shade (2026-11-06)
+
+`fennec.bin` keeps the FEN1 position/normal block (`mesh_integrity.py` still
+reads only that) and appends TEX1: UVs, one index range per GLB material, and
+the two CC-BY-4.0 albedo PNGs (rim, chassis). `tools/convert_fennec.py` writes
+it. Base-colour factors are stored in sRGB because fixed-function `glColor` is
+not linear. `FennecDraw` binds those sheets, tints `Fennec_-_Body` per team,
+and lights both sides with a per-material specular. The old height-ramp bake
+and the box trim are gone. A file `car_assets/fennec/<sheet>.png` (gitignored)
+replaces the matching embedded sheet at runtime; that directory is the place
+for a rip from the user's own install, and it is not shipped. PNG decode is
+public-domain stb_image (`third_party/stb`).
+
+## Arena material overlays (2026-11-06)
+
+Pack path only. After a pack loads, `BuildArenaPack` reads
+`material_overlays.json` from the pack directory (`--arenadir`). A missing
+file does nothing: no extra texture and no extra log line. An entry names a
+material, a role (`albedo`, `mask`, or `emissive`), and a PNG. The PNG is
+decoded once per path with stb_image and uploaded RGBA with the same mip
+chain as pack diffuses. `albedo` replaces the pack texture or the flat tint.
+`mask` tints glass that is already transparent (Team2 `0.15,0.45,1`, Team1
+`1,0.12,0.04`, otherwise the ice veil) and takes alpha from the PNG, or from
+the green channel scaled like `Hexagons_Pack_01_T` when the alpha is unused.
+Opaque sections stay opaque. `emissive` is unlit and multiplies that team
+colour by the mask. The upload line is
+`[arena] overlays: applied=N skipped=M`.
+
+`Goal_STD_Trim` is the goal box and is drawn. `Goal_STD_Glow` and `Goal_STD_Outer` stay undrawn: those shells measure x ±2048 and about 1800 uu deep, and unlit they stick out of the floor and the side walls. `FrameTexture_PACK` is not bound. On `Goal_STD_Frame` its v range runs about −11..5, so the sheet wraps the posts as green and orange stripes. An overlay may name `mesh`. A glass mask caps alpha at 80/255.
+
+## Arena visual finish (2026-11-06)
+
+Pack path only. No arena pack still draws the fixed-function frame. The pack shader (`kArenaVs` / `kArenaFs`, `#version 450 compatibility`) gained a normal map, a mask, an emissive colour, and a blend mode. Every switch defaults off. Tangents from the pack (`tangents` in `ArenaRip`, 3 floats per vertex) are stored on `ArenaMesh` and on the arena vertex (`kArenaStride` 14: pos, normal, uv0, uv1, tangent, handedness). With the switches off, the goal-mouth frame matched the previous capture byte for byte.
+
+`Goal_STD_Frame` and `Goal_STD_Trim` use the frame tint `(0.80, 0.79, 0.76)` plus `ENV_CarbonFiber_N` as the normal. `FrameTexture_PACK` is not bound. `Field_STD_Trim` and the frame sections of `Side_Trim` use that same metal. `Goal_STD_Floor` is the one mesh that was painting team hex outside the posts: the −Y placement measures x ±2053 and y −5120..−3106, so the slab covers the approach. That slab now samples `FieldSkin_FutureGrid_D` with the pitch unwrap. A mirrored copy, clipped to the mouth (half-width `892.755`, depth `880`), is the only place `Hexagons_N` is a normal and `Hexagons_Pack_B` is a repeating albedo, multiplied by the team colour (orange `1, 0.12, 0.04` on the −Y goal, blue `0.15, 0.45, 1` on the +Y goal).
+
+`Goal_STD_Glow` and `Goal_STD_Outer` are still not drawn. Each glow placement adds a thin unlit mouth edge (posts and crossbar, 4 uu, mouth `892.755` by `642.775`). The 14 uu edge read as a red border from inside the goal, so it was narrowed to the lip. `Field_STD_Glow` and the side-trim glow sections use that same unlit team colour. They sit on the wall and do not cross the pitch.
+
+`HexGlass_WithArrows_Team*_MIC` samples `Hexagons_Pack_01_T` as a mask. That sheet is already capped the way the net is (`A = G*80/255`). `Glass_Projected_V2_*` stays the untinted ice veil at alpha 0.18. A lightmap `coord_scale` below 0.05 is skipped, except on the pitch skin and the boost pads. Seats, concrete, sidewalk, and stairs keep a real unwrap. The sky sphere samples a clean-room day gradient (zenith at uv `v=0`). Crowd and the scoreboard stay flat tints. `Concrete_CLR`, the city MIC (`OOBCubeNegY`), and the sidewalk albedo stay bound.
+
+Shots are under `/tmp/arena_vis/`. Machine B: `GL_VENDOR=NVIDIA Corporation` `RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2` `VERSION=4.6.0 NVIDIA 615.78.08`. Every run `glerr=0`.
+
+| Step | Upload | Shot |
+|---|---|---|
+| 1 slots | `buckets=171 (textured=60 fallback=111 transparent=8) textures=42 placements=377 skipped=105 slots=501 tris=555588` | `01_slots.ppm` md5 `d6d81939043162c46bdbd609f4c2b5e3` (same as the pre-change frame) |
+| 2 posts | same counts as step 1 | `02_posts_mouth.ppm` |
+| 3 goal box | `buckets=173 (textured=62 fallback=111 transparent=8) textures=42 tris=555588` | `03_goalbox.ppm` |
+| 4 trim lights | `buckets=175 (textured=62 fallback=113 transparent=8) textures=42 tris=555732` | `04_lights.ppm` |
+| 5 glass | `buckets=181 (textured=62 fallback=119 transparent=14) textures=42 tris=555732` | `05_glass.ppm` |
+| 6 curb | `buckets=185 (textured=62 fallback=123 transparent=14) textures=42 tris=555732` | `06_curb.ppm` |
+| 7 bowl | `buckets=183 (textured=62 fallback=121 transparent=14) textures=42 tris=555732` | `07_bowl.ppm` |
+| 8 sky | `buckets=183 (textured=63 fallback=120 transparent=14) textures=43 placements=377 skipped=105 slots=501 tris=555732` | `08_sky.ppm` |
+| 9 sheet | same as step 8, `glerr=0` on all four cameras | `09_contact.png` — the pass list below was wrong for this sheet |
+| 10 sheet | `buckets=185 (textured=65 fallback=120 transparent=14) textures=43 placements=377 skipped=105 slots=501 tris=556112` `glerr=0` | `10_contact.png` |
+
+`CrossHatched_Grate` on `Goal_STD_Glass` is a square-hole metal mesh. The mesh name was forcing that section into the glass veil, and the cooked diffuse is `Noise_Smoke_03_Pack`. The section is opaque now, alpha-tested with a clean-room hole tile.
+
+### Step 9 pass / fail
+
+`09_contact.png` does not match the sentences that were written for it. The −Y `Goal_STD_Floor` slab (x ±2053, y −5120..−3106) was team hex across the approach, and the 14 uu mouth edge read as a red border from inside the goal. Those sentences are replaced by the step 10 sheet.
+
+### Step 10 pass / fail
+
+Contact sheet cameras, same as step 9: side of the −Y goal `1400,-3600,520 → 0,-5300,250`; inside that goal looking out `400,-5600,220 → 0,-4200,160`; midfield toward that goal `0,-900,480 → 0,-5120,180`; high corner `4200,-3800,2400 → -200,800,200`. Machine B: `GL_VENDOR=NVIDIA Corporation` `RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2` `VERSION=4.6.0 NVIDIA 615.78.08`. Upload `[arena] pack uploaded: buckets=185 (textured=65 fallback=120 transparent=14) textures=43 placements=377 skipped=105 slots=501 tris=556112`. Every camera `glerr=0`.
+
+| Surface | Result |
+|---|---|
+| Posts | PASS. Light frame metal, carbon normal, open mouth, no stripe wrap. |
+| Goal interior | PASS. Hex is the floor inside the mouth. The approach in front of the posts is the field skin. |
+| Trim light | PASS. Mouth edge is a 4 uu unlit line (inside shot: about 5 px on the left post, 2 px on the crossbar). `Goal_STD_Glow` and `Goal_STD_Outer` are not drawn. The other team lines are the wall trim. |
+| Glass | PASS. Mouth is see-through with a faint hex. Ceiling is the untinted veil. |
+| Pitch | PASS. Day field skin on the approach and the pitch. Sampled approach green about `(93–118, 139–179, 58–76)`. No red hex on the grass. White lines stay white. |
+| Curb | PASS. Same metal as the posts. Not a red stamp. |
+| Bowl shade | PASS. Seat greys in the high-corner crop still vary. Pitch checker unchanged. |
+| Sky | PASS. The dome is the day gradient. |
+| Near shell | PASS. Concrete, sidewalk, and the city MIC keep their albedos. |
+| Crowd | Accepted flat. No albedo in the cook. |
+| Scoreboard | Accepted flat. It is a render target. |
+| Ceiling lookup | Accepted. `Glass_Projected` has an empty lookup and stays the veil. |
+
 ## Build / run
 
 ```sh
-make all                 # headless_sim, render_stub, game, tests, arena_test
-make build/game
-make build/render_stub
-python3 tools/verify/visual_gates.py     # VG1-VG16, offscreen, loud SKIP
+cmake -B build && cmake --build build          # Release -O2; ccache when installed
+cmake --build build --target game
+cmake --build build --target render_stub
+python3 tools/verify/visual_gates.py     # VG1-VG17, offscreen, loud SKIP
 ```
 
 ## Renderer contract (GL 4.5 Compatibility hard target, fixed-function default, programmable permitted, 720p60)
@@ -105,6 +398,10 @@ gates avoid straight-down cameras for that reason.
 ## Audio
 
 Unchanged this pass; see `docs/AUDIO_NOTES.md`.
+
+2026-11-06: optional local sound pack. `tools/audio/rip_sounds.py` decodes free-play cues from the user's cooked banks into gitignored `sound_assets/`. `./build/game` uses that pack when `manifest.txt` is present; `--synth` keeps the procedural bed; `--sounds DIR` points elsewhere. The stock engine stays the synth bed (the game's engine is a REV model, not a sample).
+
+2026-11-06: playback moved from the SDL callback to miniaudio 0.11.22 (`third_party/miniaudio/`). Device is 48 kHz, period request 256 frames. Clips are resampled once, with an order-8 low-pass, and voices run with `MA_SOUND_FLAG_NO_PITCH` so a native 48 kHz file is not played flat. Loop fades are 6 ms.
 
 ## Verification (this revision)
 
@@ -1075,3 +1372,110 @@ The 8×8 of the Team1 rect is 0 in the interior; the lit texels are sparse
 edge bleed. The grass MIC's `LightMap` parameter is None. The disable stays.
 No-pack VG1 md5 `b2385ad3b465b15a74dda175e31a0edf` (two captures, machine B,
 NVIDIA GeForce RTX 4060 Laptop GPU, 4.6.0 NVIDIA 615.78.08).
+## Field rim, one-sided (2026-11-06)
+
+Ball cam puts the eye outside the bowl, behind the curb. Those rim meshes
+are solid, so the outside face hid the field. `ArenaClipThrough` marks
+`Field_STD_Trim`, `Field_STD_Frame`, `Field_STD_Glow`, `FieldFrame_Outer`,
+`Side_Trim`, `Sideline_A`, and `Goal_STD_Quarterpipe`. At bake, each of
+their triangles is wound so the pitch-facing side (inward or up) is CCW.
+`DrawArenaPack` culls the back of those buckets only. The rest of the pack,
+including the sky, stays double-sided. Cull enable, cull face, and front
+face are restored after the pack draw.
+
+## Shade and edges (2026-11-06)
+
+Machine B only. `GL_VENDOR=NVIDIA Corporation`
+`RENDERER=NVIDIA GeForce RTX 4060 Laptop GPU/PCIe/SSE2`
+`VERSION=4.6.0 NVIDIA 615.78.08`. Window 1280×720. Seed 7, tick 120,
+`gamescope --backend headless`. `glerr=0` `drops=0` on every capture.
+Machine A `NOT MEASURED`. No live Rocket League frame. Pack upload
+`tris=558367` before and after. Defaults stay `msaa=0` and
+`pack_spec=false`. A 16-sample request is refused (no EGL config on
+the display, no GLX visual under gamescope), so 8 is the largest of
+2, 4, or 8 the context creates.
+
+### Pass 0 — census
+
+`GL_MAX_SAMPLES=32`. Shipped `[render] msaa=0`. The game log after
+init is `GL_SAMPLES=0` `GL_SAMPLE_BUFFERS=0`. A context with the same
+SDL attributes reports 2, 4, and 8 when those counts are requested.
+The game log confirms the 8-sample case in pass 1.
+
+| Frame | Path | md5 |
+|---|---|---|
+| Pack, high corner | `/tmp/shade_vis/p0_pack_corner.ppm` | `e76031b40311d36dae281e191d3aeb23` |
+| Shell, high corner | `/tmp/shade_vis/p0_shell_corner.ppm` | `632a0906a760a5eeef36d99610e17a46` |
+| Post against sky | `/tmp/shade_vis/p0_post.ppm` | `f875947944dc0ef37c3dbc0a3d3ec098` |
+| Grate / mouth | `/tmp/shade_vis/p0_grate.ppm` | `02d10547e7d4f6cb8b31c74ba69acd64` |
+
+`[game] exit` at `msaa=0`, `--ticks 720`:
+`ticks=720 drops=0 frames=11740 wall=6.2s p50=0.00ms p99=1.00ms avg=0.47ms tris_last=681540 glerr=0`.
+
+Silhouette: left edge of the cream crossbar against the sky in
+`p0_post.ppm`, rows 123–136. Boundary x runs
+733,731,730,729,728,727,725,724,723,722,721,720,718,717.
+Span **16 px**, three steps of 2 px, 14 rows where beam touches sky.
+Crop `/tmp/shade_vis/p0_sil_crop.png`.
+
+Alpha-tested edge: the green leaf card beside that post, rows 341–378.
+Longest hard-green tread **5 rows** at x=547, and 7 steps of 2 px or
+more. Crop `/tmp/shade_vis/p0_leaf_crop.png`. The 0.5 `discard` is the
+grate and the poplar cards. Multisample does not grey a binary discard.
+
+Pitch colours on the high corner, held as the regression check:
+orange lip `(963,597)=(255,31,10)`, blue lip `(1014,433)=(38,115,255)`,
+interior grass `(600,520)=(100,135,84)`.
+
+### Pass 1 — multisample 8, default stays 0
+
+Requested 8. The game log:
+`[render] msaa requested=8 GL_SAMPLES=8 GL_SAMPLE_BUFFERS=1 GL_MAX_SAMPLES=32 GL_MULTISAMPLE=1`.
+
+Same edge, same rows: pure beam-sky contacts 14→8, span 16→13, steps
+of 2 px 3→0. The rows that dropped out are a blended pixel between
+beam and sky. Shots `/tmp/shade_vis/p1_post.ppm`
+`c421b0a03552abb22d900101188ae064`, corner
+`/tmp/shade_vis/p1_pack_corner.ppm`
+`4469f7f547efbdcbaa6ee599db0edc4b`.
+
+`[game] exit` at 8 samples, `--ticks 720`:
+`ticks=720 drops=0 frames=1918 wall=6.2s p50=3.00ms p99=5.00ms avg=3.08ms tris_last=681540 glerr=0`.
+Against the census line, avg 0.47→3.08 ms (about 6.6×) and p99 1.00→5.00 ms.
+Interior grass, the orange lip, and the blue lip are the same bytes.
+`msaa=0` pack and shell hashes match the census. PG1 is not green:
+the average is far past 1.15×, and machine A was not measured, so the
+default stays 0.
+
+### Pass 2 — one specular lobe, default off
+
+`[render] pack_spec`, default false. On only for a bucket that already
+binds a normal. One Blinn lobe in `kArenaFs` from the existing key
+`normalize(0.35, 0.2, 0.9)` and the view vector. Smoothness is the
+normal-map alpha. `ENV_CarbonFiber_N` alpha measures 203..255, mean
+248.8, correlation −0.53 with the weave's XY tilt. The pack has no
+roughness field, so mapping that span to an exponent of 24..80 is
+`UNVERIFIED`. The lobe moves the base colour toward white. Grass, the
+team lip, and the white marks are not on that path.
+
+Switch off: pack corner and the post match the census hashes above.
+Switch on, `msaa=0`: corner `/tmp/shade_vis/p2b_on_corner.ppm`
+`8d84213811c0c355f0fb9140c29beebd`, post
+`/tmp/shade_vis/p2b_on_post.ppm`
+`2415e0622c6bf83b982e624e17f8aaaa`. On the post, a shaded metal sample
+`(228,225,217)` goes to `(248,247,245)` and `(202,199,192)` goes to
+`(241,240,238)`, while a neighbouring sample `(198,196,188)` stays put.
+That is the carbon normal catching the lobe. Orange lip and interior
+grass match the census bytes. `glerr=0`. A 180-tick on-run exited
+`avg=0.53ms p99=2.00ms drops=0`. The switch stays off.
+
+### Pass 3 — skip
+
+The leaf crop at 8 samples differs from the census by 1111 pixels
+(max channel delta 202). The hard-green tread goes from 5 rows to 4,
+and the steps of 2 px or more go from 7 to 5. A coverage trial
+(`GL_SAMPLE_ALPHA_TO_COVERAGE` plus an `fwidth` band, not shipped)
+left that same crop identical to the 8-sample frame. The outline is
+the card triangle at alpha 1, which coverage does not soften past
+multisample. The 0.5 discard is unchanged. `msaa=0` with both switches
+off still matches the census hashes.

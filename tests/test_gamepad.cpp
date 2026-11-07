@@ -1,13 +1,5 @@
-// A5 contract test: gamepad mapping (headless — no device, no video init).
-// Build: g++ -std=c++20 -Isrc tests/test_gamepad.cpp src/input/Gamepad.cpp
-//        $(sdl2-config --cflags --libs) -o /tmp/t_gp && /tmp/t_gp
-//
-// Covers MASTER_PROMPT_PHYSICS.md §8 B1–B3 on the INPUT side:
-//  - radial (not per-axis) deadzone with a continuous rescale
-//  - sign table: stick up = throttle +1, stick right = steer -1, zero negation
-//  - button map -> jump/boost/handbrake + edge-triggered events
-//  - hot-plug: a disconnected pad yields neutral controls, never a dropped tick
-//  - name<->button resolution used by the INI + menu
+// Gamepad mapping. No device and no video init.
+// Radial deadzone. Steer +1 is left, so stick right is steer -1.
 #include <SDL2/SDL.h>
 
 #include <cmath>
@@ -84,7 +76,7 @@ int main() {
               "clamped inside the unit disc");
     }
 
-    std::printf("[2] sign table (TAPE_FORMAT.md §2 / Controls.h)\n");
+    std::printf("[2] sign table\n");
     {
         rl::Controls c;
         rl::InputEvents e;

@@ -1,8 +1,4 @@
-// stub_main.cpp — A4 round-1 proof: 720p window + spinning box + camera + FX.
-// Build: g++ $(sdl2-config --cflags) src/render/Renderer.cpp src/camera/Camera.cpp
-//        src/fx/FX.cpp src/models/Models.cpp src/render/stub_main.cpp \
-//        $(sdl2-config --libs) -lGL -o build/render_stub
-// Run: ./build/render_stub   (B toggles ball-cam, ESC quits)
+// stub_main.cpp — window with a scripted car, ball, camera, and FX.
 #include "../camera/Camera.h"
 #include "../fx/FX.h"
 #include "../models/Models.h"
@@ -47,14 +43,14 @@ int main() {
         float t = (now - t0) / 1000.0f;
         frame++;
 
-        // Fake circling car + orbiting ball (stand-in for A1 sim Snapshot).
+        // Scripted car and ball. No sim.
         rl::Snapshot s;
         s.carYaw = t * 0.5f;
         s.carPos[0] = std::cos(t * 0.3f) * 1200;
         s.carPos[1] = std::sin(t * 0.3f) * 1200;
         s.carPos[2] = 40;
-        s.carSpeed = 2300; // force the stand-in speed
-        s.supersonic = true; // stub has no Sim::IsSupersonic; the trail follows this flag
+        s.carSpeed = 2300;
+        s.supersonic = true; // the trail follows this flag
         s.ballPos[0] = std::cos(t * 0.5f + 1.0f) * 500;
         s.ballPos[1] = std::sin(t * 0.5f + 1.0f) * 500;
         s.ballPos[2] = 100 + 60 * std::sin(t * 1.3f);
@@ -63,7 +59,7 @@ int main() {
         s.ballCam = ballCam;
         s.tick = frame;
 
-        // Pad cooldown tick + demo pickup/goal triggers for visual proof.
+        // Tick pad cooldowns and fire a goal at frame 300.
         for (auto& p : pads) if (!p.active) {
             p.cooldown -= dt;
             if (p.cooldown <= 0) { p.active = true; fx.OnPickup(p.big); }
@@ -73,7 +69,6 @@ int main() {
 
         cam.Update(dt, s.carPos, s.carYaw, s.ballPos, ballCam);
 
-        // Physics-first policy: renderer only presents; never waits on sim.
         renderer.BeginFrame();
         cam.Apply(1280, 720);
         renderer.DrawGroundGrid(6000, 500);
@@ -87,7 +82,7 @@ int main() {
         renderer.DrawBox(0, 0, 200, 120, 120, 120, t, 0.9f, 0.3f, 0.2f);
         renderer.EndFrame();
 
-        if (frame == 600) { // ~10s @60fps: auto-exit for headless proof
+        if (frame == 600) { // ~10 s at 60 fps
             auto st = renderer.Stats();
             std::fprintf(stderr, "[stub] 600 frames done, avg=%.2f p50=%.2f p99=%.2f — exiting OK\n",
                 st.avg, st.p50, st.p99);

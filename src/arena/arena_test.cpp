@@ -1,7 +1,4 @@
-// arena_test.cpp — standalone headless verification for stream A2.
-// Proves the mission numbers: walls, floor, ceiling, goal box, corners,
-// fillets, pads and the visual-mesh triangle budget. No dependencies beyond
-// the two arena sources. Exit code 0 = all checks pass.
+// Checks the analytic Soccar shell. Exit 0 means every check passed.
 #include <cmath>
 #include <cstdio>
 
@@ -153,8 +150,7 @@ int main() {
               "pad[0]=(%f,%f)", kPads[0].x, kPads[0].y);
         CHECK(feq(kPads[6].x, 0.0f, 1e-6f) && feq(kPads[6].y, -4240.0f, 1e-6f),
               "pad[6]=(%f,%f)", kPads[6].x, kPads[6].y);
-        // small[23]=(-940,3308) is kPads[29], small[24]=(940,3308) is
-        // kPads[30], per RLConst.h:298-299 (3308, not the RLGym 3310 typo).
+        // kPads[29] and [30] use y = 3308. RLConst.h:298-299
         CHECK(feq(kPads[29].x, -940.0f, 1e-6f) && feq(kPads[29].y, 3308.0f, 1e-6f),
               "pad[29]=(%f,%f)", kPads[29].x, kPads[29].y);
         CHECK(feq(kPads[30].x, 940.0f, 1e-6f) && feq(kPads[30].y, 3308.0f, 1e-6f),
@@ -174,12 +170,7 @@ int main() {
         CHECK(sane, "mesh z-range sane");
     }
 
-    // --- 11. wall SDF normal + sphere push-out point into free space -----------
-    // Regression: the footprint branch of Collide() built the horizontal normal
-    // as +g*nu (g = OUTWARD edge normal, nu = along the INWARD u axis), so wall
-    // normals pointed INTO the wall. CollideSphere then pushed bodies deeper on
-    // every iteration and fallback containment launched cars/ball through the
-    // wall to a float-precision-locked "stuck inside" position.
+    // Wall normals must point into free space. The old sign pushed bodies into the wall.
     {
         // Solid side of the +X wall: SDF gradient must point toward free space,
         // i.e. -X, with the correct penetration depth.

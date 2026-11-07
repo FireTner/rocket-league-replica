@@ -93,7 +93,7 @@ FreeplayCommand TakePossession(const FreeplayCar& car, const Physics::CarPreset&
 	c.x = car.body.x + f.x * dist;
 	c.y = car.body.y + f.y * dist;
 	c.z = Physics::Tuning::kBallRestZ;
-	// Owner: linear velocity equals the car's at this moment, including vz.
+	// Linear velocity matches the car, including vz.
 	c.vx = car.body.vx;
 	c.vy = car.body.vy;
 	c.vz = car.body.vz;
@@ -107,11 +107,8 @@ FreeplayCommand StartDribble(const FreeplayCar& car, const Physics::CarPreset& p
 	u = UnitOr({u.x - f.x * uf, u.y - f.y * uf, u.z - f.z * uf}, {0.f, 0.f, 1.f});
 	// up × forward = car-right for the RL basis (+X forward, +Y right, +Z up).
 	V3 r = Cross(u, f);
-	// Roof center of the hitbox, then one collision radius up. offX is already
-	// forward of the origin (Octane 13.8757). Sitting on that point is the
-	// hood the ball can rest on. I3: the visual-hood bias and the fraction of
-	// vertical velocity are unpublished; vertical velocity is copied in full
-	// so the ball is travelling with the car. Spin is cleared by SetBall.
+	// Roof center of the hitbox, then one collision radius up.
+	// Vertical velocity is copied from the car. SetBall clears spin.
 	float lx = preset.offX;
 	float ly = preset.offY;
 	float lz = preset.offZ + preset.sizeZ * 0.5f + Physics::Tuning::kBallRadiusSoccar;
@@ -148,12 +145,7 @@ FreeplayCommand OwnerPass(const FreeplayCar& car, const FreeplaySample& ball) {
 }
 
 FreeplayCommand LaunchBall(const FreeplaySample& ball) {
-	// Hoops launches the ball that is already at its kickoff pose
-	// (Ball.cpp: the impulse fires only when XY is the origin and velocity
-	// is zero). Free play has no published launch coordinates. Position is
-	// left alone so a ball on the wall stays there and goes up; v2.06 says
-	// Launch then Defend mimics a shot from the ceiling or high on the wall,
-	// which a teleport to field center would erase. UNVERIFIED vs a capture.
+	// Position stays put, so a ball on the wall goes up instead of jumping to center.
 	FreeplayCommand c;
 	c.x = ball.x;
 	c.y = ball.y;
@@ -170,10 +162,7 @@ FreeplayCommand DefendShot(const FreeplayCar& car, const FreeplaySample& ball) {
 	float dx = 0.f - ball.x;
 	float dy = goalY - ball.y;
 	float horiz = std::sqrt(dx * dx + dy * dy);
-	// Already above the crossbar and far enough to aim: keep the position.
-	// That is the Launch-then-Defend high shot. GOAL_HEIGHT is the cited
-	// mouth height (Arena.cpp APPROX_GOAL_HEIGHT); using it as the cutoff
-	// is UNVERIFIED.
+	// Above the crossbar and far enough away: keep the position and aim it.
 	if (ball.z >= Arena::GOAL_HEIGHT && horiz >= kDefendMinAimDist) {
 		FreeplayCommand c;
 		c.x = ball.x;

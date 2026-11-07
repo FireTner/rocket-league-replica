@@ -1,33 +1,5 @@
-// probe_camera_target.cpp — R1 probe for CAMERA_PORT_PROMPT #5
-// (one-euro look-target filter).
-//
-// Port of upstream docs/carballer-facts/rl_camera.cpp:466-489 behavior
-// against OUR src/camera/Camera.h API (60 Hz Update).
-//
-// Bug (current, src/camera/Camera.cpp): the ballcam look target tracks the
-// slewed aim (#1) rigidly (center_ = tgt every frame), so the ball's resting
-// contact micro-chatter (several small bounces/second while dribbling)
-// wobbles the whole view frame-to-frame ("car rumble" while dribbling).
-// The car-cam target rides the stiffness follower instead. Upstream: the
-// MIXED look target passes through a one-euro filter — cutoff
-// fc = 1.2 + 1.8*(1-blend) + 0.01*derivS Hz (derivS = 3 Hz EMA of target
-// speed): chatter keeps the cutoff low, swivels/flicks snap it open fast.
-// Car-cam (blend 0) tracks tightly at a 3.0 Hz floor; ballcam (blend 1)
-// keeps the 1.2 Hz floor that kills the resting ball's contact chatter.
-//
-// Scenarios (default stiffness 0.45, 60 Hz Update):
-//  T1: ballcam micro-step — settled, ball teleports +8 uu laterally.
-//      Fixed: first-frame center step is a FRACTION of the settled step
-//      (one-euro k = 1-exp(-2π·fc·dt) < 1). Broken (rigid): ratio == 1.
-//  T2: ballcam chatter — settled, ball bobs ±3 uu at 6 Hz for 2 s.
-//      Fixed: center peak-to-peak is attenuated vs the rigid mapping.
-//      Broken: center reproduces the full rigid swing every frame.
-//  T3: rest convergence guard — static ball settles exactly (both pass).
-//  T4: real motion passes — 600 uu teleport converges fast (both pass;
-//      guards against over-filtering).
-//
-// Build: g++ -std=c++20 -Isrc tools/probe_camera_target.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_target && /tmp/probe_target
-// No SDL, no GL context (Update/Eye/Center never touch GL).
+// Look-target filter: ballcam damps resting contact chatter and still tracks a flick.
+// Checks src/camera/Camera.h at 60 Hz. No GL context.
 #include <cmath>
 #include <cstdio>
 

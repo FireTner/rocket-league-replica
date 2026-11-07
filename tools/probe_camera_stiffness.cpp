@@ -1,29 +1,5 @@
-// probe_camera_stiffness.cpp — R1 probe for CAMERA_PORT_PROMPT #3
-// (stiffness world-space lag). Port of upstream rl_camera.cpp:413-464
-// behavior against OUR src/camera/Camera.h API.
-//
-// Bug (current): ballcam eye is RIGID (stiffness only breathes
-// distance/angle/FOV); car-cam lag is a single rate 2+18*stiffness with no
-// rig-speed saturation, so boost drags the eye ~v/rate behind the car.
-// Upstream: the MIXED ideal eye passes through stiffness smoothing with
-// followRate = 1.5+14*stiffness, vertical halved in the air, rig-speed
-// saturation (kRigLagCap = 40 uu) so boost-run lag saturates instead of
-// growing, and the swivel's own vertical motion split out (rig-relative Z)
-// so jumps/aerials keep their slow linger.
-//
-// Scenarios (default stiffness 0.45, 60 Hz Update):
-//  F: boost run — car-cam, car drives +X at 2300 uu/s (supersonic
-//     dynamics on). Fixed: horizontal trail saturates (< 80 uu).
-//     Broken (car-cam-only 2+18s lag): trail settles at v/rate =
-//     2300/10.1 ~= 228 uu. (Ballcam today is rigid = 0 trail, so this
-//     runs car-cam where the old lag lives.)
-//  G: jump linger — ballcam, airborne, car teleports +250z in one frame.
-//     Fixed: the eye lingers (first-frame eye dz < 100 uu, slow kz from
-//     the halved vertical rate). Broken (rigid ballcam): eye snaps the
-//     full 250 uu in one frame.
-//
-// Build: g++ -std=c++20 -Isrc tools/probe_camera_stiffness.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_stiff && /tmp/probe_stiff
-// No SDL, no GL context (Update/Eye/Center never touch GL).
+// Stiffness lag on the mixed eye: follow rate 1.5+14*stiffness, air vertical halved.
+// Boost-run lag saturates. Checks src/camera/Camera.h. No GL context.
 #include <cmath>
 #include <cstdio>
 

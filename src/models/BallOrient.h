@@ -1,17 +1,4 @@
-// Ball orientation from physics spin.
-//
-// RocketSim does not integrate the soccar ball basis: ArenaConfig::noBallRot
-// defaults true ("Ball rotation updates are skipped"), so BallState.rotMat
-// stays identity while BallState.angVel still tracks the rigid body
-// (rad/s, world; angular damping is 0). The drawn orientation is this
-// view: start at identity (ResetBall / SetBall) and integrate that angVel
-// once per 120 Hz tick. It is never written back into the body.
-//
-// The step is the exponential map of ω·dt (Rodrigues). ω is the post-step
-// value. Intra-tick ω is not available, so a contact tick uses the
-// post-contact rate for the whole tick. UNVERIFIED: that one-tick phase
-// versus bullet's substep. Between contacts ω is constant, so the sum is
-// the spin the physics reports.
+// Ball orientation integrated from world angular velocity. RocketSim leaves rotMat at identity.
 #pragma once
 
 #include <cmath>
@@ -47,8 +34,7 @@ inline void BallOrientationMatrix(const float rot[9], float m[16]) {
     m[12] = 0.0f; m[13] = 0.0f; m[14] = 0.0f; m[15] = 1.0f;
 }
 
-// Right-handed integration of world angular velocity (rad/s) over dt seconds.
-// |ω| == 0 leaves rot untouched, so a zero-spin ball stays bit-identical.
+// Rodrigues step of the post-step world rate over the whole tick. Zero ω leaves rot untouched.
 inline void IntegrateBallSpin(float rot[9], float wx, float wy, float wz, float dt) {
     float w2 = wx * wx + wy * wy + wz * wz;
     if (w2 == 0.0f || dt == 0.0f)

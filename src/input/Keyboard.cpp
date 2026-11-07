@@ -1,4 +1,4 @@
-// A5-owned: keyboard mapping implementation. MIT License.
+// Keyboard mapping onto Controls.
 #include "Keyboard.h"
 
 #include <algorithm>
@@ -86,26 +86,18 @@ void Keyboard::PollFromState(const Uint8* state, int numKeys, Controls& controls
     };
 
     controls.throttle = axis(bindings_.throttle);
-    // CANONICAL SIGNS (TAPE_FORMAT.md §2 describes the SIM layer: pitch +1 =
-    // nose UP). The KEYBOARD layer negates: real RL flies stick-up / W as
-    // nose-DOWN (= front-flip direction, sim pitch -1, MEASURED air_pitch_240
-    // fz>0 under pitch +1). Throttle keeps +1 = forward, so W yields
-    // throttle +1 / pitch -1; axis() already yields slotA - slotB.
+    // W is throttle +1 and pitch -1 (nose down). Steer +1 is left.
     controls.steer = axis(bindings_.steer);
     controls.pitch = -axis(bindings_.pitch);
     controls.yaw = axis(bindings_.yaw);
-    // roll sign (MEASURED headless air_roll_300: roll +1 = roll-LEFT;
-    // up-vector tips toward -x when facing +y). slotA=Q (left), slotB=E.
+    // Roll +1 rolls left. Q is left, E is right.
     controls.roll = axis(bindings_.roll);
     controls.jump = held(bindings_.jump);
     controls.boost = held(bindings_.boost);
     bool handbrakeHeld = held(bindings_.handbrake);
     controls.handbrake = handbrakeHeld;
 
-    // In air, holding handbrake turns steer into roll (keyboard air-roll).
-    // The sim owns air/ground state; we expose the modifier convention here:
-    // roll follows the steer SIGN (steer +1 = LEFT, roll +1 = roll-LEFT,
-    // MEASURED headless air_roll_300). Ground frames ignore roll, so safe.
+    // Handbrake copies steer into roll. Steer +1 is left, so roll +1 rolls left.
     if (handbrakeHeld) controls.roll = controls.steer;
 
     // Edge-triggered events (skip on the very first poll: no previous state).

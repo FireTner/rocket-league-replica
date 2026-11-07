@@ -1,7 +1,5 @@
-// A5 contract test: Settings parse -> modify -> save -> reparse round-trip.
-// Build: g++ -std=c++20 -I src tests/test_settings_roundtrip.cpp
-//        src/settings/Settings.cpp -o /tmp/t_rt && /tmp/t_rt
-// No SDL needed. Exit 0 = all checks pass.
+// Settings parse, modify, save, and reparse.
+// No SDL. Exit 0 when every check passes.
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -28,11 +26,12 @@ int main() {
     CHECK(loaded, ("load: " + (loaded ? std::string("ok") : err)).c_str());
     CHECK(s.camera.fov == 110.0f, "camera.fov == 110");
     CHECK(s.camera.ballcam == true, "camera.ballcam == true");
-    CHECK(s.camera.transitionSpeed == 1.2f, "camera.transition_speed == 1.2");
+    CHECK(s.camera.transitionSpeed == 1.5f, "camera.transition_speed == 1.5");
     CHECK(s.camera.swivelSpeed == 5.0f, "camera.swivel_speed == 5.0");
-    CHECK(s.camera.shake == true, "camera.shake == true");
+    CHECK(s.camera.shake == false, "camera.shake == false");
     CHECK(s.camera.invertSwivel == false, "camera.invert_swivel == false");
     CHECK(s.camera.snap == true, "camera.snap == true");
+    CHECK(s.camera.airHeading == false, "camera.air_heading == false");
     CHECK(s.input.throttle.slotA.size() == 2 && s.input.throttle.slotA[0] == "W" &&
               s.input.throttle.slotA[1] == "Up",
           "throttle slotA == {W,Up}");
@@ -46,18 +45,22 @@ int main() {
     CHECK(s.physics.tick == 120, "physics.tick == 120");
     CHECK(s.boost.unlimited == false, "boost.unlimited == false");
     CHECK(s.arena.soccar == true, "arena.soccar == true");
-    CHECK(s.arena.arenaDir.empty(), "shipped arena_dir is empty");
+    CHECK(s.arena.meshDir == rl::kDefaultMeshDir, "mesh_dir is the collision mesh");
+    CHECK(s.arena.arenaDir == rl::kDefaultArenaDir, "arena_dir is the stadium pack");
     CHECK(s.game.kickoffIndex == 0, "game.kickoff_index == 0");
     CHECK(s.render.wallOpacity == 0.40f, "render.wall_opacity == 0.40");
+    CHECK(s.render.msaa == 8, "render.msaa == 8");
+    CHECK(s.render.packSpec == true, "shipped pack_spec is on");
 
     std::printf("[2] modify every section, save to /tmp/rt_out.ini\n");
     s.camera.fov = 100.0f;
     s.camera.ballcam = false;
-    s.camera.transitionSpeed = 1.5f;
+    s.camera.transitionSpeed = 1.8f;
     s.camera.swivelSpeed = 7.0f;
-    s.camera.shake = false;
+    s.camera.shake = true;
     s.camera.invertSwivel = true;
     s.camera.snap = false;
+    s.camera.airHeading = true;
     s.input.throttle.slotA = {"T"};
     s.input.jump = {"J", "Space"};
     s.physics.tick = 60;
@@ -76,11 +79,12 @@ int main() {
     CHECK(reloaded, ("reparse: " + (reloaded ? std::string("ok") : err)).c_str());
     CHECK(r.camera.fov == 100.0f, "fov mutation survived (100)");
     CHECK(r.camera.ballcam == false, "ballcam mutation survived (false)");
-    CHECK(r.camera.transitionSpeed == 1.5f, "transition_speed mutation survived (1.5)");
+    CHECK(r.camera.transitionSpeed == 1.8f, "transition_speed mutation survived (1.8)");
     CHECK(r.camera.swivelSpeed == 7.0f, "swivel_speed mutation survived (7)");
-    CHECK(r.camera.shake == false, "shake mutation survived (false)");
+    CHECK(r.camera.shake == true, "shake mutation survived (true)");
     CHECK(r.camera.invertSwivel == true, "invert_swivel mutation survived (true)");
     CHECK(r.camera.snap == false, "snap mutation survived (false)");
+    CHECK(r.camera.airHeading == true, "air_heading mutation survived (true)");
     CHECK(r.camera.distance == 270.0f, "untouched camera.distance intact (270)");
     CHECK(r.input.throttle.slotA.size() == 1 && r.input.throttle.slotA[0] == "T",
           "throttle.slotA mutation survived ({T})");
@@ -100,7 +104,9 @@ int main() {
     rl::Settings d = rl::Settings::Defaults();
     CHECK(d.camera.fov == 110.0f && d.physics.tick == 120, "Defaults() matches shipped ini");
     CHECK(d.render.wallOpacity == 0.40f, "Defaults() wall_opacity is 0.40");
-    CHECK(d.arena.arenaDir.empty(), "Defaults() arena_dir is empty");
+    CHECK(d.arena.meshDir == rl::kDefaultMeshDir, "Defaults() mesh_dir is the collision mesh");
+    CHECK(d.arena.arenaDir == rl::kDefaultArenaDir, "Defaults() arena_dir is the stadium pack");
+    CHECK(d.render.packSpec == false, "Defaults() pack_spec is off");
     {
         std::ofstream bare("/tmp/rt_no_wall.ini");
         bare << "[version]\nschema = 1\n[camera]\nfov = 110\n";
@@ -115,8 +121,8 @@ int main() {
     bool missOk = rl::Settings::Load("/tmp/does_not_exist_xyz.ini", missing, &err);
     CHECK(!missOk && missing.camera.fov == 110.0f, "missing file -> defaults + false");
 
-    // Shipped [arena] stays off (empty). A non-empty arena_dir must survive
-    // Save, and a default save must still write the key with an empty value.
+    // Shipped mesh_dir and arena_dir point at the local mesh and stadium pack.
+    // A non-empty arena_dir must survive Save. Defaults() writes the stadium pack.
     std::printf("[5] the shipped [arena] section (mesh_dir + arena_dir)\n");
     {
         std::ifstream f("config/settings.ini");
@@ -133,9 +139,7 @@ int main() {
               "[arena] carries mesh_dir");
         CHECK(arena.find("arena_dir") != std::string::npos,
               "[arena] carries arena_dir");
-        // Both must be OFF by default: an empty value = the analytic shell /
-        // RocketSim's default collision-mesh path.
-        bool meshEmpty = false, arenaEmpty = false;
+        std::string meshVal, arenaVal;
         std::istringstream is(arena);
         while (std::getline(is, line)) {
             size_t eq = line.find('=');
@@ -147,11 +151,11 @@ int main() {
             while (!val.empty() && (val.back() == ' ' || val.back() == '\t' ||
                                     val.back() == '\r'))
                 val.pop_back();
-            if (k == "mesh_dir") meshEmpty = val.empty();
-            if (k == "arena_dir") arenaEmpty = val.empty();
+            if (k == "mesh_dir") meshVal = val;
+            if (k == "arena_dir") arenaVal = val;
         }
-        CHECK(meshEmpty, "mesh_dir ships empty (off)");
-        CHECK(arenaEmpty, "arena_dir ships empty (off)");
+        CHECK(meshVal == rl::kDefaultMeshDir, "mesh_dir ships as the collision mesh");
+        CHECK(arenaVal == rl::kDefaultArenaDir, "arena_dir ships as the stadium pack");
         std::ifstream g("/tmp/rt_out.ini");
         std::string gl, gout;
         bool gin = false;
@@ -174,8 +178,8 @@ int main() {
         rl::Settings emptyLoaded;
         CHECK(rl::Settings::Load("/tmp/rt_empty_arena.ini", emptyLoaded, &err),
               "empty arena_dir save reloads");
-        CHECK(emptyLoaded.arena.arenaDir.empty(),
-              "saved default arena_dir stays empty");
+        CHECK(emptyLoaded.arena.arenaDir == rl::kDefaultArenaDir,
+              "saved default arena_dir stays the stadium pack");
         std::ifstream eg("/tmp/rt_empty_arena.ini");
         std::string el, eout;
         bool ein = false;

@@ -1,10 +1,4 @@
-// A5-owned: SDL2 keyboard -> Controls + InputEvents.
-// Poll() reads live hardware state; PollFromState() implements the same
-// mapping over an injected scancode array so tests run headless.
-// Gamepad: a real Gamepad (src/input/Gamepad.h) can be attached; when it is
-// connected its analog stick owns throttle/steer and its buttons are OR-ed
-// with the keyboard. Keyboard-only behaviour is unchanged when none is set.
-// MIT License. Depends on SDL2 + src/input/Controls.h + src/settings/Settings.h.
+// SDL keyboard state mapped to Controls and InputEvents.
 #pragma once
 
 #include <SDL2/SDL.h>
@@ -24,18 +18,14 @@ class Keyboard {
     void SetBindings(const InputBindings& b) { bindings_ = b; }
     const InputBindings& bindings() const { return bindings_; }
 
-    // Sample live SDL keyboard state. Pumps events? No — the main loop owns
-    // SDL_PumpEvents; Poll only reads SDL_GetKeyboardState. Edge-triggered
-    // InputEvents are derived against the previous Poll's state.
+    // Reads SDL_GetKeyboardState. The caller pumps events.
     void Poll(Controls& controls, InputEvents& events);
 
-    // Same mapping, testable headlessly. `state` is indexed by SDL_Scancode
-    // (as returned by SDL_GetKeyboardState); `numKeys` is its length.
+    // Same mapping over an injected scancode array.
     void PollFromState(const Uint8* state, int numKeys, Controls& controls,
                        InputEvents& events);
 
-    // "W" / "Up" / "LeftShift" / "Space" / "Escape" / "F1" -> SDL_Scancode.
-    // Returns SDL_NUM_SCANCODES when unknown.
+    // Returns SDL_NUM_SCANCODES when the name is unknown.
     static SDL_Scancode ScancodeForName(const std::string& name);
 
    private:
@@ -44,7 +34,6 @@ class Keyboard {
                  const std::vector<std::string>& keys) const;
 
     InputBindings bindings_;
-    // Previous-frame snapshot for edge detection, sized SDL_NUM_SCANCODES.
     Uint8 prev_[SDL_NUM_SCANCODES] = {};
     bool first_ = true;
 };

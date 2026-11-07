@@ -1,16 +1,5 @@
-// probe_camera.cpp — R1 probe for CAMERA_PORT_PROMPT #1 (ball-aim slew).
-// Port of upstream tools/probe_camera.cpp degenerate cases (see
-// docs/carballer-facts/rl_camera.cpp:62-74 — overhead crossing moved eye
-// 516 uu / 75 deg in one frame pre-fix, roof 225/50, overhead drift 534/95).
-// Against OUR src/camera/Camera.h API (carPos/carYaw/ballPos, 60 Hz Update).
-//
-// Build: g++ -std=c++20 -I src tools/probe_camera.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_cam && /tmp/probe_cam
-// No SDL, no GL context (Update/Eye/Center never touch GL).
-//
-// #1 PASS criteria (post-fix): max single-frame eye jump < 150 uu AND view
-// turn < 25 deg in scenarios A–C. At kBallAimSlew=20 rad/s, one 60 Hz frame
-// slews at most 0.333 rad (19 deg) => eye moves ~90 uu on our 270-dist rig,
-// so 150 uu / 25 deg separates pre-fix snap (~500 uu / 75+ deg) from fixed.
+// Ball-aim slew: one 60 Hz frame must not snap the eye across an overhead crossing.
+// Checks src/camera/Camera.h. No GL context.
 #include <cmath>
 #include <cstdio>
 

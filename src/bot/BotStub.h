@@ -1,17 +1,13 @@
-// src/bot/BotStub.h — MIT License
-// A6 VS-bot STUB scaffolding ONLY. No gameplay AI: three deterministic modes
-// for soak/feel testing. Real bot AI is explicitly out of scope this round.
+// Deterministic opponent: parked, a delayed copy of the player, or a slow chase.
 #pragma once
 
 #include <cmath>
 
 namespace rlbot {
 
-// Minimal car-control output. A5's real Controls struct supersedes this when
-// it lands; field names mirror tools/tas/TAPE_FORMAT.md columns.
 struct BotInput {
     float throttle = 0.0f;   // [-1, 1]
-    float steer = 0.0f;      // [-1, 1]
+    float steer = 0.0f;      // [-1, 1], +1 left
     float pitch = 0.0f;
     float yaw = 0.0f;
     float roll = 0.0f;
@@ -20,7 +16,6 @@ struct BotInput {
     bool handbrake = false;
 };
 
-// Minimal read-only snapshot the stub needs. A1's SimAPI replaces this.
 struct BotView {
     float carX = 0, carY = 0, carZ = 0;
     float carYaw = 0;
@@ -29,9 +24,9 @@ struct BotView {
 };
 
 enum class StubMode {
-    Stationary,  // all zeros — parked car, baseline/idle load
-    Mirror,      // deterministic mirror of player input (soak load). NOT AI.
-    SlowChase,   // drives toward ball at capped 0.3 throttle — moving target only
+    Stationary,
+    Mirror,
+    SlowChase,
 };
 
 class BotStub {
@@ -41,12 +36,12 @@ public:
     void setMode(StubMode m) { mode_ = m; }
     StubMode mode() const { return mode_; }
 
-    // Mirror mode needs the player's current input; ignored by other modes.
+    // Used by Mirror. Ignored by the other modes.
     void setPlayerInput(const BotInput& in) { player_ = in; }
 
     BotInput tick(const BotView& view) {
         switch (mode_) {
-            case StubMode::Stationary: return BotInput{};  // parked
+            case StubMode::Stationary: return BotInput{};
             case StubMode::Mirror: return mirrorTick();
             case StubMode::SlowChase: return chaseTick(view);
         }
@@ -63,31 +58,28 @@ public:
     }
 
 private:
-    // Deterministic echo with fixed 6-tick delay; no decisions, no ball logic.
+    // Echoes the player input after a fixed 6-tick delay.
     BotInput mirrorTick() {
         history_[head_] = player_;
         head_ = (head_ + 1) % kDelay;
         return history_[(head_ + 1) % kDelay];
     }
 
-    // P-controller on yaw toward the ball, throttle capped at 0.3. Deliberately
-    // too dumb to play: no jump, no boost, no prediction, no defense.
+    // Steers toward the ball. Throttle stays at 0.3, and drops to 0 when facing away.
     BotInput chaseTick(const BotView& view) {
         BotInput out;
         float dx = view.ballX - view.carX;
         float dy = view.ballY - view.carY;
-        // crude heading error in [-pi, pi]
         float want = atan2f(dy, dx);
         float err = want - view.carYaw;
         while (err > 3.14159265f) err -= 2 * 3.14159265f;
         while (err < -3.14159265f) err += 2 * 3.14159265f;
-        // Proportional steer (was bang-bang ±1: circled the ball forever).
-        // steer +1 = LEFT matches the canonical sign (Controls.h).
+        // Steer +1 is left. Full lock past 1 radian; proportional inside that.
         out.steer = err > 1.0f ? 1.0f : (err < -1.0f ? -1.0f : err);
         if (err > 1.2f || err < -1.2f) {
-            out.throttle = 0.0f;  // facing away: stop instead of circling
+            out.throttle = 0.0f;
         } else {
-            out.throttle = 0.3f;  // capped: never competitive
+            out.throttle = 0.3f;
         }
         return out;
     }

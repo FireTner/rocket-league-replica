@@ -1,21 +1,5 @@
-// probe_camera_transition.cpp — R1 probe for CAMERA_PORT_PROMPT #6
-// (transition re-time).
-//
-// Upstream docs/carballer-facts/rl_camera.cpp:398-403 blends ballcam<->carcam
-// at tRate = 0.5 + 2.5*transitionSpeed units/s, so the default 1.2 swings in
-// ~0.29 s (1/3.5). Ours (src/camera/Camera.cpp) advances at transitionSpeed
-// units/s flat, so 1.2 swings in ~0.83 s — floaty.
-//
-// Scenarios (default transition_speed 1.2, 60 Hz Update):
-//  R1: first-frame blend step after a ballcam->carcam toggle. Fixed:
-//      step = (0.5+2.5*1.2)/60 ~= 0.0583. Broken (flat speed): 1.2/60 = 0.02.
-//  R2: full-swing time. Fixed: blend hits 0 within ~0.35 s (<= 25 frames).
-//      Broken: needs ~50 frames (~0.83 s).
-//  R3: range guard — speed 2.0 finishes faster than 1.0 (both pass; guards
-//      against hardcoding the 1.2 rate).
-//
-// Build: g++ -std=c++20 -Isrc tools/probe_camera_transition.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_trans && /tmp/probe_trans
-// No SDL, no GL context (Update/Eye/Center never touch GL).
+// Ballcam/carcam blend rate is 0.5 + 2.5*transitionSpeed per second.
+// Checks src/camera/Camera.h. No GL context.
 #include <cmath>
 #include <cstdio>
 
@@ -53,7 +37,7 @@ int main() {
 
     // R1: first-frame step at the default 1.2.
     {
-        rl::Camera c;  // default transition_speed == 1.2
+        rl::Camera c;  // default transition_speed == 1.5
         float car[3] = {0, 0, 17}, ball[3] = {1000, 0, 100};
         c.Update(dt, car, 0.0f, ball, true);
         c.Update(dt, car, 0.0f, ball, false);

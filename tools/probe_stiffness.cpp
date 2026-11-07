@@ -1,20 +1,5 @@
-// probe_stiffness.cpp — R1 probe for CAMERA_PORT_PROMPT #3 (stiffness world-space lag).
-// Port of upstream rl_camera.cpp:413-464 behavior against OUR src/camera/Camera.h.
-//
-// Bug (current): ballcam rigid + car-cam-only lag at 2+18*stiffness with no
-// rig-speed saturation and no air vertical halving. Consequences:
-//  F: boost run drags the eye ~v/rate (≈228 uu at 2300 uu/s, stiff 0.45).
-//  G: ballcam jump shows zero linger (eye rides the car 1:1 vertically).
-//  H: car-cam vertical follow is identical ground vs air (no 0.5x air halving).
-//
-// Post-fix (upstream mechanism): followRate = 1.5+14*stiffness, vertical halved
-// in air, horizontal rate += rigSpeed2d/40 (kRigLagCap), vertical rate +=
-// |rigVz|/40 where rigVz excludes the car's own motion (wantEye.z - carPos.z).
-// Expected: F lag saturates ≈35 uu (<60), G first-frame eye dz ≈30 uu (<150),
-// H air step ≈0.5x ground step.
-//
-// Build: g++ -std=c++20 -Isrc tools/probe_stiffness.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_stiff && /tmp/probe_stiff
-// No SDL, no GL context.
+// Stiffness lag: follow rate 1.5+14*stiffness, air vertical halved, rig-speed capped.
+// Checks src/camera/Camera.h. No GL context.
 #include <cmath>
 #include <cstdio>
 

@@ -1,7 +1,4 @@
-// Font.h — 5x7 bitmap font, authored for this project (MIT).
-// Column-major: 5 bytes per glyph, bit0 = top pixel. Covers ASCII 32..126;
-// lowercase maps to uppercase in DrawText2D. Shapes follow the ubiquitous
-// 5x7 convention.
+// Font.h — original 5x7 bitmap font (column-major, 5 bytes per glyph, bit 0 = top).
 #pragma once
 
 #include <cstdint>

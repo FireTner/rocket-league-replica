@@ -1,16 +1,4 @@
-// ArenaTextures.h — procedurally generated arena surface textures (A4).
-//
-// Arena-accurate texture mapping: every arena surface is drawn as a UV-mapped
-// quad instead of a flat-colored box, so the mowed turf, the wall/hex-net
-// glass, the goal mouth and the ceiling each carry their own real detail
-// rather than a single averaged RGB value.
-//
-// Ownership: A4 (presentation). No Psyonix assets — every texture here is
-// generated in code from arithmetic (same license-clean rule as the ball's
-// hex-panel equirect in Models.cpp). Nothing in this module touches sim code.
-//
-// GL 2.1 fixed-function only: these are plain GL_TEXTURE_2D objects driven by
-// glTexCoord2f; no shaders, no VAO.
+// ArenaTextures.h — procedural arena surface textures.
 #pragma once
 
 namespace rl {
@@ -34,9 +22,7 @@ unsigned TurfMarkingsTexture();
 // generated at the real 420 uu cell pitch. 512x512, tileable in both axes.
 unsigned HexNetTexture();
 
-// Plain glass tint with NO net. Used by --no-hexnet so the differential against
-// HexNetTexture isolates the net itself (VG6 measures the net this way); same
-// base color and span as HexNetTexture so only the net differs between frames.
+// Same base as HexNetTexture, with no net. Used by --no-hexnet.
 unsigned PlainGlassTexture();
 
 // Goal mouth: the dark interior panel with a team-coloured weave. 256x256.
@@ -52,11 +38,7 @@ unsigned CeilingTexture();
 // Release every cached texture (call at shutdown; GL context must be live).
 void FreeArenaTextures();
 
-// ---- pure generation layer (GL-free; exercised by tests) ------------------
-// The GL uploads above are thin wrappers over these. Keeping the pixel math
-// GL-free means the texture content can be asserted in a headless test (no GL
-// context needed) — the same "verify, do not guess" discipline the repo uses
-// for the sim. Each Fill*() writes w*h*3 (or *4 for the markings sheet) bytes.
+// Pixel buffers. The GL uploads above call these. Fill* writes w*h*3, or *4 for markings.
 namespace texturegen {
 
 // Sheet dimensions, exposed so tests and draw sites agree on the spans.
@@ -75,15 +57,11 @@ constexpr float kCeilSpan = 2048.0f;    // uu, one ceiling sheet repeat
 
 // ---- shell courses: where flat glass ends and the curved fillets begin ----
 // The walls are not full-height quads. The shell is three courses, all using
-// R = 256 (floor: RAMP_RADIUS, cited; ceiling: CEIL_RADIUS, UNVERIFIED):
+// R = 256:
 //   floor fillet  z 0..256    (quarter arc, tangent to floor and wall)
 //   flat glass    z 256..1792 (the only part that carries the flat net)
 //   ceiling fillet z 1792..2048 (quarter arc, net flows around it, arc-length)
-// (Heights follow the analytic collision profile in src/arena/ArenaGeometry.cpp
-// QueryProfile/BuildVisualMesh: wall z in [R, H-Rc] with R=RAMP_RADIUS,
-// H=CEILING_Z=2048, Rc=CEIL_RADIUS.)
-// Draw sites and tests share these so the VG6 measured rows always land on
-// flat glass and the arc-length math agrees on both sides.
+// Wall z runs from R to CEILING_Z - R. Draw sites share these so the net stays on flat glass.
 constexpr float kFilletR = 256.0f;    // uu, both fillet radii
 constexpr float kGlassZ0 = 256.0f;    // uu, flat glass bottom (top of base)
 constexpr float kGlassZ1 = 1792.0f;   // uu, flat glass top (= CEILING_Z - R)
@@ -91,12 +69,9 @@ constexpr float kGlassZ1 = 1792.0f;   // uu, flat glass top (= CEILING_Z - R)
 // exactly one quarter-arc (pi/2 * R) across it, so texel density is uniform.
 constexpr float kBaseSpanU = 1024.0f; // uu per sheet along the tangent
 
-// ---- hex-net lattice geometry (VG6 measures these) ------------------------
-// A flat-top hexagon honeycomb is defined by ONE number — the cell size,
-// vertex-to-vertex — and everything else follows:
+// Flat-top hexagon. Cell is vertex-to-vertex.
 //   circumradius R    = cell/2
-//   horizontal period = sqrt(3)*R   (this is exactly what VG6's autocorrelation
-//                                    measures: 0.866 * 420 = 363.73 uu)
+//   horizontal period = sqrt(3)*R   (0.866 * 420 = 363.73 uu)
 //   row pitch         = 1.5*R
 // A sheet only tiles seamlessly if it holds a WHOLE number of horizontal
 // periods and an EVEN number of rows (rows alternate their half-period offset).

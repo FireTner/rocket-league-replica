@@ -1,8 +1,5 @@
-// Fennec.h — CC-BY-4.0 community Fennec body mesh (Jako, sketchfab
-// fairlight51; community recreation, NOT extracted game geometry). Loaded
-// from assets/models/fennec.bin (see tools/convert_fennec.py + LICENSE).
-// Ownership: A4 render. Drawn in car-local uu, z-up, +X forward, origin at
-// the RocketSim car origin (rest z = 17).
+// Fennec.h — community Fennec body, car-local uu, +X forward, z-up.
+// Mesh: CC-BY-4.0, Jako (https://sketchfab.com/fairlight51).
 #pragma once
 
 namespace rl {
@@ -20,14 +17,12 @@ bool FennecLoad(const char* path = "assets/models/fennec.bin");
 void FennecDraw(Renderer& r, const float pos[3], float yaw, bool orange,
                 float steerRad = 0, float spinRad = 0);
 
-// Orientation-aware variant (W3): full pitch/roll from the Snapshot's
-// forward/up unit vectors. Same mesh, same paint, same bake transform.
+// Full pitch and roll from forward and up. Same mesh and paint.
 void FennecDraw(Renderer& r, const float pos[3], const float fwd[3],
                 const float up[3], bool orange, float steerRad = 0,
                 float spinRad = 0);
 
-// Total triangles in the loaded mesh (0 when absent) — feeds the V2 budget
-// report so the Fennec overage is a measured number, not an estimate.
+// Triangles and vertices in the loaded mesh, or 0 when it is absent.
 int FennecTriCount();
 int FennecVertCount();
 

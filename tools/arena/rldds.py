@@ -1,38 +1,8 @@
 #!/usr/bin/env python3
-"""rldds.py — pure-Python DXT1/DXT3/DXT5 + uncompressed texture decoders to RGBA8.
-
-Part of PHASE A3 of `MASTER_PROMPT_ARENA_1TO1.md` (materials + textures). This
-module holds NO game data and touches no package: it converts a byte string plus
-a UE3 pixel-format name into exactly `w * h * 4` RGBA8 bytes.
-
-Formats (UE3 `EPixelFormat`, as spelled by the cooked `Format` property of a
-`Texture2D` export in the licensee-34 cook):
-
-    PF_DXT1      S3TC BC1 — 8 B / 4x4 block, 3 or 4 colours + optional 1-bit alpha
-    PF_DXT3      S3TC BC2 — 16 B / 4x4 block, explicit 4-bit alpha + 4-colour block
-    PF_DXT5      S3TC BC3 — 16 B / 4x4 block, interpolated alpha + 4-colour block
-    PF_A8R8G8B8  uncompressed, little-endian DWORD 0xAARRGGBB -> bytes B,G,R,A
-    PF_B8G8R8A8  uncompressed, little-endian DWORD 0xBBGGRRAA -> bytes A,R,G,B
-    PF_G8        one greyscale byte per pixel
-    PF_V8U8      two signed bytes per pixel (X, Y); not a colour format
-
-Channel-order rule for the uncompressed formats (MEASURED, see
-`docs/ARENA_RIP_LOG.md` round A3): a UE3 `PF_A8R8G8B8` texel is the 32-bit value
-`0xAARRGGBB`, and the cook stores it little-endian, so the four bytes on disk are
-`B, G, R, A`. The field test used the one A8R8G8B8 texture whose subject colour
-is physically constrained — `Grass_Strip` (2048x128), whose byte means are
-`(13.9, 145.3, 73.9, 255.0)`: read as `B,G,R,A` that is `R=74 G=145 B=14`, a
-yellow-green turf; the swapped reading would be `R=14 B=74`, a teal that no
-sunlit stadium turf is. `Step_D` (a grey ramp) is invariant under the swap and
-its 4th byte is 255 everywhere, which pins byte 3 = alpha.
-
-`SRGB` is a cooked `BoolProperty` on the `Texture2D` export (`True` for 44 of the
-62 textures here). The decode below is a byte-exact texel unpack and never
-gamma-transforms: the flag is reported by `rlmat.decode_texture`, not applied, so
-a consumer that wants linear light does the transform itself and knows why.
-
-Self-test: `python3 tools/arena/rldds.py` (exit 0 = every case passed).
+"""Decode DXT1/DXT3/DXT5 and uncompressed UE3 textures to w*h*4 RGBA8.
+PF_A8R8G8B8 on disk is B,G,R,A. The decode does not apply gamma.
 """
+
 import struct
 import sys
 

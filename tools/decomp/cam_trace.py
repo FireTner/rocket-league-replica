@@ -1,93 +1,8 @@
 #!/usr/bin/env python3
-"""cam_trace.py — Rocket League camera trace format **v1** (writer + loader + fixture).
-
-`MASTER_PROMPT_CAMERA_EXACT.md` §6 P2.3 asks for a trace format whose *header*
-carries package identity, `ProfileCameraSettings` and the tick rate, followed by
-**fixed-stride float32 records**. This module is that format, plus the loader /
-validator the diff tool (and P3's `camera_trace_gate.py`) read it through, plus a
-deterministic **synthetic** generator so the tooling is testable with no game.
-
-Nothing here touches the game. A trace is Psyonix-derived measurement data, so it
-lives under `decomp/traces/` (gitignored, repo rule 1) and never in the tree; the
-*format* and this code are ours (MIT).
-
--------------------------------------------------------------------------------
-FILE LAYOUT (v1)
--------------------------------------------------------------------------------
-    offset  size  content
-    0       4     magic  b"RLCT"
-    4       4     uint32 version            (1)
-    8       4     uint32 header_len         (bytes of UTF-8 JSON header)
-    12      4     uint32 stride             (bytes per record = 4 * field_count)
-    16      4     uint32 field_count
-    20      4     uint32 record_count
-    24      4     uint32 crc32(record block)
-    28      H     UTF-8 JSON header (package identity, settings, tick rate, ...)
-    28+H    N*S   record block, N = record_count, S = stride, little-endian float32
-
-Records are **fixed-stride float32** in the field order pinned by
-`FIELD_SPECS`; the header repeats the field table, and the loader fails loudly if
-the two disagree, so a silent reorder (or a v2 file read by a v1 reader) is
-detectable instead of silently misread. Bump `VERSION` for any change to the
-field list, the field order, or the header's required keys.
-
--------------------------------------------------------------------------------
-"POV -> WORLD POSITION" CONVENTION (read this before comparing anything)
--------------------------------------------------------------------------------
-RL's camera decomposes into a POV: a **Focus** world point it looks at, a
-**Rotation** (UE rotator, 65536 units = 360 deg), a **Distance** and a **FOV**.
-`Camera_X.ClampPOV` writes that POV; the rig turns it into an eye position.
-
-Our camera (`src/camera/Camera.{h,cpp}`) publishes a different pair:
-
-    Center()  == the smoothed look-at point   -> the FOCUS
-    Eye()     == the smoothed eye position    -> derived from Focus/Rotation/Distance
-    EffFov()  == slider FOV + dynamic kick    -> the FOV
-
-so the one conversion both tools use (and the ONLY one they are allowed to
-assume) is `POV_CONVENTION = "ue_rotator_focus_minus_fwd_distance_v1"`:
-
-    forward = ( cos(pitch)*cos(yaw), cos(pitch)*sin(yaw), sin(pitch) )   # roll ignored
-    eye     = focus - forward * distance                                # RL: "uu behind focus"
-
-and back again, from a camera's (eye, center) pair:
-
-    focus    = center
-    distance = |eye - center|
-    rotation = rotator_from_dir(center - eye)      # roll reported as 0.0
-
-Space is UE left-handed (X forward, Y right, Z up); a rotator is stored as
-`degrees * 65536/360`. Two honest limits, both surfaced by the diff tool as
-`UNVERIFIED` instead of guessed:
-
-  * **Roll.** Our rig never rolls (`Camera.cpp` `rotationFromDir` writes 0, and
-    `Apply()` builds an up=+Z basis), so a recorded non-zero roll cannot be
-    compared to ours — the tool reports roll as UNVERIFIED rather than scoring a
-    mismatch it cannot explain.
-  * **Swivel units.** RL's `Camera_TA.CurrentSwivel` unit is not established by
-    the decompile (it is a struct member, not a formula). The header declares
-    `swivel_convention`; unless it says `radians`, the diff tool refuses to score
-    swivel and says so.
-
-Header fields a reader must trust, not re-derive: `source` (`synthetic` | `live`),
-`pov_convention`, `swivel_convention`, `tick_rate`, `settings`, `package`.
-
--------------------------------------------------------------------------------
-CLI
--------------------------------------------------------------------------------
-    # deterministic fixture, clearly labelled synthetic
-    python3 tools/decomp/cam_trace.py gen --scenario swivel-sweep-release \\
-        --frames 480 --seed 7 --out decomp/traces/synthetic_swivel.rlt
-    python3 tools/decomp/cam_trace.py gen-all --outdir decomp/traces/synthetic
-    python3 tools/decomp/cam_trace.py info      <trace.rlt> [--json]
-    python3 tools/decomp/cam_trace.py validate  <trace.rlt>
-    python3 tools/decomp/cam_trace.py selfcheck [--out decomp/traces/selfcheck.rlt]
-    python3 tools/decomp/cam_trace.py deck            # §6.2 scenario deck
-
-`selfcheck` is the format's own self-consistency gate: write -> load -> compare
-every field bit-for-bit, and write -> load -> POV-convention round trip. Both
-print `0.000000` max error when the format and the convention are consistent.
+"""Camera trace v1: magic b"RLCT", a JSON header, then fixed-stride float32 records.
+Eye = focus - forward * distance. Steer +1 is left. Files stay under decomp/traces/.
 """
+
 import argparse
 import json
 import math
@@ -137,12 +52,12 @@ FIELD_SPECS = (
     ("ball_vx", "uu/s", "ball", "ball linear velocity X"),
     ("ball_vy", "uu/s", "ball", "ball linear velocity Y"),
     ("ball_vz", "uu/s", "ball", "ball linear velocity Z"),
-    # --- player inputs (RL signed convention; see AGENTS.md) ------------------
+    # --- player inputs (steer +1 is left) ---
     ("ball_cam", "flag", "input", "1 = ball cam on"),
     ("swivel_in_x", "-1..1", "input", "right-stick look X (x = right)"),
     ("swivel_in_y", "-1..1", "input", "right-stick look Y (y = up)"),
     ("throttle", "-1..1", "input", "signed throttle (+1 forward)"),
-    ("steer", "-1..1", "input", "signed steer (+1 = LEFT, AGENTS.md)"),
+    ("steer", "-1..1", "input", "signed steer (+1 = LEFT)"),
     ("pitch_in", "-1..1", "input", "signed pitch (+1 = UP)"),
     ("yaw_in", "-1..1", "input", "signed yaw"),
     ("roll_in", "-1..1", "input", "signed roll"),
@@ -167,15 +82,15 @@ RECORD_STRUCT = struct.Struct("<%df" % NFIELDS)
 # ── convention ───────────────────────────────────────────────────────────────
 ROT_FULL = 65536.0                  # rotator units per 360 degrees
 ROT_PER_RAD = ROT_FULL / (2.0 * math.pi)
-#: Cited swivel rate (Rocket Science #2, camel src/camera/Camera.cpp
-#: kSwivelRate): 90 deg in 1.3 s at slider 1.0, linear in the slider.
+#: Synthetic-fixture swivel rate only. The live camera eases a stick offset
+#: (see src/camera/Camera.h). This constant is not that rate.
 SWIVEL_RATE_PER_UNIT = (math.pi * 0.5) / 1.3
 POV_CONVENTION = "ue_rotator_focus_minus_fwd_distance_v1"
 SUPPORTED_POV_CONVENTIONS = (POV_CONVENTION,)
 SWIVEL_CONVENTIONS = ("radians", "unknown")
 DEFAULT_SWIVEL_CONVENTION = "radians"
 
-#: §6.2 scenario deck — one file each when W3 records live. Order is the deck.
+# Scenario deck. Order is the deck.
 SCENARIO_DECK = (
     ("ballcam-toggle", "ball cam on->off mid-drive (transition blend + state swap)"),
     ("target-switch-mid-air", "ball cam target jumps while airborne (target select)"),
@@ -201,8 +116,7 @@ DEFAULT_SETTINGS = {
     "transition_speed": 1.2,
     "invert_swivel_pitch": False,
     "camera_shake": True,
-    # our additive INI key (docs/INI_SCHEMA.md); a live recorder reads it from
-    # the INI, not from RL.
+    # A live recorder reads snap from the INI, not from the game.
     "snap": True,
 }
 
@@ -311,8 +225,7 @@ def pov_field_errors(recorded, derived, quantize=True):
     the ONE error definition the tools share, so "self-consistency is 0.0" and
     "our camera's error table" are measured the same way:
 
-      * units are the ones `§6 P2.4` names — uu for Focus/Distance, **rotator
-        units** for Rotation, degrees for FOV;
+      * units: uu for Focus/Distance, rotator units for Rotation, degrees for FOV;
       * `quantize=True` rounds the derived value to float32 first, i.e. to the
         trace's own field precision. A difference smaller than one float32 ulp is
         not representable in the format, so scoring it would be measuring the
@@ -711,7 +624,7 @@ def _smoothstep(a, b, x):
 
 
 def _scenario_state(name, t, seed):
-    """Deterministic world state for one §6.2 scenario at time `t` (seconds).
+    """Deterministic world state for one scenario at time `t` (seconds).
 
     Returns a dict of the fields the generator needs. Pure function of
     (name, t, seed) so a trace is reproducible byte-for-byte.
@@ -877,15 +790,12 @@ def generate_synthetic(scenario="swivel-sweep-release", frames=480, seed=7,
         pitch_lag += (-ang - pitch_lag) * 0.25
         back = d_eff * math.cos(pitch_lag)
         up = float(s["height"]) - d_eff * math.sin(pitch_lag)
-        # Crude die-rate integrator: the rate is the CITED RL one ("90 deg per
-        # 1.3 s at 1.0, linear in the slider", Rocket Science #2 -> camel
-        # Camera.cpp kSwivelRate), decayed when the stick is released. A fixture
-        # shape only; it is not a claim about RL's SwivelDieRate.
+        # Synthetic die-rate integrator for the fixture trace. The live camera
+        # does not use this rate; it eases toward a stick offset (Camera.h).
         swivel_rate = SWIVEL_RATE_PER_UNIT * float(s["swivel_speed"])
         swivel_yaw += st["swivel_in"] * swivel_rate * dt
-        # The offset is an ANGLE: keep it principal (-pi, pi] exactly as
-        # `Camera.cpp UpdateSwivel` wraps yawOff_, so a long hold cannot leave
-        # the fixture snapping back the long way round.
+        # Keep the fixture offset on (-pi, pi] so a long hold does not wrap
+        # the long way.
         swivel_yaw = _wrap_pi(swivel_yaw)
         swivel_idle = 0.0 if abs(st["swivel_in"]) > 0.004 else swivel_idle + dt
         if swivel_idle > 0.05:
@@ -893,9 +803,8 @@ def generate_synthetic(scenario="swivel-sweep-release", frames=480, seed=7,
             swivel_yaw -= max(-step, min(step, swivel_yaw))
             if abs(swivel_yaw) < 1e-4:
                 swivel_yaw = 0.0
-        # The eye rides the sphere behind its pivot: the ball-cam pivot is the
-        # target bearing, the car-cam pivot is the car facing (this mirrors both
-        # the RL states and `Camera.cpp` BallCamPov/CarPov).
+        # Fixture eye, not the live chase camera. Ball cam uses the ball bearing
+        # and car cam uses the car facing.
         base_yaw = (math.atan2(ball[1] - car[1], ball[0] - car[0])
                     if inputs["ball_cam"] > 0.5 else car_rot[1] / ROT_PER_RAD)
         yaw_c = base_yaw + swivel_yaw
@@ -911,9 +820,8 @@ def generate_synthetic(scenario="swivel-sweep-release", frames=480, seed=7,
         dy = focus_state[1] - eye_state[1]
         dz = focus_state[2] - eye_state[2]
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-        # the swivel rotates the VIEW too (`lookYaw = aim + yawOff` in
-        # Camera.cpp), so the recorded rotation is off-target by the free-look
-        # offset, not aimed at the ball.
+        # The fixture swivel also rotates the recorded view, so the rotation is
+        # off the ball by that offset.
         pitch_aim = math.atan2(dz, math.hypot(dx, dy))
         yaw_aim = math.atan2(dy, dx) + swivel_yaw
         fx_, fy_, fz_ = fwd_from_rotator(pitch_aim * ROT_PER_RAD,

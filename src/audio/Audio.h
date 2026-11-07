@@ -1,13 +1,9 @@
-// Audio.h — procedural game audio, zero assets (MIT).
-// SDL2 audio callback synth: engine hum (pitch follows car speed), boost
-// noise, and one-shot blips (jump / pad pickup / goal horn). No samples, no
-// files, no dependencies beyond SDL2. Game-owned; the sim never sees it.
+// Audio.h — miniaudio device, procedural bed, optional local wav pack.
 #pragma once
-
-#include <SDL2/SDL.h>
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 
 namespace rl {
 
@@ -23,56 +19,85 @@ public:
     Audio();
     ~Audio();
 
-    // Open the device (44.1 kHz f32 mono). Returns false if unavailable —
-    // the game runs silent (never fatal). forceDummy env override is the
-    // caller's business (SDL_AUDIODRIVER).
+    // 48 kHz device. Returns false if it cannot be opened.
     bool Init();
     void Shutdown();
-    bool IsOpen() const { return device_ != 0; }
+    bool IsOpen() const { return open_; }
 
-    void SetMuted(bool m) { muted_.store(m); }
+    // manifest.txt from tools/audio/rip_sounds.py. Missing file returns false.
+    bool LoadPack(const char* dir);
+    bool HasPack() const { return pack_; }
+
+    void SetMuted(bool m);
     bool Muted() const { return muted_.load(); }
 
-    // Per-frame continuous state (call from the render loop, after the
-    // camera eye is published). The ear is that eye — the same point
-    // Camera::Eye() hands the renderer.
-    // carDistUu / ballDistUu: source-to-ear distance in uu.
-    // radialSpeedUu: car speed away from the ear (positive = receding),
-    // uu/s. Drives a light doppler on the engine oscillator only.
-    // Distance and doppler constants are UNVERIFIED (no published RL source).
-    void Engine(float speed01, bool boosting, float carDistUu, float ballDistUu,
-                float radialSpeedUu);
+    // carDistUu / ballDistUu are source-to-ear distances. radialSpeedUu > 0
+    // recedes. Distance and doppler scale the synth and the pack loops.
+    void Engine(float speed01, bool boosting, float carDistUu = 800.0f,
+                float ballDistUu = 800.0f, float radialSpeedUu = 0.0f);
+    // Loop gains, each 0..1. The crowd bed is not here; the pack sets it.
+    void Loops(float boost, float tires, float whoosh, float superSonic,
+               float ballRoll, float ballFly);
 
-    // One-shots (call on game events).
     void PlayJump();
+    void PlayDodge();
+    void PlayDoubleJump();
     void PlayPickup(bool big);
     void PlayGoal();
-    void PlayDemo(); // demolition: low descending boom
+    void PlayDemo();
+    void PlayBall();
+    void PlayLand();
+    void PlaySuper();
+    void PlaySlide();
+    // Powerslide screech follows the held brake and stops when it is released.
+    void SetSlide(bool held);
 
-    // Verification: callback invocations + mixed frames since Init.
     uint64_t callbacks() const { return callbacks_.load(); }
     uint64_t framesMixed() const { return framesMixed_.load(); }
 
 private:
-    static void SDLCALL Cb(void* userdata, Uint8* stream, int len);
+    struct Impl;
+    void EnqueueBlip(int type);
+    // True when a pack clip started. False leaves the caller on the synth.
+    bool StartCue(int cue);
+    void Upload();
+    static void SynthProcess(void* node, const float** in, uint32_t* inCount,
+                             float** out, uint32_t* outCount);
 
-    struct Blip {
-        int type = 0; // 0 none, 1 jump, 2 pickup-small, 3 pickup-big, 4 goal, 5 demo
-        uint32_t pos = 0;
+    enum Cue {
+        CueJump = 0, CueDodge, CueDoubleJump, CuePickup, CuePickupBig,
+        CueLand, CueBall, CueSlide, CueSuper,
+        CueGoalHorn, CueGoalBoom, CueGoalCrowd,
+        CueDemoHit, CueDemoBoom,
+        CueCount
     };
-    static constexpr int kBlips = 8;
+    enum Loop {
+        LoopBoost = 0, LoopTires, LoopWhoosh, LoopSuper,
+        LoopBallRoll, LoopBallFly, LoopCrowd, LoopCount
+    };
+    static constexpr int kCueClips = 8;
 
-    SDL_AudioDeviceID device_ = 0;
+    struct CueDef {
+        bool layer = false;
+        int n = 0;
+        int clips[kCueClips] = {};
+    };
+
+    std::unique_ptr<Impl> impl_;
+    bool open_ = false;
+    bool pack_ = false;
     std::atomic<bool> muted_{false};
     std::atomic<float> speed01_{0};
     std::atomic<bool> boosting_{false};
     std::atomic<float> carDist_{800};
     std::atomic<float> ballDist_{800};
     std::atomic<float> radialSpeed_{0};
-    Blip blips_[kBlips] = {};
-    SDL_mutex* blipLock_ = nullptr;
-    uint32_t phase_ = 0;   // engine oscillator phase (callback-owned)
-    uint32_t noise_ = 0x12345678; // xorshift (callback-owned)
+    CueDef cues_[CueCount] = {};
+    int loopClip_[LoopCount] = {};
+    std::atomic<float> loopGain_[LoopCount];
+    float loopApplied_[LoopCount] = {};
+    int shotCursor_ = 0;
+    bool slideHeld_ = false;
     std::atomic<uint64_t> callbacks_{0};
     std::atomic<uint64_t> framesMixed_{0};
 };

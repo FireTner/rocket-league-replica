@@ -1,27 +1,7 @@
-"""Minimal Rocket League UE3 (.upk) reader — local-only analysis tool.
-
-Reads the user's OWN Rocket League install, decrypts with Rocket League's
-public AES-256-ECB package key, inflates the zlib chunks and exposes names /
-imports / exports / object bytes so a camera ground-truth surface can be
-extracted.  This file is our own MIT code and contains no Psyonix data: the
-package bytes it reads stay on the user's machine (repo Rule 1).  See
-docs/CAMERA_DECOMP.md for the legal boundary and docs/THIRD_PARTY.md for the
-key provenance (AltimorTASDK/RLUPKTool, MIT).
-
-Format notes (RL = UE3 868, licensee 34):
-  * summary is plaintext up to NameOffset;
-  * [NameOffset, TotalHeaderSize) is AES-256-ECB encrypted;
-  * object data is zlib-chunk compressed (FCompressedChunkHeader + blocks);
-  * strings are int32-length (not compact indexed), FName = int64;
-  * **export `SerialOffset` is relative to `Summary.DependsOffset`, while the
-    object stream physically starts at `TotalHeaderSize`** — so every object
-    offset needs the per-package bias `TotalHeaderSize - DependsOffset`
-    (MEASURED 2026-10-20: ProjectX 86500, TAGame 562181).  With it, exports
-    tile the inflated stream exactly; without it, every object reads as if it
-    were a neighbouring object, which is what produced the "inline string
-    property names / broken UField" diagnosis in docs/CAMERA_DECOMP.md.
-    `Package.data()` applies the bias; `export_offset()` exposes the raw value.
+"""Read a local .upk: AES-256-ECB header, zlib chunks, names, and exports.
+SerialOffset is relative to DependsOffset; data() adds TotalHeaderSize - DependsOffset. The key is local.
 """
+
 import os
 import re
 import struct
@@ -30,8 +10,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 TAG = 0x9E2A83C1
 
-# The package key is NEVER stored in this repository (repo Rule 1, publication
-# boundary in docs/CAMERA_DECOMP.md). Supply your own copy locally, either as
+# The package key is not stored in this repository. Supply your own copy locally, either as
 # `$RL_UPK_KEY` (hex) or in a file outside the tree:
 #
 #   mkdir -p ~/.rl-decomp

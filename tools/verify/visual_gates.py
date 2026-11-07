@@ -1,39 +1,8 @@
 #!/usr/bin/env python3
-"""Visual gates (MASTER_PROMPT_VISUALS.md section 7 W1 / milestones V1-V6).
-
-Every gate asserts on MEASURABLE framebuffer properties of a deterministic,
-offscreen capture — never on "looks better". The harness runs `build/game`
-under `gamescope --backend headless` (no display takeover, no Xvfb) with a
-fixed seed / tick / `--cam` pose, so the same command produces the same bytes.
-
-Gates:
-
-  VG1 determinism      two identical captures are byte-identical (or within a
-                       documented per-channel tolerance; the driver is recorded)
-  VG2 calibrate        5 palette bands at the right x positions and colours
-  VG3 scene coverage   kickoff / ball / pad / wall / ceiling / car all render a
-                       non-trivial, non-uniform image
-  VG4 ball indicator   measured ring/inner/disc radii match the 0.98 / 1.25 /
-                       0.62 x r recipe, and grow with ball height
-  VG5 boost gauge      260-degree arc at boost=100, ~130 at boost=50
-  VG6 glass wall       blue glass hue + hex-net period == the 420 uu cell
-  VG7 budget/errors    60 s scripted run: GL errors == 0, counters sane, tri
-                       count under the documented cap (no silent geometry creep)
-  VG8 goal shockwave   ring radius grows across frames and matches the
-                       documented 140 + 2600*k curve
-  VG9 car fidelity     box-car wheel visuals present; car orientation is
-                       legible (silhouette rotates when the car pitches)
-  VG10 debug colliders instrument renders and changes the frame as designed
-  VG11 wall curbs      curb sits at the wall base (all four walls + the 45 deg
-                       chamfers), not across the arena centre or interior
-  VG12 feedback FX     demo flash and pickup burst add their cool/warm pixels
-                       (differential against the same frame without the probe)
-
-Loud `SKIP:` (never a fake PASS) when there is no GL context / capture.
-
-    python3 tools/verify/visual_gates.py            # all gates
-    python3 tools/verify/visual_gates.py --only VG4 --diag
+"""Offscreen framebuffer checks for build/game under gamescope headless.
+Same seed, tick, and camera produce the same bytes. SKIP when capture is unavailable.
 """
+
 
 import argparse
 import hashlib
@@ -53,7 +22,7 @@ OUT = "/tmp/visual_gates"
 MESH = os.path.join(ROOT, "collision_meshes")
 W, H = 1280, 720
 
-# ---- documented constants (each cites its source) --------------------------
+# Constants the pixel checks measure.
 BALL_COLLISION_R = 91.25          # src/models/Models.h dims::kBallR
 INDICATOR_OUTER = 1.25            # src/fx/FX.cpp DrawBallIndicator
 INDICATOR_INNER = 0.98
@@ -71,9 +40,7 @@ BACK_WALL_Y = 5120.0
 CEIL_Z = 2044.0
 SHOCK_BASE, SHOCK_SPAN = 140.0, 2600.0   # src/fx/FX.cpp ShockwaveRadius
 
-# Draw-budget cap (V2 decision): the CC-BY-4.0 Fennec is 84.8k tris and there
-# are two cars, so a frame is ~188k tris. The cap exists so a future visual
-# change cannot silently multiply geometry. Raised only with a written reason.
+# Two Fennecs are about 188k tris. The cap stops a silent jump in geometry.
 TRI_CAP = 240000
 
 results = []
@@ -106,8 +73,10 @@ def run_offscreen(args, name, done_marker="[game] exit", timeout=45):
     """
     os.makedirs(OUT, exist_ok=True)
     logpath = os.path.join(OUT, name + ".log")
+    # Pixel gates measure the analytic shell. The game defaults to the arena pack.
     cmd = [shutil.which("gamescope"), "--backend", "headless", "-W", str(W),
-           "-H", str(H), "-r", "60", "--", GAME, "--no-vsync", "--no-audio"] + list(args)
+           "-H", str(H), "-r", "60", "--", GAME, "--shell", "--no-vsync",
+           "--no-audio"] + list(args)
     f = open(logpath, "w")
     p = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, cwd=ROOT,
                          start_new_session=True)
@@ -232,13 +201,13 @@ def quant_colours(im, shift=4):
     return seen, n
 
 
-# ---- camera projection (mirrors src/camera/Camera.cpp) ---------------------
+# ---- camera projection (mirrors Camera::Apply) -----------------------------
+# The slider is a horizontal field of view. Apply converts it at the window aspect.
 
 def f_px(vh, fov_slider, aspect):
-    fx = math.radians(fov_slider)
-    fy = 2.0 * math.atan(math.tan(fx * 0.5) / aspect * (16.0 / 9.0))
-    deg = math.degrees(fy)
-    deg = max(40.0, min(120.0, deg))
+    half = math.tan(math.radians(fov_slider) * 0.5)
+    deg = math.degrees(2.0 * math.atan(half / max(aspect, 0.05)))
+    deg = max(40.0, min(130.0, deg))
     return (vh * 0.5) / math.tan(math.radians(deg) * 0.5)
 
 
@@ -897,12 +866,9 @@ def vg12_feedback_fx():
 
 
 def vg13_mesh_integrity():
-    """V1/V2: the baked Fennec asset must be geometrically sane.
+    """Baked Fennec geometry: unit normals, ground datum, source footprint.
 
-    Shells out to tools/verify/mesh_integrity.py --json so the asset pipeline
-    owns the assertions (unit normals, ground datum, source footprint) and this
-    gate only reports them. Pre-fix this fails with 58851/58851 non-unit normals
-    and bbox min-z -48.91 (docs/VISUAL_BUGS_TODO.md V1/V2).
+    Shells out to tools/verify/mesh_integrity.py --json and reports that result.
     """
     script = os.path.join(HERE, "mesh_integrity.py")
     if not os.path.isfile(script):
@@ -1063,6 +1029,71 @@ def vg15_lighting():
             Ls["turf"]) + (" BAD:" + ",".join(bad) if bad else ""))
 
 
+def vg17_car_materials():
+    """The Fennec shell must not be one baked blue coat.
+
+    Close side view, unlit (`--flat`), so lighting cannot invent the result.
+    The silhouette is every non-turf pixel inside the rows and columns where
+    the body reads as saturated blue. Team paint plus dark trim, glass, tyres
+    and the chassis sheet stays at or below 60% saturated blue and at or above
+    18% near-black. One baked blue coat fails both.
+    """
+    common = ["--meshdir", MESH, "--seed", "7", "--ticks", "160", "--no-shake",
+              "--shot-at-tick", "120", "--flat",
+              "--cam", "380,-2300,50,0,-2300,28"]
+    path, _log = shot("vg17_flat", common)
+    if not path:
+        gate("VG17", "Fennec body materials", None,
+             "no capture (gamescope/GL unavailable)")
+        return
+    im = read_ppm(path)
+    body_rows = []
+    for y in range(300, 430):
+        n = 0
+        for x in range(520, 800):
+            r, g, b = px(im, x, y)
+            if b > 140 and b > r + 40:
+                n += 1
+        if n > 40:
+            body_rows.append(y)
+    if len(body_rows) < 20:
+        gate("VG17", "Fennec body materials", False,
+             "side view found only %d body rows" % len(body_rows))
+        return
+    y0, y1 = body_rows[0], body_rows[-1]
+    xs = []
+    for y in body_rows:
+        for x in range(480, 860):
+            r, g, b = px(im, x, y)
+            if b > 140 and b > r + 40:
+                xs.append(x)
+    x0, x1 = min(xs), max(xs)
+    blue = dark = total = 0
+    for y in range(y0, y1 + 1):
+        for x in range(x0, x1 + 1):
+            r, g, b = px(im, x, y)
+            if g > r + 15 and g > b + 10:
+                continue
+            total += 1
+            if b > 100 and b > r + 30 and b > g + 15:
+                blue += 1
+            if r + g + b < 80:
+                dark += 1
+    if total < 1000:
+        gate("VG17", "Fennec body materials", False,
+             "silhouette too small (%d px)" % total)
+        return
+    blue_frac = blue / total
+    dark_frac = dark / total
+    ok = blue_frac <= 0.60 and dark_frac >= 0.18
+    diag("VG17 flat silhouette px=%d rows %d..%d cols %d..%d blue=%.3f dark=%.3f"
+         % (total, y0, y1, x0, x1, blue_frac, dark_frac))
+    gate("VG17", "Fennec body materials", ok,
+         "unlit side silhouette blue=%.3f (need <=0.60) near-black=%.3f "
+         "(need >=0.18)"
+         % (blue_frac, dark_frac))
+
+
 def vg16_fennec_path():
     """V7/V2: VG9 only ever tested the --nofennec procedural box car.
 
@@ -1127,6 +1158,7 @@ ALL_GATES = [
     ("VG14", vg14_arena_occupancy),
     ("VG15", vg15_lighting),
     ("VG16", vg16_fennec_path),
+    ("VG17", vg17_car_materials),
 ]
 
 
@@ -1139,7 +1171,7 @@ def main():
     DIAG = args.diag
 
     if not os.path.isfile(GAME):
-        print("SKIP: build/game missing - run `make build/game`")
+        print("SKIP: build/game missing - run `cmake --build build --target game`")
         print("# summary: 0 PASS, 0 FAIL (all visual gates SKIPPED)")
         return 0
     if shutil.which("gamescope") is None:

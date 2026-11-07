@@ -11,6 +11,21 @@ ground indicator, ball trail, contact sparks, and exact DFH Stadium (Day)
 on the opt-in local arena (workstream H). Workers find the code. Arena
 1:1 (A1–A8) stays closed.
 
+**PARALLEL work order: `MASTER_PROMPT_PITCH_DETAIL.md` — draw landed (2026-11-06).**
+Curb team-neon, ground marks, and the metal hex floor are in
+`src/render/BUILD_NOTES.md`. Do not reopen them.
+
+**PARALLEL work order: `MASTER_PROMPT_FORCEFIELD.md` — OPEN (2026-11-06).**
+One worker. The force-field cell lattice on the pack's wall glass and
+ceiling. Census first. Does not reopen the pitch surfaces, grass wear,
+V1–V8, M1–M6, or Arena 1:1.
+
+**PARALLEL work order: `MASTER_PROMPT_SHADE.md` — OPEN (2026-11-06).**
+One worker. Anti-aliasing through the existing `msaa` key, then one
+shade term in the pack shader. Census first. Defaults stay off until
+PG1 is green on A and B. Does not reopen the pitch surfaces, the
+force-field lattice, V1–V8, M1–M6, or Arena 1:1.
+
 GL 4.5-compat hard target + pipeline optimize (RLViser-inspired, facts only).
 Owner decisions: hard-target **GL 4.5 Compatibility, no fallback** — no 2.1/3.3
 path, no llvmpipe, no core-profile *context* — and only **two supported
@@ -76,7 +91,7 @@ path, and every physics gate stays green.
 ## What this is
 
 A free-play Rocket League replica in C++20 (SDL2 + GL 4.5 Compatibility,
-g++ only, no cmake). The physics core is the **vendored RocketSim**
+CMake, Release `-O2`). The physics core is the **vendored RocketSim**
 (`third_party/RocketSim`, MIT © 2022 ZealanL, commit `c2baacb8` —
 replay-validated), wrapped by a deterministic 120 Hz `Sim` API. Visuals are
 license-clean recreations (procedural textures + one CC-BY-4.0 community
@@ -102,7 +117,7 @@ Goal: 1:1 replication of RL freeplay — physics first, then visuals/features.
    Anything sim-engine-level needs a failing contract test first.
 3. **Physics determinism.** 120 Hz fixed tick, never drops a tick;
    `-ffp-contract=off -fno-fast-math -fno-strict-aliasing` on all sim-path
-   compiles (see Makefile — do not remove). All runs seed-pinned (`--seed`);
+   compiles (see `CMakeLists.txt` — do not remove). All runs seed-pinned (`--seed`);
    RocketSim's global RNG is pinned in `Sim::Init`/`SetSeed`.
 4. **Constants cite sources.** Every physics number cites
    `third_party/RocketSim/src/...` file+line (see `src/physics/Tuning.h`,
@@ -122,11 +137,10 @@ Goal: 1:1 replication of RL freeplay — physics first, then visuals/features.
 ## Build & verify (run these before claiming anything works)
 
 ```sh
-make all                              # headless_sim, render_stub, game, tests, arena_test
+cmake -B build && cmake --build build # Release -O2; ccache when installed
+ctest --test-dir build --output-on-failure
 python3 tools/verify/measured.py      # the gate runner — must stay >= 19/19 PASS
 python3 tools/verify/mesh_gates.py    # mesh collision gates — 13/13 (SKIPs loudly with no mesh)
-make tests                            # settings roundtrip + keyboard/menu
-/tmp/arena_test                       # 55/55 analytic arena checks (built by make all)
 python3 src/physics/verify_vs_rocketsim.py   # preset/tuning tables vs vendored source
 python3 tools/verify/visual_gates.py  # visual gates VG1-VG16 (offscreen; loud SKIP)
 cat tools/verify/mesh_integrity.py   # (read) Fennec asset integrity: VG13's backend
@@ -161,13 +175,11 @@ cat tools/verify/mesh_integrity.py   # (read) Fennec asset integrity: VG13's bac
   3.28 @477, front flip 323.9°, pads 100/12 @ 10 s/4 s, demo on SUPERSONIC
   flag at new contact + 360-tick (3.0 s) respawn, subsonic contact = bump
   only. Signed inputs: steer+1 LEFT, pitch+1 UP, yaw+1 left, roll+1 LEFT.
-- **Arena status: both modes live.** With `--meshdir` (a real user dump) the sim
-  runs RocketSim's own mesh geometry and all mesh gates pass; without it, the A2
-  analytic Soccar shell (walls/fillets/goal mouths, `kPads[34]`,
-  analytic containment `ContainFallbackBodies`, Sim-owned pads) — 55/55
-  geometry checks pass, and pads/cooldowns are gated PASS, but wall/ceiling/
-  mesh-level bounce behavior is analytic, not RocketSim-mesh. `Sim::
-  usingRealSoccar()` reports which mode you got.
+- **Arena status: the game defaults to the collision mesh and the stadium pack.**
+  `./build/game` loads `collision_meshes` and `arena_assets/stadium_day`.
+  `--shell` draws the analytic shell. `build/headless_sim` stays on the
+  analytic floor unless `--meshdir` is set. A mesh dir that loads no Soccar
+  mesh is a hard error. `Sim::usingRealSoccar()` reports which mode you got.
 - Renderer is **GL 4.5 Compatibility, hard-targeted** (`SDL_GL_CONTEXT` 4.5
   compat + a loud abort below it; no 2.1/3.3/llvmpipe path) at 720p60 vsync.
   Fixed-function draws remain the **default** path
@@ -190,7 +202,7 @@ cat tools/verify/mesh_integrity.py   # (read) Fennec asset integrity: VG13's bac
 
 ```
 AGENTS.md, CONTRACTS.md      ← you are here / ownership + rules
-MASTER_PROMPT_*.md           ← work orders: GRAPHICS45 OPEN; CAMERA_EXACT rev 3 (closed 2026-10-20); PHYSICS M6, VISUALS V6, VISUAL_FIXES CLOSED
+MASTER_PROMPT_*.md           ← work orders: GRAPHICS45 OPEN; FORCEFIELD OPEN (2026-11-06); PITCH_DETAIL draw landed; CAMERA_EXACT rev 3 (closed 2026-10-20); PHYSICS M6, VISUALS V6, VISUAL_FIXES CLOSED
 docs/                        ← gates, cross-checks, camera/visual/audio notes, visual parity ledger + verdict, playtest + blind-feel scripts
 src/sim/Sim.{h,cpp}          ← RocketSim wrapper (the only file that may touch vendored headers)
 src/arena/                   ← analytic shell + fallback containment + pads + arena_test
@@ -215,9 +227,10 @@ M6** and kept for reference (its §2 checklist is marked, evidence in
 - `--meshdir DIR` on `build/game` and `build/headless_sim`, plus
   `[arena] mesh_dir` in `config/settings.ini` (`docs/INI_SCHEMA.md`). A mesh dir
   that loads no Soccar mesh is a hard error, never a silent fallback.
-- `make meshgen` writes a deterministic **clean-room** Soccar collision mesh to
-  `collision_meshes/soccar/` (our own geometry, RocketSim `.cmf` format; never
-  committed — `.gitignore`). See `docs/MESH_SETUP.md` for the legal split and
+- The build writes a deterministic **clean-room** Soccar collision mesh to
+  `collision_meshes/soccar/` only when that directory has no `.cmf` (our own
+  geometry, RocketSim `.cmf` format; never committed — `.gitignore`). A dump
+  already there is left alone. See `docs/MESH_SETUP.md` for the legal split and
   the fidelity ledger. `Sim::meshMode()` reports `cleanroom-mesh` vs
   `dumped-mesh` (a user-supplied RLArenaCollisionDumper dump).
 - `tools/verify/mesh_gates.py` runs the C1–C7 mesh collision gates and SKIPs
@@ -314,6 +327,11 @@ M6** and kept for reference (its §2 checklist is marked, evidence in
 0. **Ball, boost, contact FX, and exact DFH Stadium** —
    `MASTER_PROMPT_BALL_FX.md` (2026-10-29, workstream H). Coordinator-led.
    Does not reopen V1–V8, M1–M6, or Arena 1:1 A1–A8.
+   **Pitch detail** — `MASTER_PROMPT_PITCH_DETAIL.md` draw landed
+   (2026-11-06). Do not reopen it.
+   **Force field** — `MASTER_PROMPT_FORCEFIELD.md` (2026-11-06). One
+   worker, pack path only: the cell lattice on the wall glass and the
+   ceiling. Census blocks the draw.
 1. **Visuals are CLOSED (V1–V6, then the V1–V8 regression fixes).**
    `docs/VISUAL_FIXES_LOG.md` is the latest record, the top of
    `docs/VISUAL_VERDICT.md` is the close-out, `docs/VISUAL_PARITY_LEDGER.md`

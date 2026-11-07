@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-# tools/verify/check_touched.py — owner-based gate selector (advisory only).
-# Reads `git status --short` + `git diff --name-only` and prints which tier
-# from docs/GATE_POLICY.md applies. It NEVER runs gates or builds.
-# MIT License.
+# Print which check tier applies to files changed in git. Never runs them.
 import os
 import subprocess
 
@@ -42,7 +39,7 @@ def classify(path):
     if p.startswith(vis):
         return "advisory"
     if p.startswith(("tools/verify/", "tools/tas/", "tools/soak/",
-                     "tests/", "Makefile", "tools/dev-local.sh")):
+                     "tests/", "CMakeLists.txt", "tools/dev-local.sh")):
         return "harness"
     return "docs"
 
@@ -51,7 +48,7 @@ def main():
     files = changed_files()
     if not files:
         print("check-touched: tree clean — nothing to verify.")
-        print("  full bar (end of work): make check")
+        print("  full bar (end of work): cmake --build build --target check")
         return 0
     tiers = {}
     for f in files:
@@ -63,12 +60,9 @@ def main():
             for f in tiers[tier]:
                 print(f"    {f}")
     if "hard" in tiers:
-        print("run: make tests && /tmp/arena_test && "
-              "python3 tools/verify/measured.py && "
-              "python3 tools/verify/mesh_gates.py && "
-              "python3 src/physics/verify_vs_rocketsim.py")
+        print("run: cmake --build build --target check")
     if "advisory" in tiers:
-        print("run: make build/game && "
+        print("run: cmake --build build --target game && "
               "python3 tools/verify/visual_gates.py --only VG<int> --diag "
               "(pick the touched VG*; full VG1-VG16 once at the end)")
     if any(f.replace("\\", "/").startswith("tools/arena/") for f in files):
@@ -83,11 +77,11 @@ def main():
                   "pack verifier instead: "
                   "python3 tools/arena/rip_arena.py --verify <pack dir>")
     if "harness" in tiers and "hard" not in tiers and "advisory" not in tiers:
-        print("run: the suite the harness file owns + `make -n all` "
-              "(parse check, no build)")
+        print("run: the suite the harness file owns + `cmake -B build` "
+              "(configure check, no build)")
     if set(tiers) == {"docs"}:
         print("run: nothing (docs-only).")
-    print("end of work, any tier: make check")
+    print("end of work, any tier: cmake --build build --target check")
     return 0
 
 

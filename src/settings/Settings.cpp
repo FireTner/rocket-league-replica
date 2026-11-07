@@ -1,6 +1,4 @@
-// A5-owned: Settings load/save/migrate implementation.
-// Minimal self-contained INI reader/writer (no third-party code).
-// MIT License.
+// Load, save, and migrate the free-play INI.
 #include "Settings.h"
 
 #include <algorithm>
@@ -14,7 +12,6 @@
 namespace rl {
 namespace {
 
-// ---- string utils ----
 std::string Trim(const std::string& s) {
     size_t a = 0, b = s.size();
     while (a < b && std::isspace((unsigned char)s[a])) ++a;
@@ -45,7 +42,7 @@ std::vector<std::string> Split(const std::string& s, char delim) {
     return out;
 }
 
-// Canonical key-name aliasing: Shift->LeftShift etc. (documented in schema).
+// shift, ctrl, esc, and del map to LeftShift, LeftCtrl, Escape, and Delete.
 std::string CanonicalKeyName(std::string n) {
     n = Trim(n);
     std::string l = Lower(n);
@@ -62,7 +59,6 @@ std::string CanonicalKeyName(std::string n) {
     return n;
 }
 
-// ---- value parsing ----
 bool ParseBool(const std::string& raw, bool& out) {
     std::string l = Lower(Trim(raw));
     if (l == "true" || l == "1" || l == "yes" || l == "on") {
@@ -134,7 +130,6 @@ std::string AxisToString(const AxisBinding& b) {
     return JoinKeys(b.slotA) + "/" + JoinKeys(b.slotB);
 }
 
-// ---- INI model: ordered sections, ordered keys ----
 struct IniFile {
     std::vector<std::string> sectionOrder;
     std::map<std::string, std::vector<std::string>> keyOrder;
@@ -236,7 +231,7 @@ Settings Settings::Defaults() {
 }
 
 void Settings::Migrate(Settings& s, int fileSchema) {
-    (void)fileSchema;  // v1 is the first version: clamp ranges, fill empties.
+    (void)fileSchema;  // clamp ranges and fill empty bindings
     const Settings d = Defaults();
     auto fixAxis = [&](AxisBinding& b, const AxisBinding& def) {
         if (b.slotA.empty() && b.slotB.empty()) b = def;
@@ -258,10 +253,6 @@ void Settings::Migrate(Settings& s, int fileSchema) {
     fixKeys(s.input.unlimited, d.input.unlimited);
     fixKeys(s.input.menu, d.input.menu);
     for (int i = 0; i < 5; ++i) fixKeys(s.input.kickoff[i], d.input.kickoff[i]);
-    // Range clamps (see INI_SCHEMA.md for authoritative ranges).
-    // FOV cap is 110 (RL slider max; Rocket Science #2 + Liquipedia 60..110),
-    // distance/height/angle match the RL menu ranges (Camera.cpp enforces the
-    // same, so the two owners never disagree).
     s.camera.fov = ClampF(s.camera.fov, 60.0f, 110.0f);
     s.camera.distance = ClampF(s.camera.distance, 100.0f, 400.0f);
     s.camera.height = ClampF(s.camera.height, 40.0f, 200.0f);
@@ -273,16 +264,11 @@ void Settings::Migrate(Settings& s, int fileSchema) {
     s.boost.drain = ClampF(s.boost.drain, 0.0f, 100.0f);
     s.boost.recharge = ClampF(s.boost.recharge, 0.0f, 100.0f);
     s.game.kickoffIndex = ClampI(s.game.kickoffIndex, 0, 4);
-    // GRAPHICS45 G2/G5 [render]: msaa 0=off (shipped path), clamp 0..16;
-    // max_fps 0=off (shipped pacing), else clamp 15..1000 (limiter only
-    // engages with --no-vsync; vsync-on behavior unchanged).
     s.render.msaa = ClampI(s.render.msaa, 0, 16);
     s.render.maxFps = ClampI(s.render.maxFps, 0, 1000);
     if (s.render.maxFps > 0 && s.render.maxFps < 15) s.render.maxFps = 15;
     s.render.wallOpacity = ClampF(s.render.wallOpacity, 0.0f, 1.0f);
-    // Gamepad: deadzone range documented in INI_SCHEMA.md; empty button names
-    // fall back to the default binding (an empty name is a misconfiguration,
-    // not a valid unbind).
+    // Empty button names fall back to the default binding.
     s.gamepad.deadzone = ClampF(s.gamepad.deadzone, 0.0f, 0.5f);
     auto fixG = [&](std::string& v, const std::string& def) {
         if (v.empty()) v = def;
@@ -374,6 +360,7 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
     getB("camera", "shake", out.camera.shake);
     getB("camera", "invert_swivel", out.camera.invertSwivel);
     getB("camera", "snap", out.camera.snap);
+    getB("camera", "air_heading", out.camera.airHeading);
 
     auto getA = [&](const char* key, AxisBinding& dst) {
         const std::string* v = ini.get("input", key);
@@ -425,16 +412,17 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
     getB("arena", "soccar", out.arena.soccar);
     {
         const std::string* v = ini.get("arena", "mesh_dir");
-        if (v) out.arena.meshDir = *v;  // free text; empty = built-in default
+        if (v && !v->empty()) out.arena.meshDir = *v;
         const std::string* arenaDir = ini.get("arena", "arena_dir");
-        if (arenaDir) out.arena.arenaDir = *arenaDir;  // empty = analytic shell
+        if (arenaDir) out.arena.arenaDir = *arenaDir;
     }
     getI("game", "kickoff_index", out.game.kickoffIndex);
     getI("render", "msaa", out.render.msaa);
     getI("render", "max_fps", out.render.maxFps);
     getB("render", "pacing_log", out.render.pacingLog);
-    getB("render", "pbr", out.render.pbr);  // G6a PBR-lite, default OFF
+    getB("render", "pbr", out.render.pbr);
     getF("render", "wall_opacity", out.render.wallOpacity);
+    getB("render", "pack_spec", out.render.packSpec);
 
     if (!ok) {
         if (err) *err = errors;
@@ -455,8 +443,7 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         std::snprintf(buf, sizeof(buf), "%.4g", (double)v);
         return std::string(buf);
     };
-    out << "; RocketLeague free-play clone — user settings (A5-owned contract, schema v1).\n"
-        << "; See docs/INI_SCHEMA.md. Written by Settings::Save.\n"
+    out << "; free-play settings. Written by Settings::Save.\n"
         << "\n[version]\nschema = " << kSchemaVersion << "\n"
         << "\n[camera]\n"
         << "fov = " << f(s.camera.fov) << "\n"
@@ -470,6 +457,7 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "shake = " << (s.camera.shake ? "true" : "false") << "\n"
         << "invert_swivel = " << (s.camera.invertSwivel ? "true" : "false") << "\n"
         << "snap = " << (s.camera.snap ? "true" : "false") << "\n"
+        << "air_heading = " << (s.camera.airHeading ? "true" : "false") << "\n"
         << "\n[input]\n"
         << "throttle = " << AxisToString(s.input.throttle) << "\n"
         << "steer = " << AxisToString(s.input.steer) << "\n"
@@ -514,7 +502,8 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "max_fps = " << s.render.maxFps << "\n"
         << "pacing_log = " << (s.render.pacingLog ? "true" : "false") << "\n"
         << "pbr = " << (s.render.pbr ? "true" : "false") << "\n"
-        << "wall_opacity = " << f(s.render.wallOpacity) << "\n";
+        << "wall_opacity = " << f(s.render.wallOpacity) << "\n"
+        << "pack_spec = " << (s.render.packSpec ? "true" : "false") << "\n";
     if (!out) {
         if (err) *err = "write failed for " + path;
         return false;

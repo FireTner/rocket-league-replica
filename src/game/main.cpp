@@ -1,13 +1,4 @@
-// Free-play game: SDL2+GL2.1 720p60 renderer + RocketSim 120Hz sim core.
-// MIT License.
-//
-// Loop (physics-first): wall-clock dt -> Sim::StepAccumulator (120Hz fixed,
-// max 5/frame, drops counted) -> render latest snapshot (vsync; on overrun we
-// skip submission, physics never stalls).
-//
-// Usage: game [--bot stationary|mirror|slow-chase] [--soak SECS] [--ticks N]
-//   [--seed S] [--no-vsync]
-//   --soak/--ticks auto-exit with pacing+drop report (soak harness).
+// Free-play loop: step the 120 Hz sim, then draw the latest snapshot.
 #include <SDL2/SDL.h>
 #include <GL/gl.h> // --calibrate 3D-path probe draws raw fixed-function quads
 
@@ -15,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -90,22 +82,19 @@ int main(int argc, char** argv) {
 	long long tickBudget = -1;
 	uint64_t seed = 0xA15EEDULL;
 	bool seedGiven = false, noVsync = false, menuAtStart = false, noAudio = false, flatShading = false;
+	bool synthOnly = false;
+	std::string soundsDir;
+	bool soundsFlag = false;
 	bool calibrate = false;
+	bool shell = false; // --shell draws the analytic arena
 	std::string meshDir; // --meshdir override; empty = settings [arena] mesh_dir
-	// A6b: --arenadir override; empty = [arena] arena_dir in config/settings.ini.
-	// The pack is a Psyonix-owned RUNTIME input (gitignored arena_assets/): it
-	// is read once at startup, never written, never committed.
+	// --arenadir override; empty reads [arena] arena_dir, then the stadium pack.
 	std::string arenaDir;
 	bool arenaDirFlag = false;
 	float camEye[3] = {0, 0, 0}, camTarget[3] = {0, 0, 0};
-	bool camSet = false; // --cam hook: visual-verification freecam pose
+	bool camSet = false;
 	long long shotAtTick = -1, shotEvery = 0, shotCount = 0;
 	std::string shotPath, shotDir;
-	// ---- visual-harness hooks (MASTER_PROMPT_VISUALS.md W1) ----------------
-	// All coordinator-owned, deterministic, debug-only. They never alter the
-	// sim's physics path: --ballpos uses the existing Sim::SetBall test
-	// teleport, --boost uses Sim::SetBoost, --nofennec only changes what is
-	// drawn, --fx-probe arms a captured FX event on a fixed tick.
 	bool ballPosSet = false;
 	float ballPos[3] = {0, 0, 0};
 	float forcedBoost = -1.0f; // <0 = off
@@ -114,8 +103,8 @@ int main(int argc, char** argv) {
 	bool debugGrid = false;
 	bool noHexNet = false;
 	bool noShake = false;
-	bool driveOverride = false; // --drive harness input injection
-	rl::Controls driveCtl;      // filled from --drive
+	bool driveOverride = false;
+	rl::Controls driveCtl;
 	std::string fxProbe;
 	long long fxProbeTick = 120;
 	for (int i = 1; i < argc; i++) {
@@ -149,21 +138,22 @@ int main(int argc, char** argv) {
 		} else if (a == "--no-vsync") {
 			noVsync = true;
 		} else if (a == "--flat") {
-			flatShading = true; // unlit: pure glColor (lighting debug + weak GPUs)
+			flatShading = true; // unlit: glColor only
 		} else if (a == "--debug-grid") {
-			// Instrument only: the grid used to be drawn unconditionally in the
-			// play path, covering +/-9000 uu (2x past the walls) and reading as
-			// an endless "playground" floor (docs/VISUAL_BUGS_TODO.md V4).
 			debugGrid = true;
 		} else if (a == "--no-hexnet") {
-			// Instrument for VG6: draw the glass shell WITHOUT the honeycomb
-			// net, so the gate can difference the two frames and isolate the
-			// net's line pattern from the wall's own texture.
 			noHexNet = true;
 		} else if (a == "--no-audio") {
 			noAudio = true;
+		} else if (a == "--synth") {
+			synthOnly = true;
+		} else if (a == "--sounds") {
+			if (!need(v))
+				return 2;
+			soundsDir = v;
+			soundsFlag = true;
 		} else if (a == "--menu") {
-			menuAtStart = true; // verification hook: open menu on launch
+			menuAtStart = true;
 		} else if (a == "--shot-at-tick") {
 			if (!need(v))
 				return 2;
@@ -183,7 +173,6 @@ int main(int argc, char** argv) {
 		} else if (a == "--cam") {
 			if (!need(v))
 				return 2;
-			// Visual-verification hook: freecam at eye,tx,ty,tz (uu).
 			if (std::sscanf(v, "%f,%f,%f,%f,%f,%f", &camEye[0], &camEye[1],
 					&camEye[2], &camTarget[0], &camTarget[1], &camTarget[2]) != 6) {
 				std::fprintf(stderr, "bad --cam (want eye x,y,z, target x,y,z)\n");
@@ -199,6 +188,8 @@ int main(int argc, char** argv) {
 				return 2;
 			arenaDir = v;
 			arenaDirFlag = true;
+		} else if (a == "--shell") {
+			shell = true;
 		} else if (a == "--ballpos") {
 			if (!need(v))
 				return 2;
@@ -212,15 +203,13 @@ int main(int argc, char** argv) {
 				return 2;
 			forcedBoost = (float)atof(v);
 		} else if (a == "--nofennec") {
-			noFennec = true; // force the procedural box car (wheel/FX gates)
+			noFennec = true; // draw the box car
 		} else if (a == "--debug-colliders") {
-			debugColliders = true; // W6 instrument: draw collision proxies
+			debugColliders = true;
 		} else if (a == "--no-shake") {
 			noShake = true;
 		} else if (a == "--drive") {
-			// Harness hook: inject constant controls every frame (visual
-			// gates need a deterministic, scripted car pose without input).
-			// Format: throttle,steer,pitch,yaw,roll,jump,boost,handbrake.
+			// throttle,steer,pitch,yaw,roll,jump,boost,handbrake
 			if (!need(v))
 				return 2;
 			float f[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -247,17 +236,20 @@ int main(int argc, char** argv) {
 				return 2;
 			fxProbeTick = atoll(v);
 		} else if (a == "--calibrate") {
-			calibrate = true; // render palette quads only + screenshot, then exit
+			calibrate = true; // palette quads, one screenshot, then exit
 		} else if (a == "--help" || a == "-h") {
 			std::fprintf(stderr,
 				"usage: %s [--bot stationary|mirror|slow-chase] [--soak SECS] [--ticks N] [--seed S]\n"
 				"       [--menu] [--shot-at-tick N --shot-path P] [--shot-every N --shot-dir D]\n"
-				"       [--no-vsync] [--no-audio] [--meshdir DIR] [--arenadir DIR]\n"
+				"       [--no-vsync] [--no-audio] [--synth] [--sounds DIR] [--meshdir DIR] [--arenadir DIR] [--shell]\n"
+				"       --sounds DIR plays a local wav pack (default sound_assets/ when present); --synth keeps the procedural bed\n"
+				"       defaults: mesh collision_meshes, arena arena_assets/stadium_day\n"
+				"       --shell draws the analytic arena instead of the pack\n"
 				"visual-harness (debug): [--ballpos x,y,z] [--boost N] [--drive t,s,p,y,r,j,b,h]\n"
 				"       [--nofennec] [--debug-colliders] [--debug-grid] [--no-hexnet] [--no-shake]\n"
 				"       [--fx-probe goal|demo|pickup --fx-probe-tick N]\n"
-				"keys: WASD drive, Space jump, Shift boost, S/Ctrl slide, Q/E roll, C/B cam,\n"
-				"      F freecam, Esc menu, R/T resets, F1-F5 kickoffs, M mute, F12 screenshot\n",
+				"keys: WASD drive, L jump, K boost, Shift slide, Q/E roll, Space ball cam,\n"
+				"      J look-behind, F freecam, Esc menu, R reset car, C reset ball, 1-5 kickoffs, M mute, F12 screenshot\n",
 				argv[0]);
 			return 0;
 		} else {
@@ -266,7 +258,6 @@ int main(int argc, char** argv) {
 		}
 	}
 
-	// Settings (versioned .ini, contract source).
 	rl::Settings settings = rl::Settings::Defaults();
 	{
 		std::string err;
@@ -274,44 +265,51 @@ int main(int argc, char** argv) {
 			std::fprintf(stderr, "[game] settings load: %s (defaults)\n", err.c_str());
 	}
 
-	// ---- A6b: the ripped arena pack ---------------------------------------
-	// Precedence: the --arenadir FLAG wins over [arena] arena_dir in
-	// config/settings.ini.  A directory that yields no loadable pack is a
-	// LOUD FATAL (stderr, non-zero exit): there is never a silent fallback
-	// to the analytic shell.  With no flag and no INI key NOTHING happens:
-	// no pack is read, no GL object is created, the default path is
-	// byte-identical.
+	// --arenadir, else [arena] arena_dir. A blank value draws the shell.
+	// A missing key uses the stadium pack. A missing default pack draws the
+	// shell; any other directory with no pack is fatal.
 	rl::ArenaPack arenaPack;
 	bool useArenaPack = false;
-	{
-		std::string iniArena;
-		if (!arenaDirFlag &&
-			rl::ReadIniKey("config/settings.ini", "arena", "arena_dir", &iniArena))
-			arenaDir = iniArena;
+	if (!shell) {
+		if (!arenaDirFlag) {
+			std::string iniArena;
+			if (rl::ReadIniKey("config/settings.ini", "arena", "arena_dir", &iniArena))
+				arenaDir = iniArena;
+			else
+				arenaDir = rl::kDefaultArenaDir;
+		}
 		if (!arenaDir.empty()) {
-			if (!rl::LoadArenaPack(arenaDir, arenaPack)) {
+			const bool manifest = std::filesystem::is_regular_file(
+				std::filesystem::path(arenaDir) / "arena.json");
+			if (!manifest && !arenaDirFlag && arenaDir == rl::kDefaultArenaDir) {
+				std::fprintf(stderr,
+					"[game] arena pack not found at %s; drawing the shell\n",
+					arenaDir.c_str());
+			} else if (!rl::LoadArenaPack(arenaDir, arenaPack)) {
 				std::fprintf(stderr,
 					"[game] FATAL: arena dir '%s' holds no loadable arena pack "
 					"(expected the manifest arena.json): %s\n",
 					arenaDir.c_str(), rl::ArenaPackError(arenaPack));
 				return 1;
+			} else {
+				useArenaPack = true;
+				std::fprintf(stderr,
+					"[game] arena pack: dir=%s source=%s meshes=%zu(+%zu external) "
+					"placements=%zu(+%zu external) materials=%zu textures=%zu\n",
+					arenaDir.c_str(), arenaPack.sourcePackage.c_str(),
+					arenaPack.meshes.size(), arenaPack.externalMeshes.size(),
+					arenaPack.instances.size(), arenaPack.externalInstances.size(),
+					arenaPack.materials.size(), arenaPack.textures.size());
 			}
-			useArenaPack = true;
-			std::fprintf(stderr,
-				"[game] arena pack: dir=%s source=%s meshes=%zu(+%zu external) "
-				"placements=%zu(+%zu external) materials=%zu textures=%zu\n",
-				arenaDir.c_str(), arenaPack.sourcePackage.c_str(),
-				arenaPack.meshes.size(), arenaPack.externalMeshes.size(),
-				arenaPack.instances.size(), arenaPack.externalInstances.size(),
-				arenaPack.materials.size(), arenaPack.textures.size());
 		}
 	}
 
-	// Collision mesh: --meshdir wins, else [arena] mesh_dir, else RocketSim's
-	// built-in default path (./collision_meshes/). A directory that loads no
-	// Soccar mesh is a hard error, never a silent fallback to analytic shapes.
+	// --meshdir, else [arena] mesh_dir, else collision_meshes. A directory
+	// that loads no Soccar mesh is a hard error.
 	if (meshDir.empty())
 		meshDir = settings.arena.meshDir;
+	if (meshDir.empty())
+		meshDir = rl::kDefaultMeshDir;
 	Sim* sim = Sim::CreateSoccar(meshDir.empty() ? nullptr : meshDir.c_str());
 	if (!sim) {
 		std::fprintf(stderr, "[game] failed to create sim\n");
@@ -320,7 +318,7 @@ int main(int argc, char** argv) {
 	if (!meshDir.empty() && !sim->usingRealSoccar()) {
 		std::fprintf(stderr,
 			"[game] FATAL: mesh dir '%s' loaded no Soccar collision mesh "
-			"(expected %s/soccar/*.cmf; see docs/MESH_SETUP.md)\n",
+			"(expected %s/soccar/*.cmf)\n",
 			meshDir.c_str(), meshDir.c_str());
 		delete sim;
 		return 1;
@@ -345,8 +343,6 @@ int main(int argc, char** argv) {
 	}
 	rl::FennecLoad(); // CC-BY-4.0 community Fennec body (optional asset)
 	if (ballPosSet) {
-		// Harness hook: deterministic ball placement for FX/indicator capture
-		// (uses Sim's existing test teleport; not a gameplay path).
 		sim->SetBall(ballPos[0], ballPos[1], ballPos[2], 0, 0, 0);
 		std::fprintf(stderr, "[game] ballpos=%.1f,%.1f,%.1f (harness)\n",
 			(double)ballPos[0], (double)ballPos[1], (double)ballPos[2]);
@@ -359,9 +355,7 @@ int main(int argc, char** argv) {
 		std::fprintf(stderr, "[game] SDL_INIT_GAMECONTROLLER failed: %s\n", SDL_GetError());
 
 	rl::Renderer renderer;
-	// GRAPHICS45 G2: request GL 4.5 compatibility profile via SDL_GL attrs.
-	// (Renderer::Init re-asserts the same values before CreateWindow; both
-	// agree. No fallback — Init aborts loudly when 4.5-compat is unavailable.)
+	// 4.5 compatibility. Init aborts if that context cannot be created.
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
 	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
@@ -378,11 +372,9 @@ int main(int argc, char** argv) {
 		delete sim;
 		return 1;
 	}
-	// A6b: upload the ripped arena ONCE (static buffers, no per-frame work).
-	// The GL context is live now, so the upload can happen here — never in
-	// the frame loop.
+	// Upload the pack once. The GL context is live; the frame loop does not rebuild it.
 	if (useArenaPack) {
-		if (!renderer.BuildArenaPack(arenaPack)) {
+		if (!renderer.BuildArenaPack(arenaPack, arenaDir)) {
 			std::fprintf(stderr,
 				"[game] FATAL: the arena pack in '%s' holds no drawable geometry\n",
 				arenaDir.c_str());
@@ -410,8 +402,9 @@ int main(int argc, char** argv) {
 	camera.Params().transitionSpeed = settings.camera.transitionSpeed;
 	camera.Params().swivelSpeed = settings.camera.swivelSpeed;
 	camera.Params().shake = settings.camera.shake;
-	camera.Params().invertSwivel = settings.camera.invertSwivel;
-	camera.Params().snap = settings.camera.snap;
+		camera.Params().invertSwivel = settings.camera.invertSwivel;
+		camera.Params().snap = settings.camera.snap;
+		camera.Params().airHeading = settings.camera.airHeading;
 	if (!settings.camera.ballcam && camera.BallCam())
 		camera.ToggleBallCam();
 	if (settings.camera.ballcam && !camera.BallCam())
@@ -434,8 +427,6 @@ int main(int argc, char** argv) {
 	rlbot::BotStub bot(ParseBot(botName));
 	bool unlimitedBoost = false;
 	if (calibrate) {
-		// Palette ground truth through the game's own context: 5 fullscreen
-		// bands in exact game colors, straight to the screenshot.
 		renderer.BeginFrame(0, 0, 0);
 		const float pal[5][3] = {{0.14f, 0.44f, 0.19f}, {0.25f, 0.5f, 1.0f},
 			{0.10f, 0.35f, 0.90f}, {1.0f, 0.55f, 0.2f}, {0.9f, 0.9f, 0.9f}};
@@ -478,6 +469,23 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 	rl::Audio audio;
+	if (!noAudio && !synthOnly) {
+		const char* dir = soundsFlag ? soundsDir.c_str() : "sound_assets";
+		bool manifest = std::filesystem::is_regular_file(
+			std::filesystem::path(dir) / "manifest.txt");
+		if (soundsFlag && !manifest) {
+			std::fprintf(stderr,
+				"[game] FATAL: --sounds '%s' has no manifest.txt\n", dir);
+			delete sim;
+			return 1;
+		}
+		if (manifest && !audio.LoadPack(dir)) {
+			std::fprintf(stderr,
+				"[game] FATAL: sound pack '%s' did not load a cue\n", dir);
+			delete sim;
+			return 1;
+		}
+	}
 	bool audioOn = !noAudio && audio.Init();
 	float prevBoostHud = 0;
 	float prevBoostFx = 0; // pickup-burst edge, independent of audio
@@ -485,8 +493,9 @@ int main(int argc, char** argv) {
 	// Cosmetic 3-2-1. Rearmed on spawn; the sim keeps stepping.
 	uint64_t kickoffTick = 0;
 	auto armKickoff = [&]() { kickoffTick = sim->tick(); };
+	bool prevGround = true;
+	bool prevSuper = false;
 
-	// Menu wired to free-play actions.
 	rl::Menu menu(settings, rl::FreePlayActions{
 		[&]() { sim->ResetCarToSpawn(player); sim->ResetCarToSpawn(botIdx); armKickoff(); },
 		[&]() { sim->ResetBall(); },
@@ -530,7 +539,6 @@ int main(int argc, char** argv) {
 		// Escape as an ev.openMenu edge afterwards, which would toggle the
 		// menu right back (Esc looked dead). The poll edge is ignored once.
 		bool escToggledMenu = false;
-		// Discrete key events.
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_CONTROLLERDEVICEADDED ||
@@ -545,8 +553,7 @@ int main(int argc, char** argv) {
 			}
 			if (e.type == SDL_QUIT) {
 				if (soakSecs > 0) {
-					// Unattended harness mode: the desktop may close/reparent
-					// windows; log and keep measuring (timer ends the run).
+					// A soak keeps running if the window is closed; the timer ends it.
 					std::fprintf(stderr, "[game] SDL_QUIT ignored (--soak harness mode)\n");
 				} else {
 					std::fprintf(stderr, "[game] SDL_QUIT (window close / quit request)\n");
@@ -591,11 +598,8 @@ int main(int argc, char** argv) {
 		}
 
 		keyboard.Poll(ctl, ev);
-		// Gamepad merge (additive): the pad's analog stick owns throttle/steer
-		// when connected; digital buttons and edge events are OR-ed so either
-		// device can drive the car and neither cancels the other. A
-		// disconnected pad contributes nothing (keyboard-only behaviour is
-		// bit-identical to before).
+		// When a pad is connected its stick replaces throttle and steer.
+		// Buttons are OR-ed with the keyboard. No pad leaves the keyboard values alone.
 		{
 			rl::Controls gp;
 			rl::InputEvents ge;
@@ -687,10 +691,9 @@ int main(int argc, char** argv) {
 		if (freeCam)
 			drive = rl::Controls();
 		if (driveOverride)
-			drive = driveCtl; // harness input wins (visual gates)
+			drive = driveCtl; // scripted controls replace the player
 		sim->SetControls(player, drive.throttle, drive.steer, drive.pitch, drive.yaw,
 			drive.roll, drive.jump, drive.boost, drive.handbrake);
-		// Bot -> sim.
 		{
 			Sim::BodySample cs, bs;
 			sim->GetCar(botIdx, &cs);
@@ -724,20 +727,24 @@ int main(int argc, char** argv) {
 			sim->SetBoost(botIdx, 100.0f);
 		}
 		if (forcedBoost >= 0.0f) {
-			// Harness hook: hold a known boost value for gauge captures.
 			sim->SetBoost(player, forcedBoost);
 		}
-		// Audio events (engine spatial state is applied after the eye exists).
 		if (audioOn) {
-			if (drive.jump && !prevJumpHeld)
-				audio.PlayJump();
+			if (drive.jump && !prevJumpHeld) {
+				if (sim->IsOnGround(player))
+					audio.PlayJump();
+				else if (drive.pitch != 0 || drive.yaw != 0 || drive.roll != 0 || drive.steer != 0)
+					audio.PlayDodge();
+				else
+					audio.PlayDoubleJump();
+			}
 			float pb = sim->GetBoost(player);
 			if (!unlimitedBoost && pb - prevBoostHud >= 5.0f)
 				audio.PlayPickup(pb >= 99.0f);
 			prevBoostHud = pb;
 			prevJumpHeld = drive.jump;
 		}
-		// Pickup burst FX on the same edge, audio-independent (W5 feedback).
+		// Same boost-rise edge as the pickup blip, whether or not audio is on.
 		{
 			float pb = sim->GetBoost(player);
 			if (!unlimitedBoost && forcedBoost < 0 && pb - prevBoostFx >= 5.0f)
@@ -745,16 +752,12 @@ int main(int argc, char** argv) {
 			prevBoostFx = pb;
 		}
 
-		// Physics-first stepping.
 		uint64_t now = NowMs();
 		double dt = double(now - lastMs) / 1000.0;
 		lastMs = now;
 		if (dt < 0)
 			dt = 0;
 		sim->StepAccumulator(dt);
-		// No warmup exclusion: the frame clock resyncs after the first 3
-		// presented frames (see below), so GL-context creation stall never
-		// enters the accumulator. Every counted drop is real.
 		if (tickBudget > 0 && (long long)sim->tick() >= tickBudget)
 			running = false;
 		if (soakSecs > 0 && double(now - t0) / 1000.0 >= soakSecs)
@@ -783,7 +786,6 @@ int main(int argc, char** argv) {
 				(unsigned long long)sim->tick(), de.bumper, de.victim);
 		}
 
-		// Snapshot -> camera/render.
 		Sim::BodySample cs, bl;
 		sim->GetCar(player, &cs);
 		sim->GetBall(&bl);
@@ -828,11 +830,34 @@ int main(int argc, char** argv) {
 		snap.supersonic = sim->IsSupersonic(player);
 		snap.flipReset = sim->HasFlipReset(player);
 		snap.handbrake = ctl.handbrake;
-		// Render-only airborne heuristic: clearly off the ground or moving
-		// vertically fast. No sim coupling (no new Sim API).
+		if (audioOn) {
+			bool ground = sim->IsOnGround(player);
+			float s01 = speed / 2300.0f;
+			if (s01 > 1)
+				s01 = 1;
+			bool sliding = drive.handbrake && ground && speed > 300.0f;
+			float tires = (ground && !sliding && speed > 200.0f) ? s01 * 0.65f : 0;
+			float whoosh = (!ground && speed > 400.0f) ? s01 * 0.45f : 0;
+			float roll = (bl.z < 120.0f && snap.ballSpeed > 800.0f)
+				? std::min(0.3f, snap.ballSpeed / 5000.0f) : 0;
+			float fly = (bl.z > 200.0f && snap.ballSpeed > 900.0f)
+				? std::min(0.35f, snap.ballSpeed / 4000.0f) : 0;
+			if (fly > 0)
+				roll = 0;
+			audio.Loops(snap.boosting ? 0.8f : 0, tires, whoosh,
+				snap.supersonic ? 0.55f : 0, roll, fly);
+			if (ground && !prevGround)
+				audio.PlayLand();
+			if (snap.supersonic && !prevSuper)
+				audio.PlaySuper();
+			audio.SetSlide(sliding);
+			prevGround = ground;
+			prevSuper = snap.supersonic;
+		}
+		// Off the ground, or moving up or down faster than 250 uu/s.
 		snap.airborne = (cs.z > 45.0f) || (cs.vz > 250.0f) || (cs.vz < -250.0f);
 		{
-			// Frame angular speed from fwd/up change (flip / stall gate).
+			// Angular speed from the change in forward and up since the previous tick.
 			static float pF[3] = {1,0,0}, pU[3] = {0,0,1};
 			static uint64_t pT = 0;
 			uint64_t tk = sim->tick();
@@ -853,8 +878,20 @@ int main(int argc, char** argv) {
 		{
 			Sim::CarScrape scrape;
 			Sim::BallTouch touch;
-			if (sim->GetCarScrape(player, &scrape) && sim->GetBallTouch(player, &touch))
+			bool playerHit = false;
+			if (sim->GetCarScrape(player, &scrape) && sim->GetBallTouch(player, &touch)) {
 				contactSparks = rl::ClassifyContact(scrape, touch, nullptr);
+				playerHit = touch.hitThisTick;
+			}
+			if (audioOn) {
+				if (playerHit)
+					audio.PlayBall();
+				else {
+					Sim::BallTouch botTouch;
+					if (sim->GetBallTouch(botIdx, &botTouch) && botTouch.hitThisTick)
+						audio.PlayBall();
+				}
+			}
 		}
 
 		Sim::BodySample os;
@@ -887,6 +924,7 @@ int main(int argc, char** argv) {
 		camera.Params().shake = settings.camera.shake;
 		camera.Params().invertSwivel = settings.camera.invertSwivel;
 		camera.Params().snap = settings.camera.snap;
+		camera.Params().airHeading = settings.camera.airHeading;
 		if (freeCam) {
 			// Free flight: throttle dolly, steer orbit, jump/boost height.
 			float fvx = freeCenter[0] - freeEye[0], fvy = freeCenter[1] - freeEye[1],
@@ -920,41 +958,15 @@ int main(int argc, char** argv) {
 				freeEye[2] = 20;
 			camera.SetFreeView(freeEye, freeCenter);
 		} else {
-			// Supersonic threshold 2200 (G8 MEASURED) selects the extra
-			// dynamic distance/FOV kick (Rocket Science #2). #2 air heading:
-			// nose vector + velocity + airborne heuristic select the air
-			// branch (presentation-only; filled render-only above, no sim).
+			// The chase rig owns distance and field of view. 2200 uu/s is supersonic.
+			// Wheel contact, so a wall or the ceiling is a surface. The height check
+			// on snap.airborne is only for effects.
 			camera.Update(dtf, snap.carPos, snap.carYaw, snap.ballPos,
 				camera.BallCam(), snap.carSpeed, snap.carSpeed >= 2200.0f,
 				swivelX, swivelY, snap.carForward, snap.carVel,
-				snap.airborne);
+				!sim->IsOnGround(player), snap.carUp);
 		}
-		// Camera vs arena (1:1 feel, corrected 2026-10-21): RL does NOT
-		// reposition the chase eye against side/back walls — `Camera_TA`'s
-		// `ClipToField`/`ClipRate` is the replay/spectator clip, and the playing
-		// camera is free to enter wall geometry (hug a wall in RL and the wall
-		// fills the screen; ballcam near a goal shows through the back net).
-		// The old hard AABB clamp here (eye forced 120 uu inside
-		// +/-4096/+-5120/2048) was ours, not RL's, and it teleported the eye
-		// sideways instead of letting the rig sit where RL puts it. Removed.
-		// Kept: the vertical guards only — the floor (never see the underside
-		// of the pitch) and the ceiling inset, which `ClipToField` does cover.
-		{
-			float eye[3], ctr[3];
-			camera.Eye(eye);
-			camera.Center(ctr);
-			float cx = eye[0], cy = eye[1], cz = eye[2];
-			if (cz > 2048 - 120) cz = 2048 - 120;
-			if (cz < 40) cz = 40;
-			if (cx != eye[0] || cy != eye[1] || cz != eye[2]) {
-				float ne[3] = {cx, cy, cz};
-				camera.SetFreeView(ne, ctr);
-			}
-		}
-		// Camera shake (W5): a presentation-only overlay on the eye. It never
-		// touches CameraParams (the 1:1 defaults stay exact) and is disabled
-		// for freecam/capture, with --no-shake, and by the [camera] shake
-		// setting (RL default ON), so gate captures stay pixel-stable.
+		// Shake offsets the eye. Off unless selected, and skipped in freecam or with --no-shake.
 		if (!freeCam && !noShake && settings.camera.shake) {
 			float sh[2];
 			fx.ShakeOffset(sh);
@@ -964,7 +976,7 @@ int main(int argc, char** argv) {
 				camera.Center(ctr);
 				eye[0] += sh[0]; eye[1] += sh[1];
 				ctr[0] += sh[0] * 0.5f; ctr[1] += sh[1] * 0.5f;
-				camera.SetFreeView(eye, ctr);
+				camera.SetRenderedPose(eye, ctr);
 			}
 		}
 		// Ear is the published camera eye (after shake). Engine and the goal
@@ -1005,8 +1017,6 @@ int main(int argc, char** argv) {
 			fx.Update(fdt, snap);
 			goalBurst.Update(fdt);
 		}
-		// Harness FX probe (W5 gates): arm one effect on a fixed, scripted
-		// tick so its geometry can be captured deterministically.
 		if (!fxProbe.empty() && (long long)sim->tick() == fxProbeTick) {
 			if (fxProbe == "goal") {
 				fx.OnGoal();
@@ -1020,24 +1030,10 @@ int main(int argc, char** argv) {
 
 		renderer.BeginFrame();
 		camera.Apply(1280, 720);
-		// ---- Turf: mowed stripes + markings + wall-base glow lines --------
-		// The debug ground grid is an instrument only (--debug-grid) and is drawn
-		// BEFORE the turf so the turf occludes it, clipped to the arena extents
-		// (x +/-4096, y +/-5120) rather than the old +/-9000.
+		// Debug grid goes under the turf so the turf covers it.
 		if (debugGrid)
 			renderer.DrawGroundGrid(5120.0f, 512.0f);
-		// G3c: arena draw buckets (GRAPHICS45 §5/G3 step 3). Replaces the
-		// per-frame immediate arena calls below (turf B1 + markings B2 overlay +
-		// glass/crown/round walls C1-C4 + trim/beams/cove/skirt/goal-trim A/D +
-		// ceiling B4 + bases B3/B7 + skirts B5/B6 + opaque goal boxes A5/A6).
-		// Order inside buckets (opaque -> B2 overlay -> glass) matches the old
-		// state sandwiches (V5/V6); B2 keeps depth-test OFF and C5/C6 keep
-		// depth-write OFF inside their own draws. Grid instrument above stays.
-		//
-		// A6b: with a ripped arena pack loaded, the PACK replaces the analytic
-		// shell (its own floor/walls/ceiling) — drawing both would double the
-		// geometry and z-fight the two floors. Without a pack this is the
-		// untouched shipped path.
+		// A loaded pack replaces the analytic shell. Drawing both z-fights the floors.
 		if (renderer.HasArenaPack())
 			renderer.DrawArenaPack();
 		else
@@ -1085,14 +1081,11 @@ int main(int argc, char** argv) {
 			rl::DrawCar(renderer, osnap, false);
 		}
 		rl::DrawBall(renderer, snap);
-		// G3c: goal interiors via buckets (C5 shells + C6 weave, depth-write
-		// OFF inside). Stays AFTER cars/ball: C5/C6 blend OVER cars today.
-		// A6b: the ripped arena carries its own goal, so the analytic goal
-		// interiors are skipped when a pack is loaded.
+		// After the cars, so the goal glass blends over them. Skipped when a pack is loaded.
 		if (!renderer.HasArenaPack())
 			renderer.DrawArenaGoalInteriors(sim->usingRealSoccar());
 		if (debugColliders) {
-			// W6 instrument: x-ray collision proxies over the shaded scene.
+			// Over the shaded scene, with the depth test off.
 			glDisable(GL_DEPTH_TEST);
 			rl::DrawDebugColliders(renderer, snap, osnap);
 			// Pad pickup cylinders (real radii 208 big / 144 small).
@@ -1107,7 +1100,7 @@ int main(int argc, char** argv) {
 						16, 1.0f, 0.85f, 0.2f, 0.6f);
 				}
 			}
-			// Analytic arena shell bounds + goal mouths (1:1 numbers).
+			// Shell, then both goal mouths.
 			renderer.DrawWireBox(0, 0, 1022, 8192, 10240, 2044, 0.3f, 0.7f, 1.0f, 0.8f);
 			for (int g = 0; g < 2; g++) {
 				float ys = g == 0 ? 5120.0f : -5120.0f;
@@ -1130,11 +1123,6 @@ int main(int argc, char** argv) {
 		fx.DrawWheelEmbers(renderer, snap);
 		fx.DrawContactSparks(renderer, contactSparks);
 		if (menu.IsOpen()) {
-			// RL-style SETTINGS panel: full-screen dim, centered card with a
-			// title bar, section sub-bars, a cyan selection bar, right-
-			// aligned values (binding pills), scroll-follow and a footer
-			// with hints. Data comes straight from Menu::RenderText() so
-			// the view can never diverge from settings.ini (schema v1).
 			const auto& items = menu.items();
 			int sel = menu.selected();
 			std::vector<std::string> lines = menu.RenderText();
@@ -1165,11 +1153,10 @@ int main(int argc, char** argv) {
 			if (py < 8) py = 8;
 			renderer.FillRect2D(0, 0, 1280, 720, 0.01f, 0.02f, 0.04f, 0.72f);
 			renderer.FillRect2D(px, py, pw, ph, 0.05f, 0.08f, 0.14f, 0.96f);
-			// Title bar (RL blue) + accent line.
 			renderer.FillRect2D(px, py, pw, topH, 0.07f, 0.28f, 0.55f, 1.0f);
 			renderer.FillRect2D(px, py + topH - 3, pw, 3, 0.15f, 0.75f, 0.95f, 1.0f);
 			renderer.DrawText2D(px + 24, py + 10, "SETTINGS", 3, 1, 1, 1);
-			renderer.DrawText2D(px + pw - 320, py + 14, "ROCKET LEAGUE-STYLE  |  schema v1", 1,
+			renderer.DrawText2D(px + pw - 320, py + 14, "ROCKET LEAGUE-STYLE", 1,
 				0.75f, 0.85f, 0.95f);
 			if (menu.IsCapturing())
 				renderer.DrawText2D(px + 24, py + 28, menu.CapturePrompt().c_str(), 1, 1.0f,
@@ -1248,7 +1235,6 @@ int main(int argc, char** argv) {
 					renderer.DrawText2D(vx, ry + 4, val.c_str(), 2, vr, vg, vb);
 				}
 			}
-			// Scrollbar.
 			if ((int)lines.size() > kRows + 1) {
 				float frac = float(first - 1) / float((int)lines.size() - 1);
 				float h = float(last - first) / float((int)lines.size() - 1);
@@ -1263,7 +1249,6 @@ int main(int argc, char** argv) {
 				"Up/Down navigate   Enter rebind/adjust   Del unbind   Esc close", 1, 0.7f,
 				0.8f, 0.9f);
 		}
-		// HUD state line (always on).
 		{
 			char hud[160];
 			std::snprintf(hud, sizeof(hud), "%s SPD %.0f TICK %u%s",
@@ -1289,11 +1274,8 @@ int main(int argc, char** argv) {
 				0.10f, 0.12f, 0.16f, 0.9f);
 			const int SEG = 26;
 			float sweep = 260.0f * frac;
-			// Fixed 10-degree segments across the FULL 260-degree sweep, with
-			// the last one clipped to the filled fraction: the arc length is
-			// then exactly linear in boost (the old code shrank both the
-			// segment count and each segment's width by frac, making the arc
-			// grow as frac^2 — VG5 measured 65 deg at boost=50, not 130).
+			// Fixed 10-degree steps across the 260-degree sweep. The last step
+			// is clipped, so arc length stays linear in boost.
 			for (int s = 0; s < SEG; s++) {
 				float t0 = float(s) / SEG, t1 = float(s + 1) / SEG;
 				if (t0 >= frac) break;
@@ -1312,7 +1294,6 @@ int main(int argc, char** argv) {
 				renderer.DrawLine2D(cx + c * rIn, cy + s2 * rIn,
 					cx + c * rOut, cy + s2 * rOut, 3.0f, 0.95f, 0.95f, 0.95f, 0.9f);
 			}
-			// Number + label, centered on the dial.
 			char num[8];
 			std::snprintf(num, sizeof(num), "%.0f", (double)snap.boost);
 			int w = (int)std::strlen(num) * 24;
@@ -1347,9 +1328,7 @@ int main(int argc, char** argv) {
 		renderer.EndFrame();
 		frames++;
 		if (frames <= 3) {
-			// Clock resync: window/GL creation blocks the loop during
-			// startup; exclude it from the physics accumulator so the
-			// soak gate measures the running loop only (SOAK_PLAN.md).
+			// Window and GL setup stall the first frames. Drop that gap from the accumulator.
 			lastMs = NowMs();
 		}
 
@@ -1373,8 +1352,6 @@ int main(int argc, char** argv) {
 
 	rl::Renderer::Pacing pc = renderer.Stats();
 	rl::Renderer::Counters rc = renderer.Stats3D();
-	// A6b: the ripped arena's own per-frame budget (the [game] exit line above
-	// stays byte-identical for the default path).
 	if (renderer.HasArenaPack()) {
 		const rl::Renderer::ArenaPackStats& as = renderer.ArenaPackInfo();
 		std::fprintf(stderr,
@@ -1393,15 +1370,8 @@ int main(int argc, char** argv) {
 		(unsigned long long)rc.trisTotal, (unsigned long long)rc.drawsTotal,
 		(unsigned long long)rc.glErrors, rl::FennecTriCount(), rl::FennecVertCount());
 
-	// No exit-time settings save: the shipped config/settings.ini is the
-	// DEFAULTS contract (ROUNDTRIP asserts it), so silent persistence of
-	// live session state (a Space ballcam toggle, an unsaved menu tweak)
-	// would corrupt it on every run. Persist deliberately via the menu's
-	// "Save & close" action instead.
-	// Release the arena textures while the GL context is still live. This is
-	// the counterpart to the lazy Build*() uploads in ArenaTextures.cpp; it is
-	// a real teardown step, not decoration (the Fennec VBO path does the same
-	// in FennecShutdown()).
+	// Exit does not write settings. The menu save action does.
+	// Free the arena textures while the GL context is still current.
 	rl::FreeArenaTextures();
 	delete sim;
 	return 0;

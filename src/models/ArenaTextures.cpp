@@ -1,19 +1,4 @@
-// ArenaTextures.cpp — in-code arena surface textures (A4).
-//
-// WHY THIS EXISTS
-// ---------------
-// The arena used to be flat-colored primitives: the turf was 16 solid green
-// boxes, the walls were a tinted quad plus a line hex-net, the ceiling was two
-// solid boxes. Nothing was UV mapped, so no surface carried detail at the
-// pixel level and the palette could only be changed by retuning one RGB value
-// per element.
-//
-// This module gives each arena surface a real, procedurally generated texture
-// and the draw sites UV-map their quads onto it. The colors encoded here are
-// the SAME values the VISUAL_PARITY_LEDGER already classified as TUNED, so the
-// measured look is preserved while the detail increases.
-//
-// License: 100% arithmetic. No Psyonix assets, no external images, no decoders.
+// ArenaTextures.cpp — procedural arena surface textures.
 #include "ArenaTextures.h"
 
 #include <GL/gl.h>
@@ -68,24 +53,14 @@ inline float ValueNoise(float x, float y) {
     return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
 }
 
-// Upload an RGB buffer as a cached GL_TEXTURE_2D. `repeat` controls the wrap
-// mode on both axes. G4 mipmap chains: the full chain is generated ONCE here
-// at upload (never in the frame loop) with trilinear minification, so distant
-// turf/hex-net minifies to a stable average instead of shimmering — and
-// minified fetches sample small mips instead of the full-res sheet.
-extern "C" void glGenerateMipmap(unsigned int target);  // GL 3.0+ core entry,
-// linked from libGL directly; our context is 4.5-compat (G2), no loader needed.
+// Cached GL_TEXTURE_2D. The mip chain is built once here, not in the frame loop.
+extern "C" void glGenerateMipmap(unsigned int target); // resolved from libGL
 #ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
 #define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
 #endif
 
-// Finish a freshly uploaded GL_TEXTURE_2D (must be bound): build the mip
-// chain, select trilinear min / bilinear mag filtering, and enable anisotropic
-// filtering when the driver exposes GL_EXT_texture_filter_anisotropic. The
-// aniso cap is 4x (R4-class GPUs incl. llvmpipe fallback); the driver max is
-// queried and the request clamped into [1, min(max, cap)]. Logs one line on
-// first use with the queried max and the chosen value.
+// Bound texture: mip chain, trilinear min, bilinear mag. Anisotropy is capped at 4.
 void FinishUploadChains() {
     glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
@@ -97,7 +72,7 @@ void FinishUploadChains() {
     float chosen = 1.0f, maxAniso = 1.0f;
     if (hasAniso) {
         glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
-        const float kAnisoCap = 4.0f;  // G4: R4-class cap
+        const float kAnisoCap = 4.0f;
         chosen = maxAniso < kAnisoCap ? maxAniso : kAnisoCap;
         if (chosen < 1.0f) chosen = 1.0f;
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, chosen);
@@ -105,7 +80,7 @@ void FinishUploadChains() {
     static bool logged = false;
     if (!logged) {
         logged = true;
-        std::fprintf(stderr, "[tex] G4 chains: trilinear mips, aniso %s "
+        std::fprintf(stderr, "[tex] trilinear mips, aniso %s "
                              "(max=%.1f, chosen=%.1f)\n",
                      hasAniso ? "on" : "off", maxAniso, chosen);
     }
@@ -178,17 +153,14 @@ void BuildTurfMarkingsTexture() {
                  GL_UNSIGNED_BYTE, img);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-    FinishUploadChains();  // CLAMP wrap preserved; G4 chained filters
+    FinishUploadChains(); // clamp wrap stays; this adds the mip chain
     g_mark = tex;
 }
 
 // ---------------------------------------------------------------------------
 // Hex-net glass sheet.
 //
-// The hexagon net is generated at the real 420 uu cell pitch: the sheet is
-// 512 texels across one 2520 uu span of wall (6 cells), so a draw site can
-// simply set its UV repeat to span/2520 and the net lands at 420 uu exactly.
-// VG6 measures the row spacing, so this number is load-bearing.
+// 420 uu cell. UV repeat is span/2520 so the net lands on that pitch.
 // ---------------------------------------------------------------------------
 
 unsigned g_hex = 0;
@@ -250,7 +222,7 @@ void BuildWallBaseTexture() {
 namespace texturegen {
 
 void FillTurf(unsigned char* img) {
-    // Ledger TUNED greens for the 16 mowed stripes.
+    // Two greens for the 16 mowed stripes.
     const float darkR = 0.11f, darkG = 0.52f, darkB = 0.09f;
     const float liteR = 0.14f, liteG = 0.60f, liteB = 0.11f;
     for (int y = 0; y < kTurfH; y++) {
@@ -268,9 +240,7 @@ void FillTurf(unsigned char* img) {
         br *= 1.0f + 0.06f * side;
         bb *= 1.0f - 0.08f * side;
         for (int x = 0; x < kTurfW; x++) {
-            // Grass grain: two octaves of value noise, low amplitude so the
-            // floor stays within a couple of luma steps of the flat fill the
-            // gates were tuned against (VG14 needs >=60% green dominance).
+            // Two octaves of value noise, low amplitude.
             float n = ValueNoise(x * 0.28f, y * 0.28f) * 0.6f +
                       ValueNoise(x * 0.95f, y * 0.95f) * 0.4f;
             float k = (n - 0.5f) * 0.16f;  // +/-0.08 relative brightness
@@ -326,8 +296,7 @@ void FillTurfMarkings(unsigned char* img) {
 }
 
 void FillPlainGlass(unsigned char* img) {
-    // Same base as the net sheet, minus the net: this is what --no-hexnet draws,
-    // so the VG6 differential measures only the net lines.
+    // Same base as the net sheet, with no net.
     const float baseR = 0.07f, baseG = 0.27f, baseB = 0.95f;
     for (int y = 0; y < kHexH; y++) {
         for (int x = 0; x < kHexW; x++) {
@@ -364,12 +333,7 @@ void FillHexNet(unsigned char* img) {
     const float Rx = hPeriodX / std::sqrt(3.0f);
     const float kPhase = (float)M_PI / 6.0f;            // 30 deg (see above)
 
-    // Base: the ledger's glass tint. Identical to the net-free sheet so the
-    // --no-hexnet differential isolates the net itself. The sheet carries the
-    // FINAL albedo (draw sites multiply WHITE): the old squared-tint product
-    // left kickoff-distance walls at L~14 (VG15 needs L>24), and splitting
-    // albedo across two layers only invited a repeat. Blue dominance is easy
-    // (B stays near-saturated while R/G carry the luma VG15 reads).
+    // Same base as the net-free sheet. Draw sites multiply white, so this is the albedo.
     const float baseR = 0.07f, baseG = 0.27f, baseB = 0.95f;
     for (int y = 0; y < kHexH; y++) {
         for (int x = 0; x < kHexW; x++) {
@@ -381,16 +345,8 @@ void FillHexNet(unsigned char* img) {
         }
     }
 
-    // Seam wire. lineW is the HALF-width in texels; keep it thin so VG6's
-    // ">=90% of wall pixels stay blue-dominant" hue check holds.
-    // Column parity: alternate hexagon columns draw at full vs 0.82
-    // brightness (panel-to-panel variation, exactly the RL read). This is also
-    // load-bearing for VG6: a perfectly uniform honeycomb has vertical seams
-    // every HALF period (182 uu) at near-equal strength, so the
-    // autocorrelation ties 46 px vs 91 px and the winner is noise. Alternating
-    // columns breaks the half-period symmetry, so the true 363.73 uu period
-    // dominates robustly. Dim parity stays blue-dominant, and only seam pixels
-    // are touched — the base (and the --no-hexnet sheet) stay uniform.
+    // lineW is the half-width in texels. Alternate columns at 0.82 so a half-period seam
+    // does not match the full 363.73 uu period.
     const float lineW = 0.7f;
     const float seamR = 0.90f, seamG = 0.95f, seamB = 1.00f;
     const float dimF = 0.82f;
@@ -462,10 +418,7 @@ void FillGoalInterior(unsigned char* img) {
 }
 
 void FillCeiling(unsigned char* img) {
-    // Base panel. NOTE on brightness: the draw site multiplies this sheet by a
-    // WHITE glColor (the old dark tint double-darkened the product to L~5 and
-    // the ceiling only read via the false-ceiling trim slabs). The base below
-    // lands the lit render at L~28, clear of VG15's near-black bound (L>24).
+    // Draw sites multiply this sheet by white.
     const float baseR = 0.17f, baseG = 0.22f, baseB = 0.31f;
     for (int y = 0; y < kCeilH; y++)
         for (int x = 0; x < kCeilW; x++) {
@@ -482,15 +435,7 @@ void FillCeiling(unsigned char* img) {
 }
 
 void FillWallBase(unsigned char* img) {
-    // Wall-base fillet concrete. V runs across the quarter arc: v=0 is the
-    // floor contact (scuffed darker), v=1 meets the glass (lighter). Draw
-    // sites map the arc by ARC LENGTH, so one sheet = one quarter arc and the
-    // texel density is uniform around the bend.
-    //
-    // Palette discipline (VG11): the lit wall-base band must stay "curbish"
-    // (r 18..110, g 28..130, b 35..155, b>=r, b>g), i.e. close to the old
-    // flat (0.20,0.28,0.37). The sheet mean sits on that value with low
-    // amplitude detail so every texel stays in band.
+    // v=0 is the floor contact, v=1 meets the glass. One sheet is one quarter arc.
     for (int y = 0; y < kBaseH; y++) {
         float t = (float)y / (kBaseH - 1);   // 0 floor contact .. 1 glass line
         float br = 0.155f + 0.085f * t;

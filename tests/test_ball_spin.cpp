@@ -1,10 +1,6 @@
-// Ball-spin contract. The render snapshot has no ball spin. Physics angVel
-// is real; RocketSim leaves the ball basis at identity (noBallRot). This
-// test reads Sim::GetBallSpin only. It does not write a physics result.
-//
-// A marked body point must stay fixed while spin is zero, and must move
-// about the physics spin axis by |ω|·dt when the ball is rolling.
-// Build: see Makefile /tmp/t_bspin.
+// Ball orientation is the integral of physics angVel. Read-only.
+// noBallRot leaves the body basis at identity.
+// A marked point stays fixed at zero spin and moves by |w|*dt when rolling.
 #include <cmath>
 #include <cstdio>
 

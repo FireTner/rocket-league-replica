@@ -1,23 +1,4 @@
-// ArenaRip.h — the arena-pack reader (phase A6a of the arena 1:1 order).
-//
-// Reads a *ripped arena pack* (`rl-arena-pack/1`, see docs/ARENA_PACK.md) into
-// memory: the manifest, the binary blob, the mesh / instance / material /
-// texture tables, and the CPU-decoded RGBA8 pixels of every diffuse texture.
-//
-// The pack is Psyonix-owned data.  It is a RUNTIME INPUT: it lives under the
-// gitignored `arena_assets/` directory (or anywhere outside the repository) and
-// is never committed (AGENTS.md rule 1).  A missing pack is a normal, clean
-// state — callers must handle a false return and read ArenaPackError().
-//
-// Ownership: `src/models` is presentation (CONTRACTS.md v2).  This file is
-// deliberately free of GL, SDL and windowing: the reader is plain C++ + STL so
-// it is testable headless (phase A6a's contract test) and so the GL side
-// (phase A6b) can be a thin upload layer.
-//
-// No GL calls, no global state, no file writes: LoadArenaPack() only reads.
-// Determinism: the same pack always loads to the same tables (the pack itself
-// is byte-deterministic; the reader preserves the manifest's table order and
-// never sorts anything the manifest already ordered).
+// ArenaRip.h — reads an rl-arena-pack directory into meshes, materials, and RGBA8.
 #pragma once
 
 #include <cstdint>
@@ -51,7 +32,7 @@ struct ArenaTexture {
   std::vector<uint8_t> rgba;    // decoded, width*height*4, always RGBA8
   std::vector<uint8_t> blocks;  // original DXT1/DXT5 bytes; empty for rgba8
   bool valid = false;
-  std::string name;  // A6a addition: the texture name (diagnostics / lookup)
+  std::string name;
   bool lightmap = false;  // /2: NormalizedAverage bake (not a diffuse)
 };
 
@@ -125,19 +106,8 @@ struct ArenaMaterial {
   int texture = -1;
 };
 
-// The whole pack.
-//
-// The five vectors below are the contract of phase A6a; the members after
-// `error` are A6a additions (documented in the A6a round report) that the
-// contract's single-list fields could not express:
-//
-//   * the pack holds TWO mesh tables (the package's own exports and the meshes
-//     it only imports) and TWO instance tables.  `meshes` / `instances` are the
-//     package's own (119 / 451 for the DFH Stadium day pack); the imported
-//     ones live in `externalMeshes` / `externalInstances` (4 / 26) so the
-//     primary counts stay exactly what the manifest counts.
-//   * `blobSha256*` report whether the manifest recorded the blob's hash and
-//     what the reader computed for it.
+// The pack holds two mesh tables and two instance tables.
+// meshes/instances are the package's own; imports live in the external* vectors.
 struct ArenaPack {
   std::string format;
   int formatVersion = 0;
@@ -155,7 +125,6 @@ struct ArenaPack {
   std::vector<ArenaTexture> textures;
   std::string error;
 
-  // --- A6a additions (additive only; the contract above is unchanged) -------
   std::vector<ArenaMesh> externalMeshes;      // meshes the package imports
   std::vector<ArenaInstance> externalInstances;  // placements of those meshes
   std::map<std::string, uint32_t> externalMeshIndexByName;
@@ -201,8 +170,7 @@ bool ComputeInstanceAabb(const ArenaPack& p, const ArenaInstance& inst,
 // The error message of a failed load ("" when the pack loaded fine).
 const char* ArenaPackError(const ArenaPack& p);
 
-// A6a addition: find a mesh by name in either mesh table (the package's own
-// first, then the imported ones).  Returns nullptr when the name is unknown.
+// Own meshes first, then imports. Returns nullptr when the name is unknown.
 const ArenaMesh* FindArenaMesh(const ArenaPack& p, const std::string& name);
 
 }  // namespace rl

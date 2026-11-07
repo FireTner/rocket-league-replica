@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""verify_vs_rocketsim.py — A3 headless check: our tables vs RocketSim authority.
-
-Asserts every value in src/physics/CarPresets.h and src/physics/Tuning.h
-against third_party/RocketSim sources. MIT only. RocketSim (c) 2022 ZealanL.
-
-Usage:
-    python3 src/physics/verify_vs_rocketsim.py [--rocketsim third_party/RocketSim]
-Exit code 0 = all checks pass, 1 = any MISMATCH / missing file.
-"""
+"""Check CarPresets.h and Tuning.h against RocketSim (MIT © 2022 ZealanL)."""
 import argparse
 import math
 import re

@@ -1,18 +1,18 @@
-// Renderer.cpp — SDL2 + OpenGL 4.5 Compatibility fixed-function renderer.
-// GRAPHICS45 §2.4: GL 4.5-compat hard-target (fixed-function keeps running,
-// VBOs/FBOs/GLSL 4.50-compat first-class). No fallback, no core-only code.
+// Renderer.cpp — SDL2 window and fixed-function draws on a GL 4.5 compatibility context.
 #include "Renderer.h"
 #include "Font.h"
 #include "models/ArenaShell.h"
 #include "models/ArenaRip.h"
 #include "render/PbrGl.h"
 #include "settings/Settings.h"
+#include "stb_image.h"
 #include <GL/gl.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <map>
 #include <vector>
 
@@ -31,30 +31,23 @@ bool Renderer::Init(int w, int h, bool vsync) {
             return false;
         }
     }
-    // GRAPHICS45 G2: hard-target GL 4.5 Compatibility, no fallback.
-    // Fixed-function (glBegin/glEnd, GL_NORMALIZE) keeps running under 4.5-compat;
-    // VBOs/FBOs/GLSL 4.50-compat are first-class. No core-profile-only code.
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 16);
-    // [render] msaa/max_fps/pacing_log (schema v1 additive, defaults keep the
-    // shipped behavior). msaa must be set before SDL_CreateWindow. msaa<=0
-    // keeps gated captures pixel-stable.
+    // Multisample must be set before the window is created. 0 disables it.
     vsync_ = vsync;
+    int msaa = 0;
     {
-        int msaa = 0;
         Settings tmp = Settings::Defaults();
         std::string err;
         if (Settings::Load("config/settings.ini", tmp, &err)) {
             msaa = tmp.render.msaa;
-            // G5: same tolerant load — missing keys keep shipped behavior
-            // (limiter off, no CWD log spray). Clamped below / in Migrate.
             maxFps_ = tmp.render.maxFps;
             pacingLog_ = tmp.render.pacingLog;
-            // G6a: PBR-lite opt-in (default OFF keeps gated captures stable).
             pbr_ = tmp.render.pbr;
+            packSpec_ = tmp.render.packSpec;
         } else if (tmp.render.msaa != 0) {
             msaa = tmp.render.msaa;
         }
@@ -96,11 +89,10 @@ bool Renderer::Init(int w, int h, bool vsync) {
         vsync ? "ON" : "OFF", ok);
     std::fprintf(stderr, "[render] GL_VENDOR=%s RENDERER=%s VERSION=%s\n",
         vendor, rendererStr, versionStr);
-    // G6a: report the PBR-lite path so captures/soaks are attributable.
     std::fprintf(stderr, "[render] pbr=%s (PBR-lite car/ball material)\n",
         pbr_ ? "ON" : "OFF");
-    // Hard-target gate: abort loudly when GL < 4.5. No 2.1/3.3 fallback,
-    // no llvmpipe path. Parse leading "major.minor" from VERSION.
+    std::fprintf(stderr, "[render] pack_spec=%s\n", packSpec_ ? "ON" : "OFF");
+    // Abort when the context is below GL 4.5. Parse leading major.minor from VERSION.
     {
         int major = 0, minor = 0;
         std::sscanf(versionStr, "%d.%d", &major, &minor);
@@ -113,6 +105,29 @@ bool Renderer::Init(int w, int h, bool vsync) {
             return false;
         }
     }
+#ifndef GL_MAX_SAMPLES
+#define GL_MAX_SAMPLES 0x8D57
+#endif
+    {
+        GLint samples = 0, sampleBuffers = 0, maxSamples = 0;
+        glGetIntegerv(GL_SAMPLES, &samples);
+        glGetIntegerv(GL_SAMPLE_BUFFERS, &sampleBuffers);
+        glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+        const int multisample = glIsEnabled(GL_MULTISAMPLE) ? 1 : 0;
+        std::fprintf(stderr,
+            "[render] msaa requested=%d GL_SAMPLES=%d GL_SAMPLE_BUFFERS=%d "
+            "GL_MAX_SAMPLES=%d GL_MULTISAMPLE=%d\n",
+            msaa, (int)samples, (int)sampleBuffers, (int)maxSamples, multisample);
+        // Zero samples after a request is a refused buffer. Fewer than
+        // requested is the count the context created. No custom resolve.
+        if (msaa > 0 && samples <= 0) {
+            std::fprintf(stderr,
+                "[render] FATAL: msaa requested=%d but GL_SAMPLES=%d\n",
+                msaa, (int)samples);
+            Shutdown();
+            return false;
+        }
+    }
 
     glViewport(0, 0, w_, h_);
     glEnable(GL_DEPTH_TEST);
@@ -120,21 +135,7 @@ bool Renderer::Init(int w, int h, bool vsync) {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glShadeModel(GL_SMOOTH);
-    // ---- Lighting: key + fill + hemisphere-ish ambient ----------------------
-    // The previous model was ONE directional light with a large global ambient.
-    // Any surface whose normal had Ndot(dir) <= 0 was ambient-only, so the
-    // ceiling under-face (normal -Z) and the +x wall's inner face (normal -X)
-    // both rendered near-black (docs/VISUAL_BUGS_TODO.md V5).
-    //
-    // Now: a key light from above/front, a dim fill from below/behind so every
-    // downward- and backward-facing surface still receives some diffuse, and a
-    // small global ambient. GL_NORMALIZE renormalises the (now unit-length)
-    // authored normals under the modelview scale (VISUAL_BUGS_TODO.md V1's
-    // defence-in-depth requirement); the procedural box car's normals are
-    // already unit but rescaling is idempotent.
-    //
-    // Values are TUNED against the captured frames; WCAG-style relative
-    // luminance targets are in tools/verify/visual_gates.py (VG15).
+    // Key from above/front, fill from below/behind, so back faces still get diffuse.
     glEnable(GL_LIGHTING);
     glEnable(GL_LIGHT0); // key
     glEnable(GL_LIGHT1); // fill
@@ -153,19 +154,11 @@ bool Renderer::Init(int w, int h, bool vsync) {
         glLightfv(GL_LIGHT1, GL_DIFFUSE, fillDif);
         glLightfv(GL_LIGHT1, GL_AMBIENT, fillAmb);
         glLightModelfv(GL_LIGHT_MODEL_AMBIENT, amb);
-        // No specular: with GL_COLOR_MATERIAL the material colour drives
-        // ambient+diffuse only, so a fixed specular term is added on top of
-        // every surface and washes saturated tints toward white (it turned the
-        // blue glass panels grey). Keep it off and tune albedo instead.
+        // Specular stays 0. With GL_COLOR_MATERIAL a fixed specular washes tints toward white.
         GLfloat spec[] = {0.0f, 0.0f, 0.0f, 1.0f};
         glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
     }
-    // GL_NORMALIZE (not GL_RESCALE_NORMAL): DrawBox applies a NON-UNIFORM scale
-    // (glScalef(sx,sy,sz)) to a unit cube, so the box-face normals come out
-    // badly skewed. GL_RESCALE_NORMAL only divides by a single factor and left
-    // the glass panels' side face with a normal of (-1/10240,0,0), which every
-    // light then rejected -- the walls rendered flat grey. GL_NORMALIZE
-    // renormalises each normal, which is exact for diffuse-only lighting.
+    // GL_NORMALIZE, not GL_RESCALE_NORMAL: DrawBox scales the unit cube non-uniformly.
     glEnable(GL_NORMALIZE);
     glEnable(GL_COLOR_MATERIAL);
     glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
@@ -175,7 +168,7 @@ bool Renderer::Init(int w, int h, bool vsync) {
 
 void Renderer::Shutdown() {
     ArenaShell::ShutdownArenaBuckets(); // needs live GL context; no-op if unbuilt
-    ShutdownArenaPack(); // A6b: no-op (no GL call) when no pack was built
+    ShutdownArenaPack(); // no GL call when no pack was built
     if (ctx_) { SDL_GL_DeleteContext(ctx_); ctx_ = nullptr; }
     if (window_) { SDL_DestroyWindow(window_); window_ = nullptr; }
 }
@@ -184,21 +177,14 @@ void Renderer::BeginFrame(float r, float g, float b) {
     frameStart_ = NowMs();
     frameTris_ = frameLines_ = frameDraws_ = 0;
     glViewport(0, 0, w_, h_);
-    // Reset the whole draw state every frame. The 2D overlay helpers
-    // (OrthoScope / FillRect2D) toggle blending + depth, so leaving the state
-    // to whatever the previous frame's last helper did made every translucent
-    // surface (glass walls, ball indicator, pads, trails) render OPAQUE from
-    // frame 2 onward — a real bug the VG4/VG6 gates caught. State is now a
-    // pure function of this frame's draws.
+    // 2D helpers toggle blend and depth, so each frame resets that state.
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDisable(GL_TEXTURE_2D);
     if (!lightOn_) glDisable(GL_LIGHTING); else glEnable(GL_LIGHTING);
-    // G6a: PBR-lite branch. OFF = zero extra GL calls (byte-identical
-    // shipped path); ON = fixed-function specular + roughness + IBL lift
-    // (PbrGl, no shaders, no draws, idempotent per frame).
+    // Fixed-function specular and ambient. No extra draws.
     if (pbr_) {
         double t0 = NowMs();
         pbr::ApplyFrameState();
@@ -211,19 +197,14 @@ void Renderer::BeginFrame(float r, float g, float b) {
 }
 
 void Renderer::EndFrame() {
-    // Commit this frame's measured geometry cost + drain any GL errors.
-    // glGetError() is polled ONCE here (never inside a draw), so the budget
-    // instrumentation cannot stall the frame loop.
+    // One glGetError drain per frame, not per draw.
     counters_.tris = frameTris_;
     counters_.lines = frameLines_;
     counters_.drawCalls = frameDraws_;
     counters_.trisTotal += frameTris_;
     counters_.drawsTotal += frameDraws_;
     counters_.frames++;
-    // G6a: fill the G5 forward-compat stub from the PBR-lite path. The path
-    // is state-only (no extra draws/tris), so draws/tris stay 0 and ms is
-    // the measured BeginFrame apply cost (SDL ms clock: usually 0.00).
-    // Stays zero with pbr=false.
+    // PBR apply time. The path adds no draws.
     counters_.flagCost.ms = pbr_ ? pbrApplyMs_ : 0.0;
     counters_.flagCost.draws = 0;
     counters_.flagCost.tris = 0;
@@ -234,16 +215,12 @@ void Renderer::EndFrame() {
     }
     SDL_GL_SwapWindow(window_); // vsync-paced present; never waits on physics
     double dt = NowMs() - frameStart_;
-    counters_.frame_ms = dt; // G5: CPU wall-clock for the soak exit line
+    counters_.frame_ms = dt; // CPU ms for this frame, including the swap
     hist_[histI_] = dt; histI_ = (histI_ + 1) % kHist;
     if (histN_ < kHist) histN_++;
     frames_++;
     LogPacingIfDue();
-    // G5 max_fps limiter (bevy_framepace thinking): clamp + sleep, never tick
-    // loss. Engages ONLY when vsync is off — vsync-on keeps the shipped
-    // vsync-paced present untouched. The sleep only delays the present; the
-    // sim accumulator absorbs it as ordinary wall dt (backlog kept, only a
-    // >1 s backlog is dropped), so pacing never costs a physics tick.
+    // With vsync off, sleep until the frame is 1/maxFps long. The sleep only delays the swap.
     if (!vsync_ && maxFps_ > 0) {
         double target = 1000.0 / (double)maxFps_;
         double elapsed = NowMs() - frameStart_;
@@ -275,9 +252,7 @@ void Renderer::LogPacingIfDue() {
         "[pacing] frames=%llu avg=%.2fms p50=%.2fms p99=%.2fms (vsync 720p60 target 16.67ms)\n",
         (unsigned long long)cached_.frames, cached_.avg, cached_.p50, cached_.p99);
     std::fputs(line, stderr);
-    // V9: the CWD append below used to spray render_pacing.log on EVERY run
-    // (play, capture, soak — every pacing print). Now gated on [render]
-    // pacing_log (default OFF); opt in for soak analysis. stderr is unchanged.
+    // Append render_pacing.log only when pacingLog_ is set.
     if (pacingLog_) {
         FILE* f = std::fopen("render_pacing.log", "a");
         if (f) { std::fputs(line, f); std::fclose(f); }
@@ -515,12 +490,7 @@ void Renderer::DrawHexNet(float cx, float cy, float cz, float halfW, float halfH
     if (lightOn_) glEnable(GL_LIGHTING);
 }
 
-// ---- arena-accurate texture mapping (A4) ---------------------------------
-// A textured quad is a pure state sandwich: bind the texture, save whatever
-// GL_TEXTURE_2D / blend state the caller had, draw one GL_QUADS, restore.
-// Restoring matters because the frame state must stay a pure function of the
-// current frame's draws (the bug class that once made every translucent
-// surface opaque from frame 2 onward).
+// Bind, draw, restore texture and blend. Callers may be mid-frame.
 namespace {
 struct TextureScope {
     TextureScope(unsigned tex, bool blend) {
@@ -553,10 +523,7 @@ void Renderer::DrawTexturedQuadXZ(float cx, float cy, float z, float sx, float s
     // tints (the goal weave is shared by both team goals).
     glColor4f(r, g, b, a);
     const float hx = sx * 0.5f, hy = sy * 0.5f;
-    // Normal sign matters: the key/fill model shades by the normal, so a
-    // ceiling panel must face DOWN (normal -Z) to be lit from inside the arena.
-    // A +Z normal would leave the visible underside ambient-only and the ceiling
-    // would read near-black, which is the bug VISUAL_BUGS_TODO V5 fixed.
+    // Ceiling panels face down (normal -Z) so the underside is lit from inside.
     const float nz = faceDown ? -1.0f : 1.0f;
     glNormal3f(0, 0, nz);
     glBegin(GL_QUADS);
@@ -620,7 +587,7 @@ void Renderer::DrawTexturedOverlayXZ(float cx, float cy, float z, float sx, floa
     CountTris(2);
 }
 
-// ---- screen-space 2D helpers (ortho like FillRect2D; y down) -------------
+// Screen-space helpers. Ortho, y down.
 namespace {
 struct OrthoScope {
     OrthoScope(int w, int h)
@@ -797,40 +764,21 @@ void Renderer::DrawArenaGoalInteriors(bool meshMode) {
     ArenaShell::DrawArenaGoalInteriors(*this, meshMode);
 }
 
-// ---- A6b: the ripped arena (the engine half of --arenadir) -----------------
-//
-// The pack itself is read by src/models/ArenaRip.h (A6a, read-only here). This
-// block owns the GL side:
-//
-//   * ONE merged world-space VBO + EBO per bucket, uploaded ONCE with
-//     GL_STATIC_DRAW (nothing is re-uploaded per frame).
-//   * The bucket key is (texture/material id, spatial cell); the cell is the
-//     8192 uu grid cell of the placement's world AABB centre. One draw call
-//     per VISIBLE bucket per frame — the 119 meshes x 451 placements of the
-//     real map never become a per-mesh glBegin storm.
-//   * Per frame the buckets are frustum-culled by their world AABB (the
-//     planes come from the matrix the camera just installed) and the
-//     survivors are drawn with one fixed-function glDrawElements.
-//   * Fixed-function only: GL_TEXTURE_2D + the repo's key+fill+ambient
-//     lighting with GL_NORMALIZE (installed in Init) + the G4 mipmap
-//     precedent. No GLSL, no VAO, no per-frame compile, no readback.
-//
-// The pack is a Psyonix-owned RUNTIME input (gitignored `arena_assets/`); it
-// never enters the repository. With no pack the renderer creates NO GL
-// objects, issues NO extra calls and the default path is byte-identical.
+// Ripped arena GL side. One static VBO+EBO per bucket, frustum-culled.
+// No pack means this block creates no GL objects.
 namespace {
 
-// Spatial cell edge in uu (A6b contract).
+// Spatial cell edge, uu.
 constexpr int kArenaCell = 8192;
 // Neutral fallback material for the sections that carry NO diffuse texture
 // (392 of the 640 used section slots in the DFH Stadium day pack). A mid
 // grey: it reads as "unpainted" without competing with the textured parts.
 constexpr float kArenaFallback[3] = {0.55f, 0.55f, 0.55f};
-// Vertex layout: pos(3) normal(3) uvDiff(2) uvLm(2) tangent(3) = 13 floats.
-// A mesh that actually stores vertex colours appends rgb (16). This cook
-// does not, so the colour slot stays off.
-constexpr int kArenaStrideNoColor = 13;
-constexpr int kArenaStrideColor = 16;
+// Vertex layout: pos3 nrm3 uvDiff2 uvLm2 tan3 hand1 = 14.
+// hand is the tangent basis sign. Vertex colours, when stored, append rgb (17).
+constexpr int kArenaStride = 14;
+constexpr int kArenaStrideNoColor = 14;
+constexpr int kArenaStrideColor = 17;
 
 // Bucket key: (transparency, texture id, spatial cell). The pack's materials
 // carry no colour, only a diffuse texture, so the TEXTURE is the material id
@@ -852,7 +800,12 @@ struct ArenaKey {
     bool lmLuma = false;  // greyscale lightmap (StadiumBase only)
     bool nearEdge = false;  // goal trim: fade out when it frames the camera
     bool color = false;   // vertex colours are stored on these verts
+    bool clipThrough = false;  // field rim: pitch-facing side only
     float lmScale[3] = {1.f, 1.f, 1.f};
+    int mask = -1;    // mask texture id, -1 = slot off
+    int emis = 0;     // 0 off, 1 orange, 2 blue
+    int blend = 0;    // 0 off, 1 veil alpha, 2 mask alpha
+    bool tintTex = false;
     bool operator<(const ArenaKey& o) const {
         if (transparent != o.transparent) return transparent < o.transparent;
         if (unlit != o.unlit) return unlit < o.unlit;
@@ -861,6 +814,7 @@ struct ArenaKey {
         if (lmLuma != o.lmLuma) return lmLuma < o.lmLuma;
         if (nearEdge != o.nearEdge) return nearEdge < o.nearEdge;
         if (color != o.color) return color < o.color;
+        if (clipThrough != o.clipThrough) return clipThrough < o.clipThrough;
         if (tex != o.tex) return tex < o.tex;
         if (lm != o.lm) return lm < o.lm;
         if (nrm != o.nrm) return nrm < o.nrm;
@@ -868,18 +822,26 @@ struct ArenaKey {
         if (tint != o.tint) return tint < o.tint;
         for (int i = 0; i < 3; ++i)
             if (lmScale[i] != o.lmScale[i]) return lmScale[i] < o.lmScale[i];
+        if (nrm != o.nrm) return nrm < o.nrm;
+        if (mask != o.mask) return mask < o.mask;
+        if (emis != o.emis) return emis < o.emis;
+        if (blend != o.blend) return blend < o.blend;
+        if (tintTex != o.tintTex) return tintTex < o.tintTex;
         if (cx != o.cx) return cx < o.cx;
         if (cy != o.cy) return cy < o.cy;
         return cz < o.cz;
     }
 };
 
-// Field-skin unwrap (legacy fall-back only). Prefer mesh UV2 when the pack
-// stores it (rl-arena-pack/2 field floors). World unwrap is removed once the
-// surface resolves to a real diffuse UV channel.
-//   u = x/8192 + 1/2
-//   v = 1 - |y|/8192
+// World unwrap when the mesh has no UV2: u = x/8192 + 1/2, v = 1 - |y|/8192.
 constexpr float kFieldUvScale = 1.0f / 8192.0f;
+// MEASURED stadium_day 2026-11-06: Field_STD_Floor_Thick upward faces top
+// out at z=10, and the curb lip is authored at z≈0.7 under that cap.
+// Field_STD_Trim keeps 3296 of 3392 tris below z=20 (the ground rail);
+// the other 96 rise to z=156.8 and stay frame metal. Side_Trim's ground
+// rail is the same cut (156 tris). Above 20 uu is the wall.
+constexpr float kPitchClear = 10.5f;
+constexpr float kCurbLipZ = 20.f;
 // Sky dome radius, inside the camera far plane (40000) and outside the bowl.
 constexpr float kSkyRadius = 36000.0f;
 
@@ -936,6 +898,16 @@ bool ArenaDiffuseHasAlpha(const ArenaTexture& tex) {
         if (tex.rgba[i * 4u + 3u] < 250) return true;
     }
     return false;
+}
+
+// Field rim the ball-cam eye clips behind. These meshes are solid, so the
+// outside face hides the pitch. Emit keeps the pitch-facing side as CCW and
+// the draw culls the back.
+inline bool ArenaClipThrough(const std::string& mesh) {
+    return mesh == "Field_STD_Trim" || mesh == "Field_STD_Frame" ||
+           mesh == "Field_STD_Glow" || mesh == "FieldFrame_Outer" ||
+           mesh == "Side_Trim" || mesh == "Sideline_A" ||
+           mesh == "Goal_STD_Quarterpipe";
 }
 
 // Pale ice-blue veil for untextured glass (matches the fallbackTint "glass"
@@ -1084,6 +1056,7 @@ extern "C" void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
 #define GL_TEXTURE0 0x84C0
 #define GL_TEXTURE1 0x84C1
 #define GL_TEXTURE2 0x84C2
+#define GL_TEXTURE3 0x84C3
 #endif
 #ifndef GLchar
 typedef char GLchar;
@@ -1110,7 +1083,7 @@ layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNrm;
 layout(location = 2) in vec2 aUv0;
 layout(location = 3) in vec2 aUv1;
-layout(location = 4) in vec3 aTan;
+layout(location = 4) in vec4 aTan;
 layout(location = 5) in vec3 aColor;
 out vec2 vUv0;
 out vec2 vUv1;
@@ -1118,14 +1091,18 @@ out vec3 vNrm;
 out vec3 vTan;
 out vec3 vColor;
 out float vEyeDist;
+out float vHand;
+out vec3 vView;
 void main() {
   vUv0 = aUv0;
   vUv1 = aUv1;
   vNrm = gl_NormalMatrix * aNrm;
-  vTan = gl_NormalMatrix * aTan;
+  vTan = gl_NormalMatrix * aTan.xyz;
+  vHand = aTan.w;
   vColor = aColor;
   vec4 eye = gl_ModelViewMatrix * vec4(aPos, 1.0);
   vEyeDist = length(eye.xyz);
+  vView = -eye.xyz;
   gl_Position = gl_ModelViewProjectionMatrix * vec4(aPos, 1.0);
 }
 )";
@@ -1133,9 +1110,11 @@ constexpr const char* kArenaFs = R"(#version 450 compatibility
 uniform sampler2D uDiffuse;
 uniform sampler2D uLightmap;
 uniform sampler2D uNormal;
+uniform sampler2D uMask;
 uniform vec3 uTint;
 uniform vec3 uLmScale;
 uniform vec3 uEmit;
+uniform vec3 uEmissive;
 uniform int uUseDiff;
 uniform int uUseLm;
 uniform int uUseNrm;
@@ -1145,12 +1124,20 @@ uniform int uAlphaTest;
 uniform int uUseColor;
 uniform int uNearVeil;
 uniform int uGlowFade;
+uniform int uUseNormal;
+uniform int uUseMask;
+uniform int uUseEmissive;
+uniform int uUseSpec;
+uniform int uBlend;
+uniform int uTintTex;
 in vec2 vUv0;
 in vec2 vUv1;
 in vec3 vNrm;
 in vec3 vTan;
 in vec3 vColor;
 in float vEyeDist;
+in float vHand;
+in vec3 vView;
 void main() {
   vec3 albedo = uTint;
   float alpha = 1.0;
@@ -1202,18 +1189,38 @@ void main() {
   }
   float ndl = max(dot(n, normalize(vec3(0.35, 0.2, 0.9))), 0.0);
   float shade = mix(0.92, 1.0, ndl);
-  // The goal camera sits inside the force-field glass and the team
-  // glow. Both are a thick blue border at full strength. Far trim
-  // lights stay solid; the far dome keeps its veil.
-  // The goal-mouth shell is about 900 uu from that camera. Side trim
-  // and the far goal, from the chase camera, are past ~2600 uu.
+  if (uUseNormal != 0) {
+    vec3 ts = texture(uNormal, vUv0).xyz * 2.0 - 1.0;
+    if (ts.z * ts.z < 0.04) {
+      ts.z = sqrt(max(0.0, 1.0 - dot(ts.xy, ts.xy)));
+    }
+    vec3 T = normalize(vTan);
+    vec3 B = normalize(cross(n, T)) * vHand;
+    n = normalize(mat3(T, B, n) * ts);
+    ndl = max(dot(n, normalize(vec3(0.35, 0.2, 0.9))), 0.0);
+    shade = mix(0.38, 1.22, ndl);
+  }
+  if (uTintTex != 0) albedo *= uTint;
+  if (uUseMask != 0) alpha = texture(uMask, vUv0).a;
+  if (uBlend == 1) alpha = 0.18;
   float near = smoothstep(1400.0, 2600.0, vEyeDist);
   vec3 emit = uEmit * mix(0.0, 1.0, near);
   if (uNearVeil != 0) alpha *= mix(0.08, 1.0, near);
-  // 0 inside 1400 uu drops the goal-mouth trim. Past 2600 uu (chase
-  // side trim, far goal) the shell is solid again.
   if (uGlowFade != 0) alpha *= near;
-  gl_FragColor = vec4(albedo * lm * shade + emit, alpha);
+  if (uUseEmissive != 0) {
+    gl_FragColor = vec4(uEmissive, alpha);
+  } else if (uUseSpec != 0) {
+    vec3 L = normalize(vec3(0.35, 0.2, 0.9));
+    vec3 H = normalize(L + normalize(vView));
+    float smoothA = texture(uNormal, vUv0).a;
+    float t = clamp((smoothA - 0.79607843) / 0.20392157, 0.0, 1.0);
+    float expo = mix(24.0, 80.0, t);
+    float lobe = pow(max(dot(n, H), 0.0), expo);
+    vec3 base = albedo * lm * shade;
+    gl_FragColor = vec4(base + (vec3(1.0) - base) * lobe + emit, alpha);
+  } else {
+    gl_FragColor = vec4(albedo * lm * shade + emit, alpha);
+  }
 }
 )";
 
@@ -1231,6 +1238,127 @@ GLuint ArenaCompileShader(GLenum type, const char* src) {
         return 0;
     }
     return s;
+}
+
+// Thin box, both windings. Used for the goal-mouth light so a culled
+// view still sees the edge and the housing mesh stays undrawn.
+void AppendArenaBox(ArenaCpuBucket& b, float cx, float cy, float cz,
+                    float hx, float hy, float hz) {
+    const float c[8][3] = {
+        {cx - hx, cy - hy, cz - hz}, {cx + hx, cy - hy, cz - hz},
+        {cx + hx, cy + hy, cz - hz}, {cx - hx, cy + hy, cz - hz},
+        {cx - hx, cy - hy, cz + hz}, {cx + hx, cy - hy, cz + hz},
+        {cx + hx, cy + hy, cz + hz}, {cx - hx, cy + hy, cz + hz},
+    };
+    const int quad[6][4] = {
+        {4, 5, 6, 7}, {1, 0, 3, 2}, {1, 2, 6, 5},
+        {0, 4, 7, 3}, {3, 7, 6, 2}, {0, 1, 5, 4},
+    };
+    const float nrm[6][3] = {
+        {0, 0, 1}, {0, 0, -1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0},
+    };
+    for (int f = 0; f < 6; ++f) {
+        const int* s = quad[f];
+        const int order[12] = {s[0], s[1], s[2], s[0], s[2], s[3],
+                               s[0], s[2], s[1], s[0], s[3], s[2]};
+        for (int i = 0; i < 12; ++i) {
+            const int vi = order[i];
+            b.v.push_back(c[vi][0]);
+            b.v.push_back(c[vi][1]);
+            b.v.push_back(c[vi][2]);
+            b.v.push_back(nrm[f][0]);
+            b.v.push_back(nrm[f][1]);
+            b.v.push_back(nrm[f][2]);
+            b.v.push_back(0.f);
+            b.v.push_back(0.f);
+            b.v.push_back(0.f);
+            b.v.push_back(0.f);
+            b.v.push_back(1.f);
+            b.v.push_back(0.f);
+            b.v.push_back(0.f);
+            b.v.push_back(1.f);
+            b.idx.push_back(uint32_t(b.v.size() / kArenaStride - 1));
+            for (int k = 0; k < 3; ++k) {
+                if (c[vi][k] < b.lo[k]) b.lo[k] = c[vi][k];
+                if (c[vi][k] > b.hi[k]) b.hi[k] = c[vi][k];
+            }
+        }
+    }
+}
+
+// One corner of a clipped goal-floor triangle. The pack mesh is flat, so a
+// 2D clip in x/y keeps the hex UVs.
+struct FloorVert {
+    float p[3];
+    float n[3];
+    float uv[2];
+    float luv[2];
+    float tan[3];
+    float hand;
+};
+
+FloorVert LerpFloor(const FloorVert& a, const FloorVert& b, float t) {
+    FloorVert o;
+    for (int i = 0; i < 3; ++i) {
+        o.p[i] = a.p[i] + (b.p[i] - a.p[i]) * t;
+        o.n[i] = a.n[i] + (b.n[i] - a.n[i]) * t;
+        o.tan[i] = a.tan[i] + (b.tan[i] - a.tan[i]) * t;
+    }
+    o.uv[0] = a.uv[0] + (b.uv[0] - a.uv[0]) * t;
+    o.uv[1] = a.uv[1] + (b.uv[1] - a.uv[1]) * t;
+    o.luv[0] = a.luv[0] + (b.luv[0] - a.luv[0]) * t;
+    o.luv[1] = a.luv[1] + (b.luv[1] - a.luv[1]) * t;
+    o.hand = a.hand;
+    return o;
+}
+
+// keepBelow: p[axis] <= limit. Otherwise p[axis] >= limit.
+int ClipFloor(const FloorVert* in, int n, int axis, float limit, bool keepBelow,
+              FloorVert* out) {
+    int m = 0;
+    if (n < 3) return 0;
+    for (int i = 0; i < n; ++i) {
+        if (m >= 14) break;
+        const FloorVert& s = in[i];
+        const FloorVert& e = in[(i + 1) % n];
+        const float ds = keepBelow ? (limit - s.p[axis]) : (s.p[axis] - limit);
+        const float de = keepBelow ? (limit - e.p[axis]) : (e.p[axis] - limit);
+        const bool sin = ds >= -0.05f;
+        const bool ein = de >= -0.05f;
+        if (sin && ein) {
+            out[m++] = e;
+        } else if (sin && !ein) {
+            const float den = ds - de;
+            out[m++] = LerpFloor(s, e, den != 0.f ? ds / den : 0.f);
+        } else if (!sin && ein) {
+            const float den = ds - de;
+            out[m++] = LerpFloor(s, e, den != 0.f ? ds / den : 0.f);
+            out[m++] = e;
+        }
+    }
+    return m;
+}
+
+void AppendFloorVert(ArenaCpuBucket& b, const FloorVert& a) {
+    b.v.push_back(a.p[0]);
+    b.v.push_back(a.p[1]);
+    b.v.push_back(a.p[2]);
+    b.v.push_back(a.n[0]);
+    b.v.push_back(a.n[1]);
+    b.v.push_back(a.n[2]);
+    b.v.push_back(a.uv[0]);
+    b.v.push_back(a.uv[1]);
+    b.v.push_back(a.luv[0]);
+    b.v.push_back(a.luv[1]);
+    b.v.push_back(a.tan[0]);
+    b.v.push_back(a.tan[1]);
+    b.v.push_back(a.tan[2]);
+    b.v.push_back(a.hand);
+    b.idx.push_back(uint32_t(b.v.size() / kArenaStride - 1));
+    for (int c = 0; c < 3; ++c) {
+        if (a.p[c] < b.lo[c]) b.lo[c] = a.p[c];
+        if (a.p[c] > b.hi[c]) b.hi[c] = a.p[c];
+    }
 }
 
 GLuint ArenaLinkProgram(GLuint vs, GLuint fs) {
@@ -1331,9 +1459,544 @@ bool ArenaUploadCompressedLevel(const ArenaTexture& t, GLenum internalFormat,
 }
 }  // namespace
 
-bool Renderer::BuildArenaPack(const ArenaPack& pack) {
+// Optional material_overlays.json beside the pack (--arenadir).
+// Missing file: no decode, no extra GL texture, no log line.
+// {"overlays":[{"material","role":"albedo|mask|emissive","png"}]}.
+// Role normal (and anything that is not exactly one of those three) is
+// skipped. A missing png is skipped. PNGs are decoded once per path.
+// Mask retints glass that is already transparent; it does not move an
+// opaque section into the blended pass. Team colour is baked into the
+// overlay texture so the existing pack draw (fixed-function or the pack
+// program) samples it with no new shader.
+namespace {
+
+constexpr int kRoleAlbedo = 0;
+constexpr int kRoleMask = 1;
+constexpr int kRoleEmissive = 2;
+constexpr int kKindAlbedo = 0;
+constexpr int kKindMaskGlass = 1;
+constexpr int kKindEmisOpaque = 2;
+constexpr int kKindEmisGlass = 3;
+constexpr int kOverlayTexBase = 1000000;
+// Not a pack texture index. The sky gradient is uploaded beside the pack.
+constexpr int kArenaSkyTex = -2;
+// Clean-room square-hole grate. The cook's CrossHatched_Grate diffuse is
+// Noise_Smoke_03_Pack (a wet mask, rejected). Grate_Square_Pack is not in
+// the pack. This tile is the metal mesh beside the posts.
+constexpr int kArenaGrateTex = -3;
+// Luminance of Hexagons_Pack_B. The raw sheet is B-heavy purple; the mouth
+// multiplies that by a team colour, and a grey multiply stays purple.
+constexpr int kArenaHexMetalTex = -4;
+
+struct OvEntry {
+    std::string material;
+    std::string mesh;  // empty = every mesh that uses the material
+    int role = -1;
+    int png = -1;
+    bool used = false;
+};
+
+struct DecodedPng {
+    int w = 0;
+    int h = 0;
+    std::vector<uint8_t> rgba;
+    bool usefulAlpha = false;
+};
+
+struct OvBakeKey {
+    int png = 0;
+    int kind = 0;
+    uint8_t r = 0, g = 0, b = 0;
+    bool operator<(const OvBakeKey& o) const {
+        if (png != o.png) return png < o.png;
+        if (kind != o.kind) return kind < o.kind;
+        if (r != o.r) return r < o.r;
+        if (g != o.g) return g < o.g;
+        return b < o.b;
+    }
+};
+
+struct OvBake {
+    int png = -1;
+    int kind = 0;
+    uint8_t r = 0, g = 0, b = 0;
+};
+
+struct OverlayTable {
+    bool listed = false;
+    bool parseFailed = false;
+    std::vector<OvEntry> entries;
+    std::map<std::string, size_t> byMat;
+    std::vector<DecodedPng> pngs;
+    std::map<std::string, int> pngByPath;
+    std::vector<OvBake> jobs;
+    std::map<OvBakeKey, int> jobOf;
+};
+
+struct JsonScan {
+    const char* p;
+    const char* end;
+    bool ok = true;
+
+    void Ws() {
+        while (ok && p < end &&
+               (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+            ++p;
+    }
+    bool Eat(char c) {
+        Ws();
+        if (!ok || p >= end || *p != c) {
+            ok = false;
+            return false;
+        }
+        ++p;
+        return true;
+    }
+    bool String(std::string& out) {
+        Ws();
+        if (!ok || p >= end || *p != '"') {
+            ok = false;
+            return false;
+        }
+        ++p;
+        out.clear();
+        while (p < end) {
+            const char c = *p++;
+            if (c == '"') return true;
+            if (c != '\\') {
+                out.push_back(c);
+                continue;
+            }
+            if (p >= end) {
+                ok = false;
+                return false;
+            }
+            const char e = *p++;
+            if (e == '"' || e == '\\' || e == '/') out.push_back(e);
+            else if (e == 'n') out.push_back('\n');
+            else if (e == 't') out.push_back('\t');
+            else if (e == 'r') out.push_back('\r');
+            else {
+                ok = false;
+                return false;
+            }
+        }
+        ok = false;
+        return false;
+    }
+    void Skip(int depth) {
+        Ws();
+        if (!ok || p >= end || depth > 32) {
+            ok = false;
+            return;
+        }
+        const char c = *p;
+        if (c == '"') {
+            std::string tmp;
+            String(tmp);
+            return;
+        }
+        if (c == '{') {
+            ++p;
+            Ws();
+            if (p < end && *p == '}') {
+                ++p;
+                return;
+            }
+            for (;;) {
+                std::string k;
+                if (!String(k) || !Eat(':')) return;
+                Skip(depth + 1);
+                if (!ok) return;
+                Ws();
+                if (p < end && *p == ',') {
+                    ++p;
+                    continue;
+                }
+                if (p < end && *p == '}') {
+                    ++p;
+                    return;
+                }
+                ok = false;
+                return;
+            }
+        }
+        if (c == '[') {
+            ++p;
+            Ws();
+            if (p < end && *p == ']') {
+                ++p;
+                return;
+            }
+            for (;;) {
+                Skip(depth + 1);
+                if (!ok) return;
+                Ws();
+                if (p < end && *p == ',') {
+                    ++p;
+                    continue;
+                }
+                if (p < end && *p == ']') {
+                    ++p;
+                    return;
+                }
+                ok = false;
+                return;
+            }
+        }
+        if (c == '-' || (c >= '0' && c <= '9') || c == 't' || c == 'f' ||
+            c == 'n') {
+            while (p < end) {
+                const char d = *p;
+                if (d == ',' || d == '}' || d == ']' || d == ' ' || d == '\n' ||
+                    d == '\r' || d == '\t')
+                    break;
+                ++p;
+            }
+            return;
+        }
+        ok = false;
+    }
+};
+
+int ClassifyOverlayRole(std::string role) {
+    for (char& c : role)
+        if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+    const size_t b = role.find_first_not_of(" \t");
+    if (b == std::string::npos) return -1;
+    const size_t e = role.find_last_not_of(" \t");
+    role = role.substr(b, e - b + 1);
+    if (role == "albedo") return kRoleAlbedo;
+    if (role == "mask") return kRoleMask;
+    if (role == "emissive") return kRoleEmissive;
+    return -1;
+}
+
+int CacheOverlayPng(OverlayTable& table, const std::string& path) {
+    if (path.empty()) return -1;
+    const auto found = table.pngByPath.find(path);
+    if (found != table.pngByPath.end()) return found->second;
+    int w = 0, h = 0, comp = 0;
+    stbi_set_flip_vertically_on_load(0);
+    unsigned char* px = stbi_load(path.c_str(), &w, &h, &comp, 4);
+    (void)comp;
+    int idx = -1;
+    if (px && w > 0 && h > 0) {
+        DecodedPng decoded;
+        decoded.w = w;
+        decoded.h = h;
+        const size_t bytes = size_t(w) * size_t(h) * 4u;
+        decoded.rgba.assign(px, px + bytes);
+        stbi_image_free(px);
+        uint8_t lo = 255, hi = 0;
+        for (size_t i = 3; i < decoded.rgba.size(); i += 4) {
+            const uint8_t a = decoded.rgba[i];
+            if (a < lo) lo = a;
+            if (a > hi) hi = a;
+        }
+        decoded.usefulAlpha = (lo < 255 && hi > 0);
+        idx = int(table.pngs.size());
+        table.pngs.push_back(std::move(decoded));
+    } else if (px) {
+        stbi_image_free(px);
+    }
+    table.pngByPath.emplace(path, idx);
+    return idx;
+}
+
+void PushOverlayEntry(OverlayTable& table, const std::string& material,
+                      const std::string& role, const std::string& png,
+                      const std::string& mesh) {
+    OvEntry entry;
+    entry.material = material;
+    entry.mesh = mesh;
+    entry.role = ClassifyOverlayRole(role);
+    if (entry.role >= 0) entry.png = CacheOverlayPng(table, png);
+    const bool keep = entry.role >= 0 && entry.png >= 0 && !material.empty() &&
+                      table.byMat.find(material) == table.byMat.end();
+    if (!keep) entry.role = -1;
+    const size_t idx = table.entries.size();
+    table.entries.push_back(entry);
+    if (keep) table.byMat.emplace(material, idx);
+}
+
+bool ParseOverlayText(const std::string& text, OverlayTable& table) {
+    size_t begin = 0;
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF &&
+        (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        begin = 3;
+    JsonScan sc{text.data() + begin, text.data() + text.size(), true};
+    if (!sc.Eat('{')) return false;
+    sc.Ws();
+    if (sc.p < sc.end && *sc.p == '}') {
+        ++sc.p;
+    } else {
+        for (;;) {
+            std::string key;
+            if (!sc.String(key) || !sc.Eat(':')) return false;
+            if (key == "overlays") {
+                if (!sc.Eat('[')) return false;
+                sc.Ws();
+                if (sc.p < sc.end && *sc.p == ']') {
+                    ++sc.p;
+                } else {
+                    for (;;) {
+                        sc.Ws();
+                        if (sc.p < sc.end && *sc.p == '{') {
+                            if (!sc.Eat('{')) return false;
+                            std::string material, role, png, meshName;
+                            sc.Ws();
+                            if (sc.p < sc.end && *sc.p == '}') {
+                                ++sc.p;
+                            } else {
+                                for (;;) {
+                                    std::string field;
+                                    if (!sc.String(field) || !sc.Eat(':'))
+                                        return false;
+                                    sc.Ws();
+                                    if (sc.p < sc.end && *sc.p == '"') {
+                                        std::string value;
+                                        if (!sc.String(value)) return false;
+                                        if (field == "material") material = value;
+                                        else if (field == "role") role = value;
+                                        else if (field == "png") png = value;
+                                        else if (field == "mesh") meshName = value;
+                                    } else {
+                                        sc.Skip(1);
+                                        if (!sc.ok) return false;
+                                    }
+                                    sc.Ws();
+                                    if (sc.p < sc.end && *sc.p == ',') {
+                                        ++sc.p;
+                                        continue;
+                                    }
+                                    if (sc.p < sc.end && *sc.p == '}') {
+                                        ++sc.p;
+                                        break;
+                                    }
+                                    return false;
+                                }
+                            }
+                            PushOverlayEntry(table, material, role, png, meshName);
+                        } else {
+                            sc.Skip(1);
+                            if (!sc.ok) return false;
+                            PushOverlayEntry(table, "", "", "", "");
+                        }
+                        sc.Ws();
+                        if (sc.p < sc.end && *sc.p == ',') {
+                            ++sc.p;
+                            continue;
+                        }
+                        if (sc.p < sc.end && *sc.p == ']') {
+                            ++sc.p;
+                            break;
+                        }
+                        return false;
+                    }
+                }
+            } else {
+                sc.Skip(1);
+                if (!sc.ok) return false;
+            }
+            sc.Ws();
+            if (sc.p < sc.end && *sc.p == ',') {
+                ++sc.p;
+                continue;
+            }
+            if (sc.p < sc.end && *sc.p == '}') {
+                ++sc.p;
+                break;
+            }
+            return false;
+        }
+    }
+    sc.Ws();
+    return sc.ok && sc.p == sc.end;
+}
+
+void LoadOverlayTable(const std::string& packDir, OverlayTable& table) {
+    if (packDir.empty()) return;
+    std::string path = packDir;
+    if (path.back() != '/') path += '/';
+    path += "material_overlays.json";
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    table.listed = true;
+    in.seekg(0, std::ios::end);
+    const std::streamoff n = in.tellg();
+    if (n < 0) {
+        table.parseFailed = true;
+        return;
+    }
+    in.seekg(0);
+    std::string text(size_t(n), '\0');
+    if (n > 0 && !in.read(&text[0], n)) {
+        table.parseFailed = true;
+        return;
+    }
+    if (!ParseOverlayText(text, table)) {
+        table.entries.clear();
+        table.byMat.clear();
+        table.pngs.clear();
+        table.pngByPath.clear();
+        table.parseFailed = true;
+    }
+}
+
+void OverlayTeamTint(const std::string& name, float rgb[3]) {
+    std::string n = name;
+    for (char& c : n) c = char(std::tolower((unsigned char)c));
+    if (n.find("team2") != std::string::npos) {
+        rgb[0] = 0.15f;
+        rgb[1] = 0.45f;
+        rgb[2] = 1.0f;
+    } else if (n.find("team1") != std::string::npos) {
+        rgb[0] = 1.0f;
+        rgb[1] = 0.12f;
+        rgb[2] = 0.04f;
+    } else {
+        rgb[0] = kArenaGlass[0];
+        rgb[1] = kArenaGlass[1];
+        rgb[2] = kArenaGlass[2];
+    }
+}
+
+uint8_t FloatToU8(float c) {
+    int v = int(c * 255.0f + 0.5f);
+    if (v < 0) v = 0;
+    if (v > 255) v = 255;
+    return (uint8_t)v;
+}
+
+int AddOverlayJob(OverlayTable& table, int png, int kind, uint8_t r, uint8_t g,
+                  uint8_t b) {
+    if (png < 0) return -1;
+    const OvBakeKey key{png, kind, r, g, b};
+    const auto found = table.jobOf.find(key);
+    if (found != table.jobOf.end()) return found->second;
+    const int id = int(table.jobs.size());
+    table.jobs.push_back(OvBake{png, kind, r, g, b});
+    table.jobOf.emplace(key, id);
+    return id;
+}
+
+void ApplyMaterialOverlay(OverlayTable& table, const std::string& meshName,
+                          const std::string& matName, bool transparent, int& texId,
+                          bool& unlit, bool& useLm, float tintRgb[3]) {
+    if (!table.listed || matName.empty()) return;
+    const auto it = table.byMat.find(matName);
+    if (it == table.byMat.end()) return;
+    OvEntry& ent = table.entries[it->second];
+    if (ent.png < 0) return;
+    if (!ent.mesh.empty() && ent.mesh != meshName) return;
+    // Opaque sections stay in the opaque pass. A mask does not punch them.
+    if (ent.role == kRoleMask && !transparent) return;
+    int kind = kKindAlbedo;
+    uint8_t r = 0, g = 0, b = 0;
+    if (ent.role == kRoleMask || ent.role == kRoleEmissive) {
+        float team[3];
+        OverlayTeamTint(matName, team);
+        tintRgb[0] = team[0];
+        tintRgb[1] = team[1];
+        tintRgb[2] = team[2];
+        r = FloatToU8(team[0]);
+        g = FloatToU8(team[1]);
+        b = FloatToU8(team[2]);
+        if (ent.role == kRoleMask) {
+            kind = kKindMaskGlass;
+        } else if (transparent) {
+            kind = kKindEmisGlass;
+        } else {
+            kind = kKindEmisOpaque;
+        }
+        if (ent.role == kRoleEmissive) {
+            unlit = true;
+            useLm = false;
+        }
+    }
+    const int job = AddOverlayJob(table, ent.png, kind, r, g, b);
+    if (job < 0) return;
+    texId = kOverlayTexBase + job;
+    ent.used = true;
+}
+
+uint8_t OverlayMaskByte(const DecodedPng& src, const uint8_t* px, bool glassScale) {
+    // Glass masks must stay faint. Hexagons_Pack's own alpha sits at
+    // 114..254, and using it raw turns the goal glass into an opaque
+    // team-coloured wall across the mouth. Cap glass the same way as
+    // Hexagons_Pack_01_T (0..80, about 0.31).
+    if (glassScale) {
+        const unsigned srcA = src.usefulAlpha ? px[3] : px[1];
+        return (uint8_t)(srcA * 80u / 255u);
+    }
+    if (src.usefulAlpha) return px[3];
+    return (uint8_t)px[1];
+}
+
+GLuint UploadOverlayRgba(const uint8_t* px, int w, int h) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (!tex) return 0;
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
+void UploadOverlayJobs(const OverlayTable& table, std::vector<int>& glIds,
+                       std::vector<unsigned>& keep) {
+    glIds.assign(table.jobs.size(), -1);
+    std::vector<uint8_t> scratch;
+    for (size_t i = 0; i < table.jobs.size(); ++i) {
+        const OvBake& job = table.jobs[i];
+        if (job.png < 0 || size_t(job.png) >= table.pngs.size()) continue;
+        const DecodedPng& src = table.pngs[size_t(job.png)];
+        const uint8_t* px = src.rgba.data();
+        if (job.kind != kKindAlbedo) {
+            const size_t n = src.rgba.size() / 4u;
+            scratch.resize(n * 4u);
+            const bool glassScale = job.kind == kKindMaskGlass;
+            const bool straight =
+                job.kind == kKindMaskGlass || job.kind == kKindEmisGlass;
+            for (size_t p = 0; p < n; ++p) {
+                const uint8_t* s = src.rgba.data() + p * 4u;
+                uint8_t* o = scratch.data() + p * 4u;
+                const uint8_t m = OverlayMaskByte(src, s, glassScale);
+                if (straight) {
+                    o[0] = job.r;
+                    o[1] = job.g;
+                    o[2] = job.b;
+                    o[3] = m;
+                } else {
+                    o[0] = (uint8_t)((unsigned)job.r * m / 255u);
+                    o[1] = (uint8_t)((unsigned)job.g * m / 255u);
+                    o[2] = (uint8_t)((unsigned)job.b * m / 255u);
+                    o[3] = 255;
+                }
+            }
+            px = scratch.data();
+        }
+        const GLuint tex = UploadOverlayRgba(px, src.w, src.h);
+        if (!tex) continue;
+        glIds[i] = int(tex);
+        keep.push_back(tex);
+    }
+}
+
+}  // namespace
+
+bool Renderer::BuildArenaPack(const ArenaPack& pack, const std::string& packDir) {
     ShutdownArenaPack();
     arenaStats_ = ArenaPackStats();
+    OverlayTable overlays;
+    LoadOverlayTable(packDir, overlays);
 
     // ---- CPU bake: one merged bucket per (texture/material, cell) ----------
     std::map<ArenaKey, size_t> bucketIndex;
@@ -1370,9 +2033,17 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         meshesByName["SkySphere01"].push_back(sky);
     std::map<std::string, size_t> dupCounter;
     int fieldTexId = -1;
+    int carbonN = -1;
+    int hexN = -1;
+    int hexTile = -1;
+    int hexMask = -1;
     for (size_t ti = 0; ti < pack.textures.size(); ++ti) {
-        if (pack.textures[ti].name == "FieldSkin_FutureGrid_D")
-            fieldTexId = int(ti);
+        const std::string& tn = pack.textures[ti].name;
+        if (tn == "FieldSkin_FutureGrid_D") fieldTexId = int(ti);
+        else if (tn == "ENV_CarbonFiber_N") carbonN = int(ti);
+        else if (tn == "Hexagons_N") hexN = int(ti);
+        else if (tn == "Hexagons_Pack_B") hexTile = int(ti);
+        else if (tn == "Hexagons_Pack_01_T") hexMask = int(ti);
     }
 
     // Untextured materials are NOT one grey: the pack's untextured majority
@@ -1471,13 +2142,59 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             ++skipped;
             continue;
         }
-        // Field_Center_Trim has no safe albedo. Section 0 resolves
-        // ENV_CarbonFiber_N (a normal; the non-albedo filter drops it) and
-        // section 1 is untextured TrimLight_None. No lightmap, and it is not
-        // a FieldSkin pitch mesh. Field_Center still draws: Hexagons_Pack_B
-        // is rejected and the existing pitch rule binds FieldSkin. The hex
-        // floor still draws: same rejection, then its baked lightmap.
-        // FieldSkin on the main pitch meshes is unchanged.
+        // Field_Center_Trim has no safe albedo. It is skipped below.
+        // Goal housing stays undrawn. Glow becomes a thin emissive mouth edge.
+        if (inst.mesh == "Goal_STD_Glow" || inst.mesh == "Goal_STD_Outer") {
+            if (inst.mesh == "Goal_STD_Glow") {
+                std::string glowMat;
+                if (!inst.materialSlots.empty()) {
+                    const int mi = inst.materialSlots[0];
+                    if (mi >= 0 && size_t(mi) < pack.materials.size())
+                        glowMat = pack.materials[size_t(mi)].name;
+                }
+                const bool team2 = glowMat.find("Team2") != std::string::npos;
+                const float yLine = inst.matrix[13];
+                const float face = yLine > 0.f ? -1.f : 1.f;
+                const float y = yLine + face * 4.f;
+                constexpr float kHalfW = 892.755f;
+                constexpr float kHeight = 642.775f;
+                constexpr float kThick = 4.f;
+                ArenaKey key;
+                key.emis = team2 ? 2 : 1;
+                key.tint = team2 ? 9 : 8;
+                key.unlit = true;
+                key.cy = int(std::floor(double(yLine) / double(kArenaCell)));
+                size_t bi;
+                auto found = bucketIndex.find(key);
+                if (found == bucketIndex.end()) {
+                    bi = cpu.size();
+                    bucketIndex[key] = bi;
+                    cpu.emplace_back();
+                    if (team2) {
+                        cpu.back().tintRgb[0] = 0.15f;
+                        cpu.back().tintRgb[1] = 0.45f;
+                        cpu.back().tintRgb[2] = 1.0f;
+                    } else {
+                        cpu.back().tintRgb[0] = 1.0f;
+                        cpu.back().tintRgb[1] = 0.12f;
+                        cpu.back().tintRgb[2] = 0.04f;
+                    }
+                    cpu.back().tag = "goal-mouth-edge / " + glowMat;
+                } else {
+                    bi = found->second;
+                }
+                ArenaCpuBucket& edge = cpu[bi];
+                const float hy = kThick * 0.5f;
+                AppendArenaBox(edge, -kHalfW, y, kHeight * 0.5f, hy, hy,
+                               kHeight * 0.5f);
+                AppendArenaBox(edge, kHalfW, y, kHeight * 0.5f, hy, hy,
+                               kHeight * 0.5f);
+                AppendArenaBox(edge, 0.f, y, kHeight, kHalfW, hy, hy);
+                tris += 3u * 24u;
+            }
+            ++skipped;
+            continue;
+        }
         if (inst.mesh == "Field_Center_Trim") {
             ++skipped;
             continue;
@@ -1527,8 +2244,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             mesh->name == "Field_STD_Floor_Team2" ||
             mesh->name == "Field_CenterField_Team1" ||
             mesh->name == "Field_CenterField_Team2";
-        // Transform the mesh into world space once (positions, normals, tangents).
-        std::vector<float> wp(nv * 3), wn(nv * 3), wt(nv * 3, 0.f);
+        std::vector<float> wp(nv * 3), wn(nv * 3), wt(nv * 3);
         double lo[3] = {1e30, 1e30, 1e30}, hi[3] = {-1e30, -1e30, -1e30};
         for (size_t v = 0; v < nv; ++v) {
             const double x = mesh->positions[v * 3 + 0];
@@ -1597,6 +2313,10 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             wt[v * 3 + 1] = sy;
             wt[v * 3 + 2] = sz;
         }
+        // Goal_STD_Floor sits on the field side of the goal line
+        // (measured −Y: y −5120..−3106, x ±2053). The slab is drawn as the
+        // pitch skin below; a mirrored copy is clipped into the mouth.
+        const bool goalFloor = mesh->name == "Goal_STD_Floor";
         // The spatial cell: the 8192 uu grid cell of the placement's world
         // AABB centre.
         int cell[3];
@@ -1692,8 +2412,12 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 mesh->name == "Field_STD_Floor_Thick" ||
                 mesh->name == "Field_CenterField_Team1" ||
                 mesh->name == "Field_CenterField_Team2";
+            // Field_Center is on the skin list, but its only section is the
+            // hex platform (Reflective_Floor_V2_Mat). Skinning it is grass.
+            const bool hexFloor = mesh->name == "Field_Center" ||
+                                  mesh->name == "Field_STD_Floor_Hex";
             const bool fieldSkin =
-                fieldTexId >= 0 && isPitchMesh &&
+                fieldTexId >= 0 && isPitchMesh && !hexFloor &&
                 (mesh->name == "Field_Center" || meshHasFieldUv ||
                  matLower.find("grass") != std::string::npos ||
                  matLower.find("groomed") != std::string::npos ||
@@ -1704,15 +2428,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 matLower.find("tree") != std::string::npos ||
                 matLower.find("leaf") != std::string::npos ||
                 matLower.find("foliage") != std::string::npos ||
+                matLower.find("grate") != std::string::npos ||
                 mesh->name.find("Leafy") != std::string::npos ||
                 mesh->name.find("Tree") != std::string::npos;
             const bool skyDome = mesh->name == "SkySphere01";
-            // Keep a resolved albedo. The pale day tint is only the fallback
-            // when the pack and the imported mesh have no real diffuse
-            // (curves, noise and flares are already rejected above).
+            // Real sky diffuse wins. The gradient is only the fallback.
             if (skyDome && texId < 0) {
+                texId = kArenaSkyTex;
                 tint = 11;
-                tintRgb[0] = 0.73f; tintRgb[1] = 0.82f; tintRgb[2] = 0.90f;
+                tintRgb[0] = 1.0f; tintRgb[1] = 1.0f; tintRgb[2] = 1.0f;
             }
             // The out-of-bounds floor is a Reflective_Floor overlay. Its only
             // resolved texture is Hexagons_Pack_B (a spec pack, not albedo),
@@ -1761,9 +2485,9 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 tintRgb[2] = kArenaGlass[2];
                 tint = 6;
             }
-            const bool unlit = skyDome || fieldSkin || boostPad || tint == 5 ||
-                               tint == 7 || tint == 8 || tint == 9 ||
-                               tint == 11 || tint == 16;
+            bool unlit = skyDome || fieldSkin || boostPad || tint == 5 ||
+                         tint == 7 || tint == 8 || tint == 9 ||
+                         tint == 11 || tint == 16;
             const bool decal = (tint == 7);
 
             // Lightmap: skip sky / glass (atlas strips read as purple moiré).
@@ -1790,13 +2514,181 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                     ((bx < 0.05f && by < 0.05f) ||
                      (bx > 0.45f && bx < 0.55f && by > 0.45f && by < 0.55f)))
                     useLm = false;
+                // A 30/1024 atlas stamp (scale 0.029) is one texel stretched
+                // over the mesh. Skip it everywhere except the pitch skin
+                // and the boost pads, which keep the sampling they had.
+                // Seats, concrete, sidewalk, and stairs use a real unwrap
+                // (scale well above 0.05) and keep the luminance lightmap.
+                if (sx < 0.05f && sy < 0.05f && !boostPad && !fieldSkin)
+                    useLm = false;
             }
+            int maskId = -1;
+            int emisId = 0;
+            int blendMode = 0;
+            bool tintMul = false;
+            // Frame colour already used for "frame" (0.80, 0.79, 0.76).
+            // ENV_CarbonFiber_N is the normal that was sitting in the diffuse
+            // slot. FrameTexture_PACK is never bound: on these posts its v
+            // range is about -11..5 and it wraps as green/orange stripes.
+            const bool frameSection =
+                secMatName == "Frame_01_V2_Mat" || secMatName == "Frame_01_MIC";
+            auto applyFrameMetal = [&]() {
+                texId = -1;
+                nrmId = carbonN;
+                tint = 15;
+                tintRgb[0] = 0.80f;
+                tintRgb[1] = 0.79f;
+                tintRgb[2] = 0.76f;
+                unlit = false;
+            };
+            if (carbonN >= 0 && mesh->name == "Goal_STD_Frame" && frameSection)
+                applyFrameMetal();
+            // Side-board strip. Same unlit team colour as the mouth edge.
+            // It is a band on the wall (z about 70..400); it does not cross
+            // the pitch. The goal housing meshes are not drawn here.
+            if (secMatName.find("TrimLight_Glow") != std::string::npos &&
+                mesh->name != "Goal_STD_Glow" &&
+                mesh->name != "Goal_STD_Outer") {
+                texId = -1;
+                nrmId = -1;
+                maskId = -1;
+                emisId = secMatName.find("Team2") != std::string::npos ? 2 : 1;
+                unlit = true;
+                useLm = false;
+                tint = emisId == 2 ? 9 : 8;
+            }
+            // Goal box interior. Same lit frame metal as the posts. The
+            // 0.029 lightmap stamp stays off (handled with the other trim).
+            if (carbonN >= 0 && mesh->name == "Goal_STD_Trim")
+                applyFrameMetal();
+            // Curb: same frame metal as the posts. The 0.029 stamp stays off
+            // so the curb is not one flat red band. Pitch and lines are not
+            // touched here.
+            if (carbonN >= 0 && frameSection &&
+                (mesh->name == "Field_STD_Trim" || mesh->name == "Side_Trim"))
+                applyFrameMetal();
+            // Hex glass: Hexagons_Pack is a mask. Its alpha is already capped
+            // the way the net fence is (0..80). Team tint, see-through.
+            // Projected ceiling glass has an empty lookup: faint untinted veil.
+            const bool hexGlass = secMatName.find("HexGlass") != std::string::npos;
+            // FF_Side / FF_Goal / FF_Roof bind Beach_NetFence (no team
+            // token). Same mask as HexGlass, ice veil, not the sheet as
+            // albedo. MEASURED stadium_day 2026-11-06: the long-wall quad
+            // sits at x=±4100, z 256..1536, and 3584 uu spans 14 UV units
+            // (~256 uu). The roof quad at z=2052 repeats the same way.
+            const bool ffNet = mesh->name == "FF_Side" ||
+                               mesh->name == "FF_Goal" ||
+                               mesh->name == "FF_Roof";
+            const bool projectedGlass =
+                secMatName.find("Glass_Projected") != std::string::npos;
+            // Crowd is a normal plus a team lookup, and the scoreboard is a
+            // render target. Neither has an albedo in this pack, so both stay
+            // a flat tint. Concrete_CLR, the city MIC, and the sidewalk keep
+            // the albedo they already resolved.
+            if (secMatName.rfind("Crowd_", 0) == 0 ||
+                secMatName.find("Scoreboard") != std::string::npos) {
+                texId = -1;
+                nrmId = -1;
+                maskId = -1;
+                emisId = 0;
+                blendMode = 0;
+            }
+            // Metal mesh beside the posts. CrossHatched_Grate sits on
+            // Goal_STD_Glass; its cooked diffuse is a smoke mask. The UVs
+            // already tile, so one square-hole cell repeats across the panel.
+            if (matLower.find("grate") != std::string::npos) {
+                texId = kArenaGrateTex;
+                nrmId = -1;
+                maskId = -1;
+                emisId = 0;
+                blendMode = 0;
+                unlit = false;
+                useLm = false;
+            }
+            if ((hexGlass || ffNet) && hexMask >= 0) {
+                texId = -1;
+                nrmId = -1;
+                maskId = hexMask;
+                blendMode = 2;
+                emisId = 0;
+                unlit = true;
+                useLm = false;
+                if (secMatName.find("Team2") != std::string::npos) {
+                    tint = 19;
+                    tintRgb[0] = 0.15f;
+                    tintRgb[1] = 0.45f;
+                    tintRgb[2] = 1.0f;
+                } else if (secMatName.find("Team1") != std::string::npos) {
+                    tint = 20;
+                    tintRgb[0] = 1.0f;
+                    tintRgb[1] = 0.12f;
+                    tintRgb[2] = 0.04f;
+                } else {
+                    tint = 6;
+                    tintRgb[0] = kArenaGlass[0];
+                    tintRgb[1] = kArenaGlass[1];
+                    tintRgb[2] = kArenaGlass[2];
+                }
+            } else if (projectedGlass) {
+                texId = -1;
+                nrmId = -1;
+                maskId = -1;
+                blendMode = 1;
+                emisId = 0;
+                unlit = true;
+                useLm = false;
+                tint = 6;
+                tintRgb[0] = kArenaGlass[0];
+                tintRgb[1] = kArenaGlass[1];
+                tintRgb[2] = kArenaGlass[2];
+            }
+            // The floor slab covers the approach, where the pitch meshes
+            // leave a hole. Sample the field skin there so the grass wins
+            // outside the posts. The hex copy is a separate bucket.
+            if (goalFloor && fieldTexId >= 0) {
+                texId = fieldTexId;
+                nrmId = -1;
+                maskId = -1;
+                emisId = 0;
+                blendMode = 0;
+                tintMul = false;
+                unlit = true;
+                useLm = false;
+                tint = 0;
+                tintRgb[0] = 1.0f;
+                tintRgb[1] = 1.0f;
+                tintRgb[2] = 1.0f;
+            }
+            // No team token on these sections (census: Reflective_Floor_V2_Mat).
+            // Same multiply as the mouth, with the frame metal instead of a team.
+            if (hexFloor && hexTile >= 0 && hexN >= 0) {
+                texId = kArenaHexMetalTex;
+                nrmId = hexN;
+                maskId = -1;
+                emisId = 0;
+                blendMode = 0;
+                tintMul = true;
+                unlit = false;
+                useLm = false;
+                tint = 21;
+                tintRgb[0] = 0.80f;
+                tintRgb[1] = 0.79f;
+                tintRgb[2] = 0.76f;
+            }
+            ApplyMaterialOverlay(overlays, mesh->name, secMatName, secTransparent,
+                                 texId, unlit, useLm, tintRgb);
             ArenaKey key;
             key.tex = texId;
             key.lm = useLm ? inst.lightmap.texture : -1;
             key.nrm = nrmId;
             key.nrmMode = nrmMode;
             key.tint = (texId < 0) ? tint : 0;
+            key.tint = (texId < 0 || tintMul) ? tint : 0;
+            key.nrm = nrmId;
+            key.mask = maskId;
+            key.emis = emisId;
+            key.blend = blendMode;
+            key.tintTex = tintMul;
             key.transparent = secTransparent;
             key.unlit = unlit;
             key.decal = decal;
@@ -1825,6 +2717,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             key.nearEdge = mesh->name == "Goal_STD_Trim" ||
                            mesh->name == "Goal_STD_Frame";
             key.color = hasColor;
+            key.clipThrough = ArenaClipThrough(mesh->name);
             if (useLm) {
                 key.lmScale[0] = inst.lightmap.colorScale[0];
                 key.lmScale[1] = inst.lightmap.colorScale[1];
@@ -1851,6 +2744,71 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 bi = it->second;
             }
             ArenaCpuBucket& b = cpu[bi];
+            // Painted lines are authored at z=0.5, under the grass cap (z=10).
+            const float zBias =
+                (mesh->name == "Field_Center_Lines" ||
+                 mesh->name == "Field_Side_Lines" || mesh->name == "Goal_Lines" ||
+                 mesh->name == "Field_Center" ||
+                 mesh->name == "Field_STD_Floor_Hex")
+                    ? kPitchClear
+                    : 0.f;
+            // Ground rail of the curb. Same section as the frame metal, so
+            // the split is the measured z<20 band, not a second material.
+            // Flat team colour, no frame sheet (that sheet's v wraps).
+            auto emitCurbLip = [&](int team, const uint32_t corners[3]) {
+                ArenaKey lipKey;
+                lipKey.emis = team;
+                lipKey.tint = team == 2 ? 9 : 8;
+                lipKey.unlit = true;
+                lipKey.clipThrough = true;
+                lipKey.cx = cell[0];
+                lipKey.cy = cell[1];
+                lipKey.cz = cell[2];
+                size_t slot;
+                auto hit = bucketIndex.find(lipKey);
+                if (hit == bucketIndex.end()) {
+                    slot = cpu.size();
+                    bucketIndex[lipKey] = slot;
+                    cpu.emplace_back();
+                    if (team == 2) {
+                        cpu.back().tintRgb[0] = 0.15f;
+                        cpu.back().tintRgb[1] = 0.45f;
+                        cpu.back().tintRgb[2] = 1.0f;
+                    } else {
+                        cpu.back().tintRgb[0] = 1.0f;
+                        cpu.back().tintRgb[1] = 0.12f;
+                        cpu.back().tintRgb[2] = 0.04f;
+                    }
+                    cpu.back().tag = std::string(mesh->name) + " / curb-lip";
+                } else {
+                    slot = hit->second;
+                }
+                ArenaCpuBucket& lip = cpu[slot];
+                for (int q = 0; q < 3; ++q) {
+                    const uint32_t vi = corners[q];
+                    const float z = wp[vi * 3 + 2] + kPitchClear;
+                    lip.v.push_back(wp[vi * 3 + 0]);
+                    lip.v.push_back(wp[vi * 3 + 1]);
+                    lip.v.push_back(z);
+                    lip.v.push_back(wn[vi * 3 + 0]);
+                    lip.v.push_back(wn[vi * 3 + 1]);
+                    lip.v.push_back(wn[vi * 3 + 2]);
+                    lip.v.push_back(hasUv ? mesh->uvs[vi * 2 + 0] : 0.f);
+                    lip.v.push_back(hasUv ? mesh->uvs[vi * 2 + 1] : 0.f);
+                    lip.v.push_back(0.f);
+                    lip.v.push_back(0.f);
+                    lip.v.push_back(wt[vi * 3 + 0]);
+                    lip.v.push_back(wt[vi * 3 + 1]);
+                    lip.v.push_back(wt[vi * 3 + 2]);
+                    lip.v.push_back(mirrored ? -1.f : 1.f);
+                    const float pxyz[3] = {wp[vi * 3], wp[vi * 3 + 1], z};
+                    for (int c = 0; c < 3; ++c) {
+                        if (pxyz[c] < lip.lo[c]) lip.lo[c] = pxyz[c];
+                        if (pxyz[c] > lip.hi[c]) lip.hi[c] = pxyz[c];
+                    }
+                    lip.idx.push_back(uint32_t(lip.v.size() / kArenaStride - 1));
+                }
+            };
             ++stampCounter;
             for (size_t k = 0; k < count; k += 3) {
                 const uint32_t i0 = mesh->indices[first + k];
@@ -1863,6 +2821,116 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 corner[0] = i0;
                 corner[1] = mirrored ? i2 : i1;
                 corner[2] = mirrored ? i1 : i2;
+                // Pitch-facing side becomes CCW: inward (toward field centre)
+                // or up. The outside of the curb is then a back face.
+                if (key.clipThrough) {
+                    const uint32_t ia = corner[0], ib = corner[1], ic = corner[2];
+                    const float ax = wp[ib * 3] - wp[ia * 3];
+                    const float ay = wp[ib * 3 + 1] - wp[ia * 3 + 1];
+                    const float az = wp[ib * 3 + 2] - wp[ia * 3 + 2];
+                    const float bx = wp[ic * 3] - wp[ia * 3];
+                    const float by = wp[ic * 3 + 1] - wp[ia * 3 + 1];
+                    const float bz = wp[ic * 3 + 2] - wp[ia * 3 + 2];
+                    const float nx = ay * bz - az * by;
+                    const float ny = az * bx - ax * bz;
+                    const float nz = ax * by - ay * bx;
+                    const float cx = (wp[ia * 3] + wp[ib * 3] + wp[ic * 3]) / 3.f;
+                    const float cy = (wp[ia * 3 + 1] + wp[ib * 3 + 1] + wp[ic * 3 + 1]) / 3.f;
+                    const float pitch = -nx * cx - ny * cy +
+                                        nz * std::sqrt(cx * cx + cy * cy);
+                    if (pitch < 0.f) {
+                        const uint32_t swap = corner[1];
+                        corner[1] = corner[2];
+                        corner[2] = swap;
+                    }
+                }
+                if (frameSection && (mesh->name == "Field_STD_Trim" ||
+                                     mesh->name == "Side_Trim")) {
+                    float cz = 0.f, cy = 0.f;
+                    for (int q = 0; q < 3; ++q) {
+                        cz += wp[corner[q] * 3 + 2];
+                        cy += wp[corner[q] * 3 + 1];
+                    }
+                    // −Y is orange, +Y is blue. The two trim placements
+                    // already split at y=0.
+                    if (cz < kCurbLipZ * 3.f) {
+                        emitCurbLip(cy < 0.f ? 1 : 2, corner);
+                        ++tris;
+                        continue;
+                    }
+                }
+                if (goalFloor && hexTile >= 0 && hexN >= 0) {
+                    // Mirror across the goal line, then keep the post rectangle
+                    // (half-width 892.755, depth 880). The approach slab stays
+                    // on the grass path below.
+                    constexpr float kMouthHalf = 892.755f;
+                    constexpr float kGoalDepth = 880.f;
+                    const float goalY = inst.matrix[13];
+                    const float yLo = goalY < 0.f ? goalY - kGoalDepth : goalY;
+                    const float yHi = goalY < 0.f ? goalY : goalY + kGoalDepth;
+                    const bool hexWind = !mirrored;
+                    const uint32_t hexCorner[3] = {
+                        i0, hexWind ? i2 : i1, hexWind ? i1 : i2};
+                    FloorVert poly[16], tmp[16];
+                    for (int q = 0; q < 3; ++q) {
+                        const uint32_t vi = hexCorner[q];
+                        FloorVert& fv = poly[q];
+                        fv.p[0] = wp[vi * 3 + 0];
+                        fv.p[1] = goalY * 2.f - wp[vi * 3 + 1];
+                        fv.p[2] = wp[vi * 3 + 2] + 3.f;
+                        fv.n[0] = wn[vi * 3 + 0];
+                        fv.n[1] = wn[vi * 3 + 1];
+                        fv.n[2] = wn[vi * 3 + 2];
+                        fv.uv[0] = hasUv ? mesh->uvs[vi * 2 + 0] : 0.f;
+                        fv.uv[1] = hasUv ? mesh->uvs[vi * 2 + 1] : 0.f;
+                        fv.luv[0] = 0.f;
+                        fv.luv[1] = 0.f;
+                        fv.tan[0] = wt[vi * 3 + 0];
+                        fv.tan[1] = wt[vi * 3 + 1];
+                        fv.tan[2] = wt[vi * 3 + 2];
+                        fv.hand = hexWind ? -1.f : 1.f;
+                    }
+                    int n = ClipFloor(poly, 3, 0, -kMouthHalf, false, tmp);
+                    n = ClipFloor(tmp, n, 0, kMouthHalf, true, poly);
+                    n = ClipFloor(poly, n, 1, yLo, false, tmp);
+                    n = ClipFloor(tmp, n, 1, yHi, true, poly);
+                    if (n >= 3) {
+                        ArenaKey hexKey;
+                        hexKey.tex = hexTile;
+                        hexKey.nrm = hexN;
+                        hexKey.tintTex = true;
+                        hexKey.tint = goalY < 0.f ? 17 : 18;
+                        hexKey.cx = cell[0];
+                        hexKey.cy = cell[1];
+                        hexKey.cz = cell[2];
+                        size_t hexSlot;
+                        auto hit = bucketIndex.find(hexKey);
+                        if (hit == bucketIndex.end()) {
+                            hexSlot = cpu.size();
+                            bucketIndex[hexKey] = hexSlot;
+                            cpu.emplace_back();
+                            if (goalY < 0.f) {
+                                cpu.back().tintRgb[0] = 1.0f;
+                                cpu.back().tintRgb[1] = 0.12f;
+                                cpu.back().tintRgb[2] = 0.04f;
+                            } else {
+                                cpu.back().tintRgb[0] = 0.15f;
+                                cpu.back().tintRgb[1] = 0.45f;
+                                cpu.back().tintRgb[2] = 1.0f;
+                            }
+                            cpu.back().tag = "Goal_STD_Floor / hex-mouth";
+                        } else {
+                            hexSlot = hit->second;
+                        }
+                        ArenaCpuBucket& hex = cpu[hexSlot];
+                        for (int i = 1; i + 1 < n; ++i) {
+                            AppendFloorVert(hex, poly[0]);
+                            AppendFloorVert(hex, poly[i]);
+                            AppendFloorVert(hex, poly[i + 1]);
+                            ++tris;
+                        }
+                    }
+                }
                 for (int q = 0; q < 3; ++q) {
                     const uint32_t vi = corner[q];
                     if (stamp[vi] != stampCounter) {
@@ -1870,13 +2938,23 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                         remap[vi] = int32_t(b.v.size() / size_t(b.stride));
                         b.v.push_back(wp[vi * 3 + 0]);
                         b.v.push_back(wp[vi * 3 + 1]);
-                        b.v.push_back(wp[vi * 3 + 2]);
-                        b.v.push_back(wn[vi * 3 + 0]);
-                        b.v.push_back(wn[vi * 3 + 1]);
-                        b.v.push_back(wn[vi * 3 + 2]);
+                        b.v.push_back(wp[vi * 3 + 2] + zBias);
+                        float nx = wn[vi * 3 + 0];
+                        float ny = wn[vi * 3 + 1];
+                        float nz = wn[vi * 3 + 2];
+                        // These sheets are authored face-down. Lit from above
+                        // that reads as a black disc. Flip the normal only.
+                        if (hexFloor && nz < 0.f) {
+                            nx = -nx;
+                            ny = -ny;
+                            nz = -nz;
+                        }
+                        b.v.push_back(nx);
+                        b.v.push_back(ny);
+                        b.v.push_back(nz);
                         float u = hasUv ? mesh->uvs[vi * 2 + 0] : 0.0f;
                         float v = hasUv ? mesh->uvs[vi * 2 + 1] : 0.0f;
-                        if (useFieldUnwrap) {
+                        if (useFieldUnwrap || goalFloor) {
                             u = wp[vi * 3 + 0] * kFieldUvScale + 0.5f;
                             v = 1.0f - std::fabs(wp[vi * 3 + 1]) * kFieldUvScale;
                         }
@@ -1905,6 +2983,9 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                             b.v.push_back(mesh->colors[vi * 3 + 1]);
                             b.v.push_back(mesh->colors[vi * 3 + 2]);
                         }
+                        float hand = mirrored ? -1.0f : 1.0f;
+                        if (hexFloor && wn[vi * 3 + 2] < 0.f) hand = -hand;
+                        b.v.push_back(hand);
                         for (int c = 0; c < 3; ++c) {
                             const float p = b.v[b.v.size() - size_t(b.stride) + size_t(c)];
                             if (p < b.lo[c]) b.lo[c] = p;
@@ -1949,6 +3030,81 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                          "is packed tangent + normal + UVs; not inventing any)\n");
         }
     }
+    // Clean-room day sky. v=0 is the zenith on SkySphere01, v=1 the horizon.
+    GLuint skyGl = 0;
+    GLuint hexMetalGl = 0;
+    {
+        constexpr int kSkyH = 64;
+        std::vector<uint8_t> px(size_t(kSkyH) * 4u);
+        for (int y = 0; y < kSkyH; ++y) {
+            const float v = float(y) / float(kSkyH - 1);
+            const float zenith[3] = {0.40f, 0.60f, 0.90f};
+            const float horizon[3] = {0.82f, 0.89f, 0.95f};
+            float band = 1.0f - std::fabs(v - 0.72f) / 0.18f;
+            if (band < 0.f) band = 0.f;
+            px[size_t(y) * 4u + 3] = 255;
+            for (int c = 0; c < 3; ++c) {
+                float s = zenith[c] + (horizon[c] - zenith[c]) * v;
+                s += band * 0.08f;
+                if (s > 1.f) s = 1.f;
+                px[size_t(y) * 4u + size_t(c)] = uint8_t(s * 255.f);
+            }
+        }
+        glGenTextures(1, &skyGl);
+        glBindTexture(GL_TEXTURE_2D, skyGl);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, kSkyH, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, px.data());
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        arenaTextures_.push_back(skyGl);
+    }
+    // Square-hole metal mesh for CrossHatched_Grate. 8 holes per UV unit.
+    // Holes are discarded (alpha test), so the panel reads as mesh.
+    GLuint grateGl = 0;
+    {
+        constexpr int kN = 128;
+        constexpr int kCells = 16;
+        std::vector<uint8_t> px(size_t(kN) * size_t(kN) * 4u);
+        const int cell = kN / kCells;
+        const int hole0 = cell * 3 / 10;
+        const int hole1 = cell - cell * 3 / 10;
+        for (int y = 0; y < kN; ++y) {
+            for (int x = 0; x < kN; ++x) {
+                const int cx = x % cell;
+                const int cy = y % cell;
+                const bool hole = cx >= hole0 && cx < hole1 &&
+                                  cy >= hole0 && cy < hole1;
+                uint8_t* p = px.data() + (size_t(y) * kN + size_t(x)) * 4u;
+                if (hole) {
+                    p[0] = p[1] = p[2] = 0;
+                    p[3] = 0;
+                } else {
+                    const bool rim = cx < 2 || cy < 2 || cx >= cell - 2 ||
+                                     cy >= cell - 2;
+                    p[0] = rim ? 90 : 168;
+                    p[1] = rim ? 96 : 176;
+                    p[2] = rim ? 104 : 186;
+                    p[3] = 255;
+                }
+            }
+        }
+        glGenTextures(1, &grateGl);
+        glBindTexture(GL_TEXTURE_2D, grateGl);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, kN, kN, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, px.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        arenaTextures_.push_back(grateGl);
+    }
     // Pack-only GLSL program (compiled once; never per frame).
     {
         GLuint vs = ArenaCompileShader(GL_VERTEX_SHADER, kArenaVs);
@@ -1972,6 +3128,15 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             arenaUniUseColor_ = glGetUniformLocation(arenaProg_, "uUseColor");
             arenaUniNearVeil_ = glGetUniformLocation(arenaProg_, "uNearVeil");
             arenaUniGlowFade_ = glGetUniformLocation(arenaProg_, "uGlowFade");
+            arenaUniNormal_ = glGetUniformLocation(arenaProg_, "uNormal");
+            arenaUniMask_ = glGetUniformLocation(arenaProg_, "uMask");
+            arenaUniEmissive_ = glGetUniformLocation(arenaProg_, "uEmissive");
+            arenaUniUseNormal_ = glGetUniformLocation(arenaProg_, "uUseNormal");
+            arenaUniUseMask_ = glGetUniformLocation(arenaProg_, "uUseMask");
+            arenaUniUseEmissive_ = glGetUniformLocation(arenaProg_, "uUseEmissive");
+            arenaUniUseSpec_ = glGetUniformLocation(arenaProg_, "uUseSpec");
+            arenaUniBlend_ = glGetUniformLocation(arenaProg_, "uBlend");
+            arenaUniTintTex_ = glGetUniformLocation(arenaProg_, "uTintTex");
             std::fprintf(stderr, "[arena] pack GLSL program ready\n");
         } else {
             std::fprintf(stderr,
@@ -1997,7 +3162,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         // transparent: RGB = veil, A = G scaled to ~31% max, so the blended
         // pass draws thin pale lines and shows the sky through elsewhere.
         // Mips are generated from the converted bytes, so distant minification
-        // stays a stable faint mean (G4 precedent).
+        // stays a stable faint mean.
         if (t.lightmap) {
             // Baked lightmaps: upload as-is (no field-skin / pad remaps).
         } else if (t.name == "Hexagons_Pack_01_T") {
@@ -2030,10 +3195,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             px = converted.data();
             wrap = GL_CLAMP_TO_EDGE;
         } else if (t.name.rfind("BoostPad_", 0) == 0) {
-            // The cooked "diffuse" is a red/green/black mask. The measured
-            // pad colours are gold (BoostPad_Color 1, 0.47, 0.05 and the
-            // BoostPad_02 ColorA/B/C family). Red becomes the disc, green
-            // the arrow highlight, black the centre.
+            // The cooked diffuse is a red/green/black mask. Gold pads: red is the
+            // disc, green the arrow, black the centre.
             converted.resize(t.rgba.size());
             for (size_t p = 0; p < t.rgba.size() / 4; ++p) {
                 const unsigned r = t.rgba[p * 4 + 0];
@@ -2108,6 +3271,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         // and paint purple/blue padding onto seams (goal frames, dome edge).
         // Diffuse keeps G4 trilinear; lightmaps stay linear + clamp.
         // A compressed diffuse already has its mip chain.
+        // Diffuse uses trilinear mips. Lightmaps stay linear and clamped.
         if (t.lightmap) {
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -2122,6 +3286,34 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         glBindTexture(GL_TEXTURE_2D, 0);
         texGlId[ti] = int(tex);
         arenaTextures_.push_back(tex);
+        if (t.name == "Hexagons_Pack_B" && !t.lightmap) {
+            // Keep the weave, drop the purple chroma. Mouth hex still
+            // samples the original sheet.
+            std::vector<uint8_t> metal(t.rgba.size());
+            for (size_t p = 0; p < t.rgba.size() / 4; ++p) {
+                const unsigned r = t.rgba[p * 4 + 0];
+                const unsigned g = t.rgba[p * 4 + 1];
+                const unsigned b = t.rgba[p * 4 + 2];
+                const unsigned lum = (r + g + b) / 3u;
+                metal[p * 4 + 0] = (uint8_t)lum;
+                metal[p * 4 + 1] = (uint8_t)lum;
+                metal[p * 4 + 2] = (uint8_t)lum;
+                metal[p * 4 + 3] = 255;
+            }
+            glGenTextures(1, &hexMetalGl);
+            glBindTexture(GL_TEXTURE_2D, hexMetalGl);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, t.width, t.height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, metal.data());
+            glGenerateMipmap(GL_TEXTURE_2D);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            arenaTextures_.push_back(hexMetalGl);
+        }
     }
     std::fprintf(stderr, "[arena] compressed upload:");
     if (compressedDxt1 > 0) {
@@ -2136,6 +3328,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         std::fprintf(stderr, " none");
     std::fprintf(stderr, " (rgba8=%d rewrite=%d refused=%d)\n", rgbaUploads,
                  rewrittenUploads, refusedUploads);
+    std::vector<int> overlayGl;
+    UploadOverlayJobs(overlays, overlayGl, arenaTextures_);
 
     // ---- GL upload: the buckets (GL_STATIC_DRAW, uploaded once) -----------
     // The map is ordered by the bucket key, so the draw order is deterministic.
@@ -2144,9 +3338,22 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         const ArenaCpuBucket& b = cpu[kv.second];
         if (b.idx.empty()) continue;
         ArenaBucket g;
-        g.texId = (key.tex >= 0 && size_t(key.tex) < texGlId.size())
-                      ? texGlId[size_t(key.tex)]
-                      : -1;
+        if (key.tex == kArenaSkyTex) {
+            g.texId = int(skyGl);
+        } else if (key.tex == kArenaHexMetalTex) {
+            g.texId = int(hexMetalGl);
+        } else if (key.tex == kArenaGrateTex) {
+            g.texId = int(grateGl);
+        } else if (key.tex >= kOverlayTexBase) {
+            const int slot = key.tex - kOverlayTexBase;
+            g.texId = (slot >= 0 && size_t(slot) < overlayGl.size())
+                          ? overlayGl[size_t(slot)]
+                          : -1;
+        } else if (key.tex >= 0 && size_t(key.tex) < texGlId.size()) {
+            g.texId = texGlId[size_t(key.tex)];
+        } else {
+            g.texId = -1;
+        }
         g.lmTexId = (key.lm >= 0 && size_t(key.lm) < texGlId.size())
                         ? texGlId[size_t(key.lm)]
                         : -1;
@@ -2170,6 +3377,21 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.alphaTest = key.alphaTest;
         g.nearVeil = false;
         g.nearEdge = key.nearEdge;
+        g.clipThrough = key.clipThrough;
+        g.nrmTexId = (key.nrm >= 0 && size_t(key.nrm) < texGlId.size())
+                         ? texGlId[size_t(key.nrm)]
+                         : -1;
+        g.maskTexId = (key.mask >= 0 && size_t(key.mask) < texGlId.size())
+                          ? texGlId[size_t(key.mask)]
+                          : -1;
+        g.emissiveOn = key.emis != 0;
+        if (key.emis == 1) {
+            g.emissive[0] = 1.0f; g.emissive[1] = 0.12f; g.emissive[2] = 0.04f;
+        } else if (key.emis == 2) {
+            g.emissive[0] = 0.15f; g.emissive[1] = 0.45f; g.emissive[2] = 1.0f;
+        }
+        g.blend = key.blend;
+        g.tintTex = key.tintTex;
         g.tag = b.tag;
         // Untextured glass has no mask and the pack shader writes alpha 1
         // when there is no diffuse. A 1x1 texel at kArenaGlassAlpha puts
@@ -2248,11 +3470,25 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                  arenaStats_.textures,
                  arenaStats_.placements, arenaStats_.skippedPlacements,
                  arenaStats_.sectionSlots, (unsigned long long)arenaStats_.tris);
+    if (overlays.listed) {
+        int applied = 0;
+        int skipped = 0;
+        if (overlays.parseFailed) {
+            skipped = 1;
+        } else {
+            for (const OvEntry& entry : overlays.entries) {
+                if (entry.used) ++applied;
+                else ++skipped;
+            }
+        }
+        std::fprintf(stderr, "[arena] overlays: applied=%d skipped=%d\n",
+                     applied, skipped);
+    }
     return arenaReady_;
 }
 
 void Renderer::DrawArenaPack() {
-    // No pack -> no GL call at all (the default path stays byte-identical).
+    // No pack means no GL call.
     if (!arenaReady_) return;
     // Day sky behind the bowl. The analytic path clears a night blue; that
     // clear is only replaced when a pack is actually drawn.
@@ -2269,11 +3505,21 @@ void Renderer::DrawArenaPack() {
     GLboolean maskWas = GL_TRUE;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &maskWas);
     const bool useGlsl = arenaProg_ != 0;
+    const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+    GLint cullMode = GL_BACK, frontFace = GL_CCW;
+    glGetIntegerv(GL_CULL_FACE_MODE, &cullMode);
+    glGetIntegerv(GL_FRONT_FACE, &frontFace);
     if (useGlsl) {
         glUseProgram(arenaProg_);
         glUniform1i(arenaUniDiffuse_, 0);
         glUniform1i(arenaUniLightmap_, 1);
         glUniform1i(arenaUniNormal_, 2);
+        glUniform1i(arenaUniMask_, 3);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, arenaWhiteTex_);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, arenaWhiteTex_);
+        glActiveTexture(GL_TEXTURE0);
         glDisable(GL_LIGHTING);  // shade comes from the lightmap + soft fill
     }
     auto drawBucket = [&](const ArenaBucket& bk, bool transparentPass) {
@@ -2281,6 +3527,16 @@ void Renderer::DrawArenaPack() {
         if (bk.decal) {
             glEnable(GL_POLYGON_OFFSET_FILL);
             glPolygonOffset(-1.5f, -2.0f);
+        }
+        if (bk.clipThrough) {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glFrontFace(GL_CCW);
+        } else {
+            glCullFace((GLenum)cullMode);
+            glFrontFace((GLenum)frontFace);
+            if (cullWas) glEnable(GL_CULL_FACE);
+            else glDisable(GL_CULL_FACE);
         }
         glBindBuffer(GL_ARRAY_BUFFER, bk.vbo);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bk.ibo);
@@ -2299,9 +3555,9 @@ void Renderer::DrawArenaPack() {
             glBindTexture(GL_TEXTURE_2D, nrm);
             glActiveTexture(GL_TEXTURE0);
             float tint[3] = {bk.tintRgb[0], bk.tintRgb[1], bk.tintRgb[2]};
-            if (transparentPass && bk.texId < 0) {
+            if (transparentPass && bk.texId < 0 && !bk.tintTex) {
                 // keep glass veil colour; alpha handled in blend
-            } else if (bk.texId >= 0) {
+            } else if (bk.texId >= 0 && !bk.tintTex) {
                 tint[0] = tint[1] = tint[2] = 1.0f;
             }
             float emit[3] = {0.f, 0.f, 0.f};
@@ -2323,6 +3579,22 @@ void Renderer::DrawArenaPack() {
             glUniform1i(arenaUniUseColor_, bk.useColor ? 1 : 0);
             glUniform1i(arenaUniNearVeil_, bk.nearVeil ? 1 : 0);
             glUniform1i(arenaUniGlowFade_, (bk.emit || bk.nearEdge) ? 1 : 0);
+            const GLuint mask =
+                bk.maskTexId >= 0 ? GLuint(bk.maskTexId) : arenaWhiteTex_;
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, nrm);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, mask);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(arenaUniUseNormal_, bk.nrmTexId >= 0 ? 1 : 0);
+            glUniform1i(arenaUniUseMask_, bk.maskTexId >= 0 ? 1 : 0);
+            glUniform1i(arenaUniUseEmissive_, bk.emissiveOn ? 1 : 0);
+            glUniform1i(arenaUniUseSpec_,
+                        (packSpec_ && bk.nrmTexId >= 0) ? 1 : 0);
+            glUniform3f(arenaUniEmissive_, bk.emissive[0], bk.emissive[1],
+                        bk.emissive[2]);
+            glUniform1i(arenaUniBlend_, bk.blend);
+            glUniform1i(arenaUniTintTex_, bk.tintTex ? 1 : 0);
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
             glEnableVertexAttribArray(2);
@@ -2335,12 +3607,12 @@ void Renderer::DrawArenaPack() {
                                   (const void*)(6 * sizeof(float)));
             glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, stride,
                                   (const void*)(8 * sizeof(float)));
-            glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, stride,
+            glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, stride,
                                   (const void*)(10 * sizeof(float)));
             if (bk.useColor) {
                 glEnableVertexAttribArray(5);
                 glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, stride,
-                                      (const void*)(13 * sizeof(float)));
+                                      (const void*)(14 * sizeof(float)));
             } else {
                 glDisableVertexAttribArray(5);
             }
@@ -2401,6 +3673,9 @@ void Renderer::DrawArenaPack() {
         glDisableVertexAttribArray(4);
         glDisableVertexAttribArray(5);
         glUseProgram(0);
+        glUseProgram(0);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE2);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
@@ -2411,6 +3686,10 @@ void Renderer::DrawArenaPack() {
         glDisableClientState(GL_NORMAL_ARRAY);
         glDisableClientState(GL_VERTEX_ARRAY);
     }
+    glCullFace((GLenum)cullMode);
+    glFrontFace((GLenum)frontFace);
+    if (cullWas) glEnable(GL_CULL_FACE);
+    else glDisable(GL_CULL_FACE);
     glDepthMask(maskWas ? GL_TRUE : GL_FALSE);
     if (texWas) glEnable(GL_TEXTURE_2D); else glDisable(GL_TEXTURE_2D);
     if (blendWas) glEnable(GL_BLEND); else glDisable(GL_BLEND);
@@ -2446,6 +3725,12 @@ void Renderer::ShutdownArenaPack() {
     arenaUniLmLuma_ = arenaUniAlphaTest_ = arenaUniUseColor_ = -1;
     arenaUniNearVeil_ = -1;
     arenaUniGlowFade_ = -1;
+    arenaUniDiffuse_ = arenaUniLightmap_ = arenaUniTint_ = -1;
+    arenaUniUseDiff_ = arenaUniUseLm_ = arenaUniAlphaTest_ = -1;
+    arenaUniNormal_ = arenaUniMask_ = arenaUniEmissive_ = -1;
+    arenaUniUseNormal_ = arenaUniUseMask_ = arenaUniUseEmissive_ = -1;
+    arenaUniUseSpec_ = -1;
+    arenaUniBlend_ = arenaUniTintTex_ = -1;
     arenaReady_ = false;
 }
 

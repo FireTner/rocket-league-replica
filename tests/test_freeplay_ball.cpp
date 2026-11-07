@@ -1,7 +1,5 @@
-// Free-play ball commands (keys 1–5). Pure checks plus one scripted sim run
-// that prints positions and velocities. Headless: no window.
-//
-// Build: see the Makefile target /tmp/t_ball.
+// Free-play ball commands (keys 1-5). Pure checks plus one scripted sim run.
+// Headless: no window. Prints positions and velocities.
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

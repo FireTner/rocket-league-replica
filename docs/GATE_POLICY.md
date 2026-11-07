@@ -2,7 +2,7 @@
 
 Why this exists: the full bar (~200 checks: `measured.py` 19 +
 `mesh_gates.py` 13 + `visual_gates.py` VG1–VG16 + `arena_test` 55 +
-`verify_vs_rocketsim.py` 110) costs 100–300 s per `make all` on a
+`verify_vs_rocketsim.py` 110) costs 100–300 s per `cmake --build build --target check` on a
 2-core box, and history shows agents re-running all of it after every
 edit — including physics gates on camera-only changes. V6 proved
 green gates ≠ correct. So: gates are the regression bar, not the
@@ -12,7 +12,7 @@ oracle. Human playtest outranks them for feel.
 
 | Tier | What | Blocks? | When to run |
 |---|---|---|---|
-| **Hard** (physics) | `measured.py` 19/19, `mesh_gates.py` 13/13, `arena_test` 55/55, `verify_vs_rocketsim.py` 110/110, `make tests` | Yes, on sim-touching changes | Only when `src/sim`, `src/arena`, `src/physics`, `Tuning.h`, `tools/tas/tapes`, or sim-path flags change |
+| **Hard** (physics) | `measured.py` 19/19, `mesh_gates.py` 13/13, `ctest --test-dir build` (includes `arena_test`), `verify_vs_rocketsim.py` 110/110 | Yes, on sim-touching changes | Only when `src/sim`, `src/arena`, `src/physics`, `Tuning.h`, `tools/tas/tapes`, or sim-path flags change |
 | **Advisory** (visual) | `visual_gates.py` VG1–VG16, relevant `--only VGx` | Yes, but only the touched `VG*` | On `src/render\|camera\|fx\|models\|audio\|menu`, `src/game/main.cpp` presentation paths |
 | **Local only** (camera truth) | `camera_surface_gate.py` CS1–CS5; `camera_trace_gate.py` CT1–CT3 once P3 of `MASTER_PROMPT_CAMERA_EXACT.md` lands (SKIPs without `/decomp/traces/`) | **No** — SKIPs (exit 0) without `decomp/camera_surface.json`, which never ships | When `src/camera/` mechanisms change or RL patches its package (engine/licensee identity) |
 | **Authority** (human) | `docs/PLAYTEST_CHECKLIST.md` (5 min), `docs/blind_feel.md` | Overrules both for feel/juice | Every feel/juice change; never touch `tools/verify/gates*` for feel |
@@ -22,16 +22,15 @@ only update when a MEASURED RocketSim run disagrees.
 
 ## Owner-based selection (mirrors CONTRACTS.md v2)
 
-- `src/sim|arena|physics`, `Tuning.h`, tapes → full physics bar + `make tests`.
+- `src/sim|arena|physics`, `Tuning.h`, tapes → full physics bar + `ctest --test-dir build`.
 - `src/render|camera|fx|models|audio|menu|settings|input`, `src/game/main.cpp`
   presentation paths, `config/` → touched `VG*` via `--only` + the matching
-  contract test (`t_cam`, `t_atex`, `t_gp`, `t_kb`, `t_rt`). No `measured.py`.
-- `tools/verify|tools/tas` harness edits → the suite they own, plus a
-  dry-run (`make -n`) to prove the Makefile still parses.
+  contract test (`ctest -R test_camera_dynamics`, `test_arena_textures`, `test_gamepad`, `test_keyboard_menu`, `test_settings_roundtrip`). No `measured.py`.
+- `tools/verify|tools/tas` harness edits → the suite they own, plus
+  `cmake -B build` to prove the build still configures.
 - Docs-only → nothing. No build, no gates.
 
-`make check-touched` (new Makefile target, backed by
-`tools/verify/check_touched.py`) prints this mapping for the current
+`python3 tools/verify/check_touched.py` prints this mapping for the current
 `git status` — it never runs gates itself.
 
 ## Skip rules
@@ -39,9 +38,10 @@ only update when a MEASURED RocketSim run disagrees.
 - No sim diff since last green (same `build/headless_sim` checksum over
   sim-owned files) → cite the checksum, skip physics. Camera changes are
   presentation by rule and never invalidate physics.
-- `make all` is the *end-of-work* bar, not the per-edit loop. During work:
-  build the single target (`make build/game`, one `/tmp/t_*`), run the
-  single gate (`--only VGx`), full bar once at the end.
+- `cmake --build build --target check` is the *end-of-work* bar, not the per-edit loop. During work:
+  build the single target (`cmake --build build --target game`), run one test
+  (`ctest --test-dir build -R <name>`), run the single gate (`--only VGx`),
+  full bar once at the end.
 - `timeout 1800 visual_gates.py` is banned as a foreground step. Use
   `--only` per step, foreground, bounded (`timeout 120`). Background jobs
   must be collected (`job_output`) or killed (`job_kill`) in the same step —
@@ -64,7 +64,7 @@ result, never a PASS. Quote `GL_VENDOR/RENDERER/VERSION` with every perf line.
 
 ## Known gaps (recorded, not hidden)
 
-- **`make check` swallows mesh-gate failures.** The target runs
+- **`cmake --build build --target check` swallows mesh-gate failures.** The target runs
   `python3 tools/verify/mesh_gates.py || true` (owner decision 2026-10-20), so a
   mesh FAIL cannot block that target. A missing mesh dir already exits 0 with a
   loud `SKIP`, so the `|| true` only masks real FAILs: **run

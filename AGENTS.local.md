@@ -14,12 +14,12 @@ verification are done, to keep sessions fast and cheap.
   only (`read` with `offset`/`limit`).
 - **Whole-file `read` is a last resort** for files over ~200 lines; slice with
   `offset`/`limit`.
-- **Cheapest proof first.** `tests` is `.PHONY`, so `make all` ALWAYS
-  recompiles + reruns every suite (100–300 s on 2 cores, never ~20 ms).
-  Per edit use the single target (`make build/game`, one `/tmp/t_*`) plus
-  the single gate (`--only VGx` / `check_touched.py`); `make check` once at
-  the end. Tier rules live in `docs/GATE_POLICY.md` — camera/render edits
-  never trigger physics gates.
+- **Cheapest proof first.** `cmake --build build --target check` reruns every
+  suite. Per edit build one target (`cmake --build build --target game`) and
+  one test (`ctest --test-dir build -R <name>`) plus the single gate
+  (`--only VGx` / `check_touched.py`); run `check` once at the end. Tier
+  rules live in `docs/GATE_POLICY.md` — camera/render edits never trigger
+  physics gates.
 - **Bounded steps, durable logs.** Long work runs in ≤5-min steps, each
   ending with an append to the owning `docs/*_LOG.md` + `todo_write` state.
   Background jobs are collected (`job_output`) or killed (`job_kill`) in
@@ -29,9 +29,9 @@ verification are done, to keep sessions fast and cheap.
   `glxinfo` / `lspci` probes (record once). Scope every search with `path`
   / `include`. `run_offscreen` (45 s) + gamescope teardown can hang: fail
   fast to `SKIP`, don't retry it in a loop.
-- **Gate selector.** Run `python3 tools/verify/check_touched.py`
-  (or `make check-touched`) before verifying — it maps the dirty tree to
-  the hard/advisory/harness/docs tier and prints the exact commands.
+- **Gate selector.** Run `python3 tools/verify/check_touched.py` before
+  verifying — it maps the dirty tree to the hard/advisory/harness/docs tier
+  and prints the exact commands.
 - **Renderer / camera / model / FX work:** load the
   `raw-cpp-opengl-compatibility-builder` skill before editing.
 - **Shell output via `rtk` (mandatory).** `rtk` 0.51.0 is on `PATH`
@@ -42,6 +42,6 @@ verification are done, to keep sessions fast and cheap.
   `pnpm` invocation through `rtk`; complex shell (pipes, `&&`/`;`, redirects,
   `$( )`) always runs native. Never regress to bare commands where an `rtk`
   subcommand exists. Check savings with `rtk gain` at session end.
-- **Dev shell (mandatory).** Prefix every `bash` session that builds with
-  `source tools/dev-local.sh &&` (one line: ccache, parallel make, git→rtk).
-  Never edit the Makefile to add it.
+- **Dev shell.** `source tools/dev-local.sh` pins `CCACHE_DIR` and routes
+  simple git commands through `rtk`. CMake already uses ccache when it is on
+  PATH, and the default build is Release `-O2`. Never hand-roll a `g++` line.

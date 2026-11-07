@@ -1,13 +1,5 @@
-// A1 SIM CORE — deterministic 120 Hz RocketSim wrapper (implementation).
-//
-// Determinism rules enforced here:
-//  - Fixed 120 Hz tick; no wall-clock anywhere in the sim path.
-//  - Cars are placed with explicit SetState (fixed kickoff slots), never via
-//    RocketSim's global-RNG Respawn.
-//  - Bullet solver iterations pinned (m_numIterations = 10) so a Bullet
-//    version drift cannot silently change results.
-//  - Build with -ffp-contract=off -fno-fast-math (see root Makefile).
-//  - Sim-owned RNG is seeded fixed (SetSeed to change); no rand()/time().
+// RocketSim wrapper: fixed 120 Hz tick, explicit spawns, pinned solver iterations.
+// Values from RocketSim (MIT © 2022 ZealanL).
 #include "Sim.h"
 
 #include "models/BallOrient.h"
@@ -33,9 +25,6 @@
 #include "../arena/ArenaConstants.h"
 
 namespace {
-// Build a RocketSim CarConfig from the A3 single-source preset table.
-// Values are verbatim vs third_party/RocketSim/src/Sim/Car/CarConfig/CarConfig.cpp:20-82
-// (verified by src/physics/verify_vs_rocketsim.py).
 RocketSim::CarConfig ConfigFromPreset(const Physics::CarPreset& p) {
 	RocketSim::CarConfig cfg;
 	cfg.hitboxSize = RocketSim::Vec(p.sizeX, p.sizeY, p.sizeZ);
@@ -72,16 +61,11 @@ struct Sim::Impl {
 	bool scoredThisTick = false;
 	bool scoredLastTick = false;
 	std::mt19937_64 rng{ 0xA15EEDULL };
-	// Synthetic flat floor (fallback arena only; A1-owned geometry, 1 plane).
+	// Synthetic flat floor, used only when no Soccar mesh loaded.
 	btStaticPlaneShape* floorShape = nullptr;
 	btRigidBody* floorBody = nullptr;
-	// Fallback pad league (ONLY when !realSoccar): Soccar pad layout with a
-	// rule transcribed from BoostPad.cpp (_CheckCollide cylinder branch +
-	// _PostTickUpdate grant + _PreTickUpdate cooldown). RocketSim ticks pads
-	// only when hasArenaStuff (Arena.cpp:704 — false for THE_VOID, and SOCCAR
-	// without dumped meshes aborts in _SetupArenaCollisionShapes), so the
-	// fallback owns this; when meshes land, RocketSim owns pads and this
-	// vector stays empty. Order: 6 big (LOCS_BIG_SOCCAR) then 28 small.
+	// Fallback pads, only when there is no Soccar mesh. RocketSim ticks pads
+	// only when the arena has meshes. Order is 6 big, then 28 small.
 	struct PadRt {
 		float x, y, z;
 		bool big;
@@ -106,18 +90,8 @@ struct Sim::Impl {
 
 namespace {
 
-// A real dumped arena loads as a SET of meshes (16 for standard Soccar), and
-// only a dumped mesh hashes into RocketSim's known set. We detect it from the
-// .cmf FILES rather than from the loaded Bullet shapes, because
-// CollisionMeshFile::UpdateHash() is ORDER-DEPENDENT over `tris`: replaying it
-// from a btBvhTriangleMeshShape cannot reproduce it (the BVH reorders and
-// deduplicates triangles). Parsing each file with RocketSim's own reader and
-// reading its `hash` is exact.
-// The 16 known SOCCAR collision-mesh hashes — verbatim from
-// third_party/RocketSim/src/RocketSim.cpp:20-28. A CMF produced by
-// RLArenaCollisionDumper on a standard Soccar arena hits one of these; a
-// clean-room reconstruction cannot (and must not, since it is not a Psyonix
-// asset).
+// Hash is order-dependent over the file's triangles, so it is read from the
+// .cmf rather than from the Bullet BVH, which reorders them.
 constexpr uint32_t kKnownSoccarMeshHashes[16] = {
 	0xA160BAF9, 0x2811EEE8, 0xB81AC8B9, 0x760358D3,
 	0x73AE4940, 0x918F4A4E, 0x1F8EE550, 0x255BA8C1,
@@ -172,7 +146,7 @@ void InitRocketSimOnce(const std::string& meshDir) {
 	if (!meshDir.empty() && std::filesystem::exists(meshDir)) {
 		RocketSim::Init(std::filesystem::path(meshDir), /*silent=*/true);
 	} else {
-		// No dumped meshes (Psyonix-owned, never vendored): init mesh-free.
+		// No mesh directory: initialize without collision meshes.
 		std::map<GameMode, std::vector<FileData>> empty;
 		RocketSim::InitFromMem(empty, /*silent=*/true);
 	}
@@ -235,15 +209,7 @@ bool Sim::Init(const char* meshDir) {
 		if (!RocketSim::GetArenaCollisionShapes(GameMode::SOCCAR).empty())
 			mode = GameMode::SOCCAR;
 
-		// NOTE (Round 1 open blocker): RocketSim's btRSBroadphase decides which
-		// grid cells a static mesh occupies by calling processAllTriangles
-		// (btRSBroadphase.cpp:151-170), which reads the shape's optimized BVH.
-		// Pre-building that BVH here via getAabb() gets the mesh registered in
-		// the cell grid (verified: staticHandleRefs=6468), but loaded .cmf mesh
-		// shapes still produce ZERO manifold contacts against any dynamic body
-		// (ball, box, or car), so the mesh currently contributes no collision.
-		// Kept because it is correct and harmless; the real blocker is recorded
-		// in docs/PHYSICS_1TO1_LOG.md Round 1 with a reproduction.
+		// Build each mesh BVH before the arena exists so the broadphase can see it.
 		for (btBvhTriangleMeshShape* shape :
 			RocketSim::GetArenaCollisionShapes(GameMode::SOCCAR)) {
 			if (shape) {
@@ -287,13 +253,9 @@ bool Sim::Init(const char* meshDir) {
 			},
 			impl_);
 
-		// Goals: RocketSim owns the rule (Arena::IsBallScored,
-		// Arena.cpp:893-900: |ballY| > goalBaseThresholdY + ballRadius) and
-		// calls this every tick the ball is past the line. PollGoal() is
-		// documented as once-per-goal, so record the scored flag and let
-		// Step120 latch on the rising edge (see Impl::scoredLastTick). The
-		// callback can only be registered on a real arena (THE_VOID asserts),
-		// so the fallback path keeps latching from A2's analytic IsGoal.
+		// The callback fires on every tick the ball is past the line. PollGoal
+		// is once per goal, so Step120 latches the rising edge. THE_VOID rejects
+		// the callback, so the fallback path latches from IsGoal instead.
 		if (impl_->realSoccar) {
 			impl_->arena->SetGoalScoreCallback(
 				[](RocketSim::Arena* arena, RocketSim::Team scoringTeam, void* userInfo) {
@@ -306,11 +268,8 @@ bool Sim::Init(const char* meshDir) {
 		}
 
 		if (!impl_->realSoccar) {
-			// A1-owned synthetic ground plane at z=0 so wheels make contact
-			// and throttle/ground physics works without dumped Psyonix meshes.
-			// Mirrors Arena::_AddStaticCollisionShape conventions (userPointer
-			// must be the Arena: the contact callback casts world bodies to
-			// Arena* for ball+world hits).
+			// Ground plane at z=0 so wheels have something to touch.
+			// userPointer must be the Arena: the contact callback casts world bodies to Arena*.
 			impl_->floorShape = new btStaticPlaneShape(btVector3(0, 0, 1), 0.0f);
 			impl_->floorBody = new btRigidBody(0.0f, nullptr, impl_->floorShape);
 			btTransform t;
@@ -484,13 +443,8 @@ void Sim::Step120() {
 	AdvanceBallOrientation();
 }
 
-// Fallback arena containment (ONLY when !realSoccar): the mesh-less plane is
-// infinite, so analytic A2 walls keep ball+cars inside the 1:1 Soccar shell.
-// Ball: A2 CollideSphere push-out + restitution reflect (mutator
-// ballWorldRestitution), goal mouth/net handled by A2 (drivable) with
-// IsGoal latching. Cars: push-out + normal-velocity removal (plastic wall,
-// e=0.1) so players can't drive through rendered walls; full car-vs-wall
-// solver waits on mesh arenas. Deterministic: fixed order, no RNG.
+// No mesh: the ground plane is infinite, so the analytic shell keeps the
+// ball and cars inside. Ball velocity reflects; cars lose inward normal speed.
 void Sim::ContainFallbackBodies() {
 	using namespace RocketSim;
 	if (!impl_ || !impl_->arena)
@@ -927,6 +881,12 @@ bool Sim::IsSupersonic(int idx) const {
 	if (!impl_ || idx < 0 || idx >= (int)impl_->cars.size())
 		return false;
 	return impl_->cars[idx]->GetState().isSupersonic;
+}
+
+bool Sim::IsOnGround(int idx) const {
+	if (!impl_ || idx < 0 || idx >= (int)impl_->cars.size())
+		return false;
+	return impl_->cars[idx]->GetState().isOnGround;
 }
 
 bool Sim::IsDemoed(int idx) const {

@@ -26,6 +26,7 @@ a neighbour (45.8% lit, half the vertices still black). Leave that mesh unbound.
 Accepts either `rlmat.RLMatPackage` (preferred — has try_properties) or a
 raw `rlupk.Package` (falls back to name-only mesh identification).
 """
+
 from __future__ import annotations
 
 import struct

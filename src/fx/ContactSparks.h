@@ -1,7 +1,4 @@
-// Contact sparks decision. Presentation only: it reads the sim view and
-// says where a scrape or an awkward ball touch should draw. No particles
-// are stored here, and nothing in the boost plume, the supersonic mark,
-// or the airborne spin circles is consulted.
+// ContactSparks.h — where a scrape or an awkward ball touch should spark.
 #pragma once
 
 #include <cmath>
@@ -10,36 +7,15 @@
 
 namespace rl {
 
-// Wheel lateral speed RocketSim already calls significant slip is 5 uu/s
-// (Car.cpp _UpdateWheels, baseFriction > 5). Sparks start above that
-// chatter. 80 uu/s is UNVERIFIED as an RL visual threshold.
-constexpr float kScrapeSlipMin = 80.0f;
-// lat/(lat+lon) is RocketSim frictionCurveInput (Car.cpp:454).
-// 0.35 is UNVERIFIED as the visual grind cutoff. A clean roll stays near 0.
-constexpr float kScrapeSlipRatio = 0.35f;
-// handbrakeVal is 0..1 and rises at POWERSLIDE_RISE_RATE 5/s (RLConst.h:81).
-constexpr float kScrapeHandbrake = 0.5f;
-// Body or wall scrape, uu/s of speed along the surface. UNVERIFIED.
-// Higher than the wheel floor because a body has no rolling part to remove.
-constexpr float kBodyScrapeMin = 250.0f;
-// |normal.z| below this is a wall rather than a floor. UNVERIFIED; 0.7 is
-// about 45 degrees off horizontal.
-constexpr float kWallNormalZ = 0.7f;
-// Clean hits stay quiet: no published source says a square touch sparks.
-// Tangential part of (ball.vel - car.vel) must clear this floor. 400 uu/s
-// is UNVERIFIED. A square boost hit in the contact-spark test measured
-// 150 uu/s tangent; the 100 uu offset hit measured 437.
-constexpr float kAwkwardTangentMin = 400.0f;
-// |dot(contact normal, car forward)| below this is off the nose.
-// Same test, seed 1, fallback: square hit aligned 0.91, offset hit 0.64.
-// 0.75 sits in that gap. UNVERIFIED against a live capture. Post-step
-// approach/tangent are too close to separate those two hits.
-constexpr float kAwkwardAlignMax = 0.75f;
-// Ball center at or under radius 91.25 (RLConst.h:117) plus 40 uu of
-// UNVERIFIED slack counts as "against the floor" for a pinch.
-constexpr float kPinchBallZ = 91.25f + 40.0f;
-// Burst length in sim seconds. UNVERIFIED. Short on purpose.
-constexpr float kBallBurstSeconds = 0.18f;
+constexpr float kScrapeSlipMin = 80.0f; // uu/s, above Car.cpp _UpdateWheels slip of 5
+constexpr float kScrapeSlipRatio = 0.35f; // Car.cpp:454 frictionCurveInput
+constexpr float kScrapeHandbrake = 0.5f; // RLConst.h:81
+constexpr float kBodyScrapeMin = 250.0f; // uu/s along the surface
+constexpr float kWallNormalZ = 0.7f; // |n.z| below this is a wall (~45 deg)
+constexpr float kAwkwardTangentMin = 400.0f; // tangent of (ball.vel - car.vel), uu/s
+constexpr float kAwkwardAlignMax = 0.75f; // |dot(normal, forward)| off the nose
+constexpr float kPinchBallZ = 91.25f + 40.0f; // RLConst.h:117
+constexpr float kBallBurstSeconds = 0.18f; // sim seconds
 constexpr int kMaxSparkPatches = 5;
 
 struct ContactSparkFrame {
@@ -141,10 +117,7 @@ inline ContactSparkFrame ClassifyContact(const Sim::CarScrape& car,
 		if (fl > 1e-6f)
 			align = std::fabs((ball.nx * ball.fx + ball.ny * ball.fy + ball.nz * ball.fz) / fl);
 		bool glancing = tangent >= kAwkwardTangentMin && align < kAwkwardAlignMax;
-		// Pinch: car on the ground, ball against the floor, contact on the
-		// upper half (the car is coming down onto it). A square nose hit
-		// stays under the tangent test and does not take this branch.
-		// The 0.5 normal cutoff is UNVERIFIED.
+		// Pinch: grounded car, ball on the floor, contact on the upper half.
 		bool pinch = ball.carOnGround && ball.ballZ <= kPinchBallZ &&
 			ball.nz > 0.5f && speed > 500.0f && tangent >= kAwkwardTangentMin;
 		frame.awkward = glancing || pinch;

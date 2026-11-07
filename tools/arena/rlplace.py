@@ -1,69 +1,8 @@
 #!/usr/bin/env python3
-"""rlplace.py — Phase A4 of MASTER_PROMPT_ARENA_1TO1.md: **placements**.
-
-Reads the user's OWN Rocket League package and composes a world matrix for
-every placeable arena object.  Carries no Psyonix bytes into the tree and
-writes nothing into the repository (AGENTS.md Rule 1); the only output is the
-summary table on stdout and, with `--json PATH`, a JSON dump under `/tmp`.
-
-`docs/ARENA_RIP_LOG.md` (`## Round A4`) holds the round evidence; `docs/ARENA_RIP.md`
-holds the facts base.  This module is self-contained: it re-implements the UE3
-tagged-property walk (it never imports `rlmesh.py`, which another phase owns)
-and uses `tools/decomp/rlupk.py` only as the package reader (decrypt/inflate/
-name/import/export tables, `data()` with the 4250-byte serial bias).
-
-MEASURED SHAPES (all 3251 export-table slots of `Stadium_Day_P.upk` surveyed):
-
-  * Tagged property tag, licensee 34:
-        FName Name (int64: int32 idx + int32 number)
-        FName Type (int64)
-        int32 Size
-        int32 ArrayIndex
-        [FName extra (8 B) when Type == ByteProperty (enum) or
-                            StructProperty (struct)]     -- NOT for ArrayProperty
-        value bytes (Size of them), except BoolProperty which is 24 B of tag
-        plus ONE value byte and leaves Size == 0.
-    The block ends on an 8-byte FName whose index names `None`; the tag's
-    Type/Size words are the first bytes of whatever follows, so the NAME must be
-    tested first.  A walk must accept a terminator when only 8 bytes remain.
-  * **The export table holds ZEROED PLACEHOLDER SLOTS.**  650 of the 3251
-    slots are all-zero records (`class_index` 0, name `None`, `serial_size` 0,
-    `serial_offset` 0, no outer, no archetype).  `rlupk.export_class_name()`
-    reports the LAST export's name for such a slot (`class_index` 0 ->
-    `exports[-1]`), which is why a naive census calls 650 of them
-    `StaticMeshComponent`.  The REAL component count of this package is
-    **510**; the "1160" figure in the A3 log is inflated by those 650 slots.
-  * Placement containers (MEASURED -- every one of the 510 real components is
-    owned by exactly one of them, 236+154+47+38+16+16+2+1 = 510):
-        `StaticMeshCollectionActor.StaticMeshComponents`   5 actors -> 236
-        `GroundStaticMeshActor_TA.Components`               1 actor  -> 154
-        `StaticMeshActor.StaticMeshComponent`              47 actors ->  47
-        `FXActor_TA`                                        38 components
-        `DynamicMeshActor_TA`                               16
-        `InterpActor`                                       16
-        `DecalBlockingActor_TA`                              2
-        `SceneCaptureCubeMapActor`                           1
-  * UE3 prefab instancing (MEASURED): the package's `Prefab` export carries
-    `PrefabArchetypes` (86 templates) and `RemovedArchetypes` (**6**).  29
-    `StaticMeshActor` level instances (outer `PersistentLevel`, archetype =
-    the template) carry the instantiated copies; the 6 REMOVED templates
-    (the field walls and the goals) are placed directly.  `RemovedArchetypes`
-    == exactly the templates without a level instance (6/6 agreement).
-  * **ONE uniform composition rule** (no per-case special casing):
-        world = owner_actor_matrix * component_matrix
-    where the owner matrix is the owner's archetype-merged
-    `Location`/`Rotation`/`(DrawScale3D * DrawScale)` and the component matrix
-    is the component's archetype-merged `Translation`/`Rotation`/`Scale3D`.
-    This is right for every container in this package because
-      - the collectors sit at the origin (no `Location` property), and
-      - a prefab-instance component is owned by the COLLECTOR, not by the
-        instance actor, and carries the instance's ABSOLUTE transform
-        (MEASURED: for 29/29 prefab instances the component's own
-        `Translation`/`Rotation`/`Scale3D` equals the instance actor's
-        effective `Location`/`Rotation`/`DrawScale3D*DrawScale`).
-  * A component that is the ARCHETYPE of another component is not a placement
-    (29 of them: the prefab templates whose level instance replaces them).
+"""Compose a world matrix for every placeable object in a local arena package.
+world = owner_actor_matrix * component_matrix. Writes nothing inside the repo.
 """
+
 import argparse
 import collections
 import json
@@ -305,7 +244,7 @@ def rotator_matrix(pitch, yaw, roll):
     `FRotationMatrix(FRotator(p, y, r))` builds in the engine.  Units are
     radians here; callers convert from 65536-per-turn.
 
-    PROOF IN THIS PACKAGE (see the A4 log): the `Goal_STD_Collision` prefab
+    The `Goal_STD_Collision` prefab
     `Standard_Common_Prefab2_Arc14` sits at `Location (0,-5120,0)` with
     `Rotation (0,-32768,0)` (yaw 180 deg).  The goal mesh's local Y runs from
     -784 (the mouth, toward the field) to +880 (the back).  With the yaw about
@@ -352,8 +291,7 @@ def compose_world(location, rotation, scale, parent=None):
     the local +X axis, `m[12:15]` is the translation, and the last row is
     `(0,0,0,1)` -- so a point is transformed as `m * (x,y,z,1)` with the usual
     GL `glLoadMatrixf` convention.  Translation stays in the last column: it
-    never leaks into the 3x3, which is what keeps normals untranslated (the
-    Fennec converter bug in docs/VISUAL_FIXES_LOG.md WS-B).
+    never leaks into the 3x3, which keeps normals untranslated.
     """
     pitch, yaw, roll = (v * (2.0 * math.pi / ROTATOR_UNITS) for v in rotation)
     m = rotator_matrix(pitch, yaw, roll)
@@ -587,7 +525,7 @@ def _materials_of(pkg, chain):
     A `StaticMeshComponent` carries the list in `OverrideMaterials` (or
     `Materials`), sometimes only on its ARCHETYPE (a prefab instance
     serialises only its diffs), so the archetype chain is walked root-first.
-    MEASURED (A3): the array length equals the mesh's section count and slot
+    The array length equals the mesh's section count and slot
     `i` is the material of section `i`.
     """
     for key in ('OverrideMaterials', 'Materials'):
@@ -1145,7 +1083,7 @@ def _fmt3(v, nd=1):
 
 
 def _guard_out_dir(path):
-    """Refuse to write the handoff inside the repository (AGENTS.md Rule 1)."""
+    """Refuse to write the handoff inside the repository."""
     repo = os.path.dirname(os.path.dirname(_HERE))
     full = os.path.abspath(path)
     if full.startswith(os.path.abspath(repo) + os.sep):

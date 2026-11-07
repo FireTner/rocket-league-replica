@@ -1,21 +1,7 @@
-"""Extract Rocket League's camera class/function/property SURFACE as a fixture.
-
-This is the "truth" side of the camera truth gate (docs/CAMERA_DECOMP.md).  It
-reads the user's OWN install, keeps only symbol names + shapes, and writes the
-result to a gitignored local file (default `decomp/camera_surface.json`).
-No package bytes, no decompiled text: names and shapes are facts.
-
-Usage:
-    python3 tools/decomp/camera_surface.py --pkgdir "$RL/.../CookedPCConsole" \
-        [--out decomp/camera_surface.json] [--show]
-
-Packages read: ProjectX.upk (the base Camera_X / CameraStateBlender_X /
-CameraUtils_X) and TAGame.upk (the _TA camera states + ProfileCameraSettings).
-
-The package key is NOT in this repo: set `$RL_UPK_KEY` (64 hex digits) or put it
-in `~/.rl-decomp/upk.key`.  Without one this exits 3 with a SKIP, so a public
-clone stays runnable-but-inert.
+"""Write camera class, function, and property names from a local install.
+Default output is decomp/camera_surface.json. Without a local key, exits 3.
 """
+
 import argparse
 import json
 import os

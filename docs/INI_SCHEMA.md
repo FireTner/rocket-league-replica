@@ -152,8 +152,8 @@ stub — see `src/input/BUILD_NOTES.md`):
 | key    | type | default | range | notes                                   |
 |--------|------|---------|-------|-----------------------------------------|
 | soccar | bool | true    | —     | Standard soccar map (only map this phase; 34 pads fixed by A2). |
-| mesh_dir | string | (empty) | — | Directory holding the dumped/generated arena COLLISION meshes, laid out as `<mesh_dir>/soccar/*.cmf` (RocketSim `COLLISION_MESH_BASE_PATH` convention). Empty = RocketSim's default `./collision_meshes/`. Psyonix-owned dumps are runtime-only and never committed (`docs/MESH_SETUP.md`). Overridden by the `--meshdir` flag. |
-| arena_dir | string | (empty) | — | Directory holding a ripped arena VISUAL pack (`arena.json` + `arena.bin`, format `rl-arena-pack/1`, see `docs/ARENA_PACK.md`). Empty = the analytic shell (no pack is read, no GL object is created, the default path is byte-identical). Overridden by the `--arenadir` flag (flag > INI). A directory with no loadable pack is a LOUD fatal error (stderr, non-zero exit) — never a silent fallback. The pack is Psyonix-owned runtime data: it lives outside the repository (gitignored `arena_assets/`) and is never committed (AGENTS.md rule 1). Carried by `ArenaSettings::arenaDir`. `Settings::Load` reads it and `Settings::Save` writes it back, so a menu Save & close keeps a non-empty path. Startup still resolves the directory with `rl::ReadIniKey` (flag > this key). |
+| mesh_dir | string | collision_meshes | — | Directory of `<mesh_dir>/soccar/*.cmf`. An empty value keeps `collision_meshes`. `--meshdir` wins. A directory that loads no Soccar mesh is a hard error. |
+| arena_dir | string | arena_assets/stadium_day | — | Ripped visual pack (`arena.json` + `arena.bin`). A present empty value draws the analytic shell. A missing key uses the stadium pack; if that pack has no `arena.json` the game draws the shell and says so. `--arenadir` wins. Any other directory with no pack is a fatal error. `ArenaSettings::arenaDir` stores the key; `Settings::Load` reads it and `Settings::Save` writes it back. |
 
 ## [game]
 
@@ -169,7 +169,8 @@ stub — see `src/input/BUILD_NOTES.md`):
 | max_fps | int | 0    | 0..1000 | Frame-rate cap: 0=off (shipped pacing — vsync, or uncapped with `--no-vsync`). >0 clamps to 15..1000 and sleeps the remainder in `EndFrame`, but ONLY when vsync is off (`--no-vsync`); vsync-on behavior is unchanged. Clamp + sleep only — never drops a physics tick. Needs restart (read at context creation). |
 | pacing_log | bool | false | —   | `true` = append `render_pacing.log` in the CWD on every pacing print (soak analysis); `false` = stderr only, no CWD file (V9 fix). |
 | pbr | bool | false | — | G6a PBR-lite: `false` = shipped fixed-function path (gated captures stay pixel-stable); `true` = specular highlight + roughness factor + IBL ambient lift on the car/ball material (`src/render/PbrGl.*`). Applied at frame start; needs restart (read at context creation). |
-| wall_opacity | float | 0.40 | 0..1 | Arena glass-wall alpha on the fixed-function shell. `0.40` is the baked glass vertex alpha (`ArenaShell` `kGlassA`), so a missing key keeps the current walls. Menu step is 0.05. Applied on the glass bucket each frame (no restart). Does not retint the arena. `docs/CROSS_CHECK.md` §5 still says 0.30; that was the pre-ledger bake. |
+| wall_opacity | float | 0.40 | 0..1 | Arena glass alpha. `0.40` is the baked glass alpha, so a missing key keeps the current walls. Menu step 0.05. |
+| pack_spec | bool | false | — | Pack-shader specular on surfaces that bind a normal. `false` is the struct default. The shipped ini turns it on. Read at context creation. |
 
 Extended in v1 (additive, schema stays 1): missing `[render]` falls back to
 the defaults above; older binaries ignore the unknown section. Both

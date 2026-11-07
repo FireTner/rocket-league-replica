@@ -1,76 +1,8 @@
 #!/usr/bin/env python3
-"""CT1-CT3 — camera trace gate (LOCAL ONLY, SKIPs loudly, exit 0 without traces).
-
-`MASTER_PROMPT_CAMERA_EXACT.md` §6 P3.4 asks for the exact-feel bar as a replayable
-trace instead of a vibe. This gate is that bar. It grades three different things
-and never conflates them:
-
-  CT1  self-replay exact   Load a trace, write it back out, reload it, and every
-                           float32 field plus the POV convention round trip must
-                           be BIT-EXACT (0.0, not "small"). This is the format +
-                           loader contract; it holds for synthetic fixtures too,
-                           because it is not a claim about our camera.
-  CT2  exact feel vs RL    Per scenario and per probe channel, our replay's step
-                           response (settle time + overshoot) must land within
-                           TOL of the RECORDED trace's own response, measured with
-                           the same formula on both sides.
-  CT3  no regression       The same metrics plus the per-field error table must
-                           not be WORSE than the stored baseline
-                           `decomp/traces/camera_trace_baseline.json`.
-
-TRACE HOME (binding, Rounds 8/14): the canonical in-repo gitignored directory
-`decomp/traces/` (`cam_trace.DEFAULT_TRACE_DIR`), never a filesystem-root
-`/decomp` — that cannot exist on this machine (`/` is read-only) and was a real
-blocker in Round 8. A trace is Psyonix-derived measurement data, so it never
-enters the tree; the tooling does.
-
-SKIP CONTRACT (the reason a public clone stays green): with no trace whose header
-declares `source: "live"` — i.e. only the synthetic fixtures under
-`decomp/traces/synthetic/` — CT2 and CT3 have nothing to measure and SKIP, and
-the whole gate exits 0. CT1 still runs on the fixtures, labelled as format
-plumbing. Missing directory, broken trace, unusable replay toolchain: SKIP or
-FAIL with a stated reason, never a stack trace and never a silent pass.
-
-WHAT IS SCORED, AND WHAT IS NOT (honest limits, the same posture as
-`tools/decomp/camera_trace_diff.py`):
-
-  * scored channels: `rot_yaw` / `rot_pitch` (UE rotator units, wrapped) and
-    `fov_deg`. Rotation is the POV comparison with the ray-length term removed.
-  * `distance_uu` is scored only when the recorded Distance is demonstrably the
-    same quantity as ours (`|Eye - Center|`, the diff tool's empirical
-    `[0.5, 2.0]` median-ratio probe). A live RL trace normally records the RIG
-    distance (~270 uu) while `|Eye - Center|` is the distance to the look target
-    (~1600 uu in ballcam) — Round 14's finding, which is why `Camera::Pov()`
-    exists. `Pov()` is invisible on this path because the replay driver
-    (`tools/decomp/camera_trace_diff.py`, P2-owned) prints the GL pair; extending
-    that driver is P2-scope, so this gate reports Distance `UNVERIFIED` with the
-    reason instead of scoring a semantics difference as camera error.
-  * Focus vs Rotation are ALWAYS compared as separate fields. During a transition
-    the blended rotation and the blended focus point are interpolated
-    independently, so they legitimately disagree (lead-measured up to 103.9 deg);
-    any metric here that assumed they agree would be false exactly where the
-    `ballcam-toggle` scenario spends its frames.
-
-PROBE CHANNELS / METRICS (documented so every number is reproducible):
-
-    step_frame     the largest single-frame move after frame 0 (response onset)
-    span           |final - value_before_step|, final = mean of the last 10%
-    settle_frames  frames from step_frame until the series stays inside a
-                   SETTLE_BAND (5%) band around `final`; "never settled" = the
-                   rest of the trace
-    settle_s       the same thing in seconds (sum of the recorded dt values)
-    overshoot_pct  the largest excursion PAST `final` in the step's direction, as
-                   a percent of `span` (0 when it only approaches)
-    flat           span below the channel's noise floor -> no step, not scored
-
-Usage:
-    python3 tools/verify/camera_trace_gate.py                  # default dir
-    python3 tools/verify/camera_trace_gate.py --json           # machine-readable
-    python3 tools/verify/camera_trace_gate.py --tracedir DIR --baseline FILE
-    python3 tools/verify/camera_trace_gate.py --write-baseline # operator action
-
-Exit codes: 0 PASS or SKIP, 1 FAIL, 2 tool/config error (never a silent pass).
+"""Replay a camera trace: format round-trip, step response, and baseline regression.
+With no live trace, the response checks SKIP and the process exits 0.
 """
+
 import argparse
 import json
 import os
@@ -98,15 +30,14 @@ except Exception as _ct_err:  # pragma: no cover - a partial checkout must not c
     sys.exit(0)
 
 try:
-    import camera_trace_diff as diff  # P2's replay backends (real camera + loader)
+    import camera_trace_diff as diff  # replay backends (real camera + loader)
     _diff_err = None
 except Exception as _e:  # pragma: no cover
     diff = None
     _diff_err = _e
 
 # ── the gate's knobs (values, not preferences) ───────────────────────────────
-#: The "-5%" band from §6 P3.4, in ONE place: every CT2 match and every CT3
-#: regression bound is a 5% allowance. Never relax it to make a run green.
+# 5% allowance for every CT2 match and every CT3 regression bound.
 TOL = 0.05
 #: Standard step-response settle band: 5% of the response span.
 SETTLE_BAND = 0.05

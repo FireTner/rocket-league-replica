@@ -25,6 +25,7 @@ Usage:
   python3 tools/verify/mesh_integrity.py --json      # machine output (VG13)
 Exit code 0 = all assertions pass, 1 = at least one failed, 2 = cannot read.
 """
+
 import json
 import math
 import os

@@ -1,8 +1,4 @@
-// Last-touch contract. Presentation needs the team that last hit the ball.
-// The snapshot does not carry it. This reads Sim::GetLastTouch only — no
-// physics write, no gate, no tape.
-//
-// Build: see Makefile /tmp/t_touch.
+// Last touch: which team last hit the ball. Reads Sim::GetLastTouch only.
 #include <cmath>
 #include <cstdio>
 

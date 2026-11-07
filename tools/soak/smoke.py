@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-# tools/soak/smoke.py — MIT License
-"""60 s METHOD-SMOKE for the soak gate (A6).
-Simulates the fixed-step accumulator (120 Hz physics) against a synthetic
-llvmpipe-like render loop and proves the counting method: render may miss,
-physics must not drop. No game binary needed. Label: METHOD-SMOKE (not a gate PASS).
-Exit 0 if phys_drops == 0 (method sound), 1 otherwise.
+"""Synthetic 120 Hz step accumulator: render may hitch, physics must not drop a tick.
+Exit 0 when phys_drops == 0.
 """
+
 import argparse, random, statistics, sys
 
 DT = 1.0 / 120.0

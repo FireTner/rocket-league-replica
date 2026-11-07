@@ -1,27 +1,6 @@
-// A1 SIM CORE — headless_sim: run the deterministic sim without rendering.
-//
-// TAPE_FORMAT v1.0.0 conformant CLI:
-//   headless_sim --tape <tape.csv> --ticks N --dump <states.csv|states.bin> [--seed S] [--body car0|ball]
-//
-// Tape: CSV per tools/tas/TAPE_FORMAT.md (header
-//   tick,throttle,steer,pitch,yaw,roll,jump,boost,handbrake; `#` comments
-//   BEFORE the header only; ticks sequential from 0; 120 Hz).
-//   Floats out of [-1,1] are clamped (count reported to stderr).
-//   Non-0/1 jump/boost/handbrake is a parse error (exit 2).
-//   Sign passthrough is VERBATIM (tape -> CarControls, zero negation).
-//
-// Dump (CSV): header tick,x,y,z,vx,vy,vz,speed,heading,fx,fy,fz,ux,uy,uz,boost — superset of
-//   the replay.py compare schema (tick,x,y,speed,heading) so
-//   tools/tas/replay.py compare works unchanged. speed = |v| (3D, uu/s).
-//   heading = atan2(vy,vx) (0 when speed ~ 0). (fx,fy,fz) = car forward unit
-//   vector for TAS sign calibration (0,0,0 when --body ball).
-//   Full 3D columns keep ballistics verifiable.
-// Dump (.bin): packed LE records int32 tick + 9x float32
-//   (x,y,z,vx,vy,vz,fx,fy,fz,ux,uy,uz,boost).
-//
-// CHECKSUM: FNV-1a-64 over the exact dump bytes, printed as
-//   CHECKSUM <16 lowercase hex> on stdout (last line). Same binary + tape +
-//   seed => byte-identical dump (zero divergence).
+// Headless deterministic sim at 120 Hz. Signs pass through verbatim (steer +1 is left).
+// Tape CSV: tick,throttle,steer,pitch,yaw,roll,jump,boost,handbrake. Dump CSV: tick,x,y,z,vx,vy,vz,speed,heading,fx,fy,fz,ux,uy,uz,boost. Dump bin: int32 tick + float32 x,y,z,vx,vy,vz,fx,fy,fz,ux,uy,uz,boost.
+// CHECKSUM: FNV-1a-64 over the exact dump bytes, printed as CHECKSUM <16 lowercase hex>.
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -67,7 +46,7 @@ float Clamp11Count(float v, long& clamps) {
 	return v;
 }
 
-// Strict TAPE_FORMAT parser. Returns false + err on any violation.
+// Strict tape parser. Returns false + err on any violation.
 bool ParseTape(const std::string& path, std::vector<TapeEntry>& out, long& clampCount,
 	std::string& err) {
 	std::ifstream f(path);
@@ -181,7 +160,7 @@ std::string Hex16(uint64_t h) {
 void PrintUsage(const char* prog) {
 	std::cerr << "usage: " << prog
 			  << " --tape <tape.csv> --ticks N --dump <states.csv|states.bin> [--seed S] [--body car0|ball] [--boost Amt] [--padlog P] [--demolog P] [--place x,y,yawdeg] [--meshdir DIR] [--meshreport]\n"
-			  << "  TAPE_FORMAT v1.0.0; signs passed VERBATIM (no negation).\n"
+			  << "  Tape signs are passed through with no negation.\n"
 			  << "  --boost: test-harness tank prefill 0..100 (default: spawn 33.3).\n"
 			  << "    For top-speed/supersonic gates on the pad-less fallback floor.\n"
 			  << "  --meshdir DIR: load DIR/soccar/*.cmf as the arena collision mesh\n"
@@ -355,13 +334,13 @@ int main(int argc, char** argv) {
 	if (seedGiven)
 		sim->SetSeed(seed);
 
-	// A1: a --meshdir that yields no Soccar mesh must fail loudly, never
-	// silently fall back (MASTER_PROMPT_PHYSICS.md §7 A1).
+	// A --meshdir that yields no Soccar mesh must fail loudly, never
+	// silently fall back.
 	if (!meshDir.empty() && !sim->usingRealSoccar()) {
 		std::cerr << "FATAL: --meshdir '" << meshDir
 				  << "' loaded no Soccar collision mesh. Expected "
 				  << meshDir << "/soccar/*.cmf (RocketSim COLLISION_MESH_BASE_PATH"
-				  << " convention; see docs/MESH_SETUP.md). Refusing to silently "
+				  << " convention). Refusing to silently "
 				  << "run the analytic fallback arena.\n";
 		delete sim;
 		return 1;

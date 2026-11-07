@@ -1,9 +1,4 @@
-// Renderer.h — A4 RENDERER: SDL2 + OpenGL 2.1 minimal renderer.
-// Ownership: A4. Others: consume via Snapshot + DrawBox/DrawSphere only.
-//
-// Physics-first policy: the renderer NEVER stalls the sim. If a frame
-// overruns, we repeat (re-present) the previous frame / skip submission;
-// physics keeps stepping at 120Hz regardless. See BUILD_NOTES.md.
+// Renderer.h — SDL2 window and fixed-function GL draws (uu, z-up).
 #pragma once
 
 #include <SDL2/SDL.h>
@@ -67,15 +62,12 @@ inline bool ReadIniKey(const std::string& path, const std::string& section,
     return false;
 }
 
-// Plain snapshot of sim state. Defined HERE (A4-owned) so we don't block
-// on A1's sim headers. A1/A3 can fill it field-by-field each tick.
+// One frame of sim state for drawing. Units are uu, z-up.
 struct Snapshot {
     float carPos[3] = {0, 0, 40};  // uu, z-up (RL convention). Octane rest z~40.
     float carYaw = 0.0f;           // radians, 0 = +X (2D heading convenience)
     float carSpeed = 0.0f;         // uu/s, for trail/FX gating
-    // Full car orientation (unit vectors, world space, z-up). Filled from the
-    // sim's existing read-only GetCarForward/GetCarUp — no new sim coupling.
-    // carYaw alone loses pitch/roll, which made car orientation invisible.
+    // Full car orientation (unit vectors, world, z-up). carYaw alone drops pitch and roll.
     float carForward[3] = {1, 0, 0};
     float carUp[3] = {0, 0, 1};
     float carVel[3] = {0, 0, 0};   // uu/s world velocity (wheel spin + steer)
@@ -91,12 +83,9 @@ struct Snapshot {
     int ballTeam = 0;              // Sim::kBlue / kOrange when ballTouched
     float boost = 50.0f;           // 0..100
     bool boosting = false;
-    // RocketSim's supersonic flag, filled from the existing read-only
-    // Sim::IsSupersonic. On at 2200 uu/s, held to 2100 for up to 1 s
-    // (RLConst.h SUPERSONIC_START_SPEED / SUPERSONIC_MAINTAIN_MIN_SPEED /
-    // SUPERSONIC_MAINTAIN_MAX_TIME). Not a second speed check.
+    // RocketSim's flag, not a local speed check. On at 2200 uu/s, held to 2100.
     bool supersonic = false;
-    bool handbrake = false;  // powerslide/drift smoke gate (from input)
+    bool handbrake = false;  // powerslide; drift smoke
     bool airborne = false;   // no ground contact (z + vz heuristic, render-only)
     // RocketSim CarState::HasFlipReset, filled from Sim::HasFlipReset.
     // True only for an unused wheel-granted flip. A jump dodge window is false.
@@ -113,7 +102,7 @@ public:
     Renderer();
     ~Renderer();
 
-    // Init a 1280x720 vsync GL2.1 window. Returns false on failure.
+    // 1280x720 window. Returns false on failure.
     bool Init(int w = 1280, int h = 720, bool vsync = true);
     void Shutdown();
 
@@ -123,8 +112,7 @@ public:
     void BeginFrame(float r = 0.05f, float g = 0.06f, float b = 0.10f);
     void EndFrame();
 
-    // Minimal immediate-mode API (fixed-function GL2.1, flat/unlit or
-    // single directional light — see SetLight). All coords in uu, z-up.
+    // Immediate-mode draws. Coordinates are uu, z-up.
     void DrawBox(float cx, float cy, float cz,
                  float sx, float sy, float sz, float yaw,
                  float r, float g, float b, float a = 1.0f);
@@ -133,9 +121,7 @@ public:
     // Flat ground grid (arena floor), extent in uu.
     void DrawGroundGrid(float extent = 9000.0f, float step = 500.0f);
 
-    // Debug instrumentation (W6): unlit wireframe box / sphere / cylinder.
-    // Used by --debug-colliders to make collision proxies legible. Wireframe
-    // only — never writes depth-shaded geometry.
+    // Unlit wireframe for --debug-colliders. Does not write shaded geometry.
     void DrawWireBox(float cx, float cy, float cz, float sx, float sy, float sz,
                      float r, float g, float b, float a = 1.0f);
     void DrawWireSphere(float cx, float cy, float cz, float radius, int segs,
@@ -156,14 +142,7 @@ public:
     void DrawHexNet(float cx, float cy, float cz, float halfW, float halfH,
                     float yaw, float cell, float r, float g, float b, float a);
 
-    // ---- arena-accurate texture mapping (A4) ------------------------------
-    // UV-mapped textured quads. These replace flat-colored boxes on the arena
-    // shell so each surface carries its own generated detail. GL 2.1
-    // fixed-function: glTexCoord2f + modulate, no shaders.
-    //
-    // `uRep`/`vRep` are the number of texture REPEATS across the quad, so a
-    // draw site computes them as surface_uu / sheet_span_uu and texel density
-    // is identical on every surface. The texture is assumed GL_REPEAT-wrapped.
+    // uRep/vRep are repeats across the quad (surface_uu / sheet_span_uu), GL_REPEAT.
 
     // Floor-facing textured quad in the XY plane at height z, centred (cx,cy),
     // size sx by sy, rotated by yaw (radians, z-up). Normal is +Z by default;
@@ -209,18 +188,8 @@ public:
     void DrawArenaBuckets(bool meshMode, bool noHexNet, float wallOpacity);
     void DrawArenaGoalInteriors(bool meshMode);
 
-    // ---- A6b: the ripped-arena draw path -----------------------------------
-    // A ripped arena pack (`rl-arena-pack/1`, read by src/models/ArenaRip.h)
-    // is uploaded ONCE into merged world-space buckets: one VBO + one EBO per
-    // (texture/material id, 8192 uu spatial cell) pair, baked with the
-    // instance matrix. Per frame the buckets are frustum-culled by their world
-    // AABB and every survivor is drawn with ONE fixed-function
-    // glDrawElements (GL_TEXTURE_2D + GL_LIGHTING + GL_NORMALIZE, the repo's
-    // key+fill+ambient setup; no shaders, no VAO, no per-frame upload).
-    //
-    // The pack is a RUNTIME input (Psyonix-owned, gitignored `arena_assets/`);
-    // it never enters the repository and the game works without it. With no
-    // pack the renderer creates NO GL objects and issues NO extra calls.
+    // Ripped arena, uploaded once: one VBO+EBO per texture and 8192 uu cell.
+    // Frustum-culled. No pack means no extra GL objects.
     struct ArenaPackStats {
         uint32_t buckets = 0;            // buckets built
         uint32_t texturedBuckets = 0;    // buckets bound to a diffuse texture
@@ -238,7 +207,9 @@ public:
     // Upload the pack's geometry + textures into GL objects. Needs a live GL
     // context (call it after Init). Returns false when the pack holds no
     // drawable geometry. Nothing is uploaded again afterwards.
-    bool BuildArenaPack(const ArenaPack& pack);
+    // `packDir` is the pack directory (--arenadir). A missing
+    // material_overlays.json there changes nothing.
+    bool BuildArenaPack(const ArenaPack& pack, const std::string& packDir = {});
     // Draw the visible buckets of the ripped arena (one draw call each).
     // No-op — and no GL call at all — when no pack was built.
     void DrawArenaPack();
@@ -269,7 +240,7 @@ public:
     // Fill rect in screen space (menu panels/HUD bars).
     void FillRect2D(int px, int py, int w, int h,
                     float r, float g, float b, float a = 0.75f);
-    // glReadPixels framebuffer dump (P6 PPM) for headless verification.
+    // PPM framebuffer dump.
     bool SaveScreenshot(const char* path) const;
 
     // Single-light control (default: one dim directional light on).
@@ -279,19 +250,13 @@ public:
     bool IsOpen() const { return window_ != nullptr; }
     SDL_Window* Window() { return window_; }
 
-    // Frame-pacing stats (ms) over trailing window. Printed to stderr every
-    // 5 s; the render_pacing.log file append is gated (V9: no CWD spray by
-    // default — see [render] pacing_log). Never blocks.
+    // Trailing-window frame times, ms. Stderr every 5 s.
+    // render_pacing.log is appended only when pacingLog_ is set.
     struct Pacing { double p50 = 0, p99 = 0, avg = 0; uint64_t frames = 0; };
     Pacing Stats() const;
 
-    // ---- draw-budget counters (MASTER_PROMPT_VISUALS.md W1/V2) -------------
-    // MEASURED geometry cost, not an on-paper estimate. tris/lines/drawCalls
-    // are the LAST submitted frame; *Total are cumulative since Init();
-    // glErrors counts every error ever returned by glGetError() (polled once
-    // per frame in EndFrame — never per draw, so it cannot stall the loop).
-    // Renderer-owned; read by the coordinator's HUD/soak log line and asserted
-    // by the VG7 visual gate.
+    // Last-frame tris, lines, and draws, plus totals since Init.
+    // glErrors is polled once per EndFrame.
     struct Counters {
         uint64_t tris = 0;         // triangles submitted (last frame)
         uint64_t lines = 0;        // line primitives submitted (last frame)
@@ -300,22 +265,15 @@ public:
         uint64_t drawsTotal = 0;   // cumulative
         uint64_t glErrors = 0;     // cumulative GL errors observed
         uint64_t frames = 0;       // frames counted
-        // G5: last-frame CPU cost, ms wall-clock BeginFrame->EndFrame
-        // (includes the vsync-paced present; no GL sync/readback anywhere).
-        // Surfaced in the coordinator's [game] exit soak line.
+        // Last-frame CPU ms, BeginFrame through EndFrame, including the swap.
         double frame_ms = 0;
-        // G6 forward-compat stub (GRAPHICS45 §5/G6): per-flag eye-candy cost
-        // hook. Future eye-candy flags accumulate their own cost here; the
-        // renderer never fills it today (stays zero). Plain data, no GL,
-        // no G6 code reads or writes this yet.
+        // Eye-candy cost. PBR fills ms; draws and tris stay 0.
         struct FlagCost { double ms = 0.0; uint64_t draws = 0; uint64_t tris = 0; };
         FlagCost flagCost;
     };
     Counters Stats3D() const { return counters_; }
 
-    // Account for geometry submitted outside the Renderer's own draw calls
-    // (the Fennec VBO path owns its glDrawElements). Without this the budget
-    // would silently miss the single largest mesh in the scene.
+    // Geometry submitted outside Renderer draw calls (Fennec glDrawElements).
     void NoteExternalDraw(uint64_t tris, uint64_t lines = 0) {
         CountTris(tris, lines);
     }
@@ -331,18 +289,13 @@ private:
     SDL_GLContext ctx_ = nullptr;
     int w_ = 1280, h_ = 720;
     bool lightOn_ = true;
-    // G5 pacing: vsync_ mirrors the Init() request; maxFps_/pacingLog_ come
-    // from [render] max_fps/pacing_log (schema v1 additive, defaults keep
-    // shipped behavior). No main.cpp wiring — Init reads the same INI load
-    // the msaa knob already uses.
+    // vsync_ is the Init request. maxFps_ 0 means uncapped.
     bool vsync_ = true;
     int maxFps_ = 0;       // 0 = off (shipped behavior); else clamped 15..1000
-    bool pacingLog_ = false; // V9 gate: render_pacing.log append only when true
-    // G6a PBR-lite (GRAPHICS45 §5/G6 step 1): read once from [render] pbr at
-    // Init (same tolerant load as msaa). false = shipped fixed-function path
-    // (BeginFrame issues zero extra GL calls); true = PbrGl::ApplyFrameState
-    // once per BeginFrame. pbrApplyMs_ feeds Counters::flagCost (EndFrame).
+    bool pacingLog_ = false; // append render_pacing.log only when set
+    // [render] pbr, read once at Init. Off: BeginFrame adds no GL calls.
     bool pbr_ = false;
+    bool packSpec_ = false;
     double pbrApplyMs_ = 0.0;
 
     static const int kHist = 600;
@@ -353,11 +306,10 @@ private:
     uint64_t lastLogMs_ = 0;
     mutable Pacing cached_;
 
-    // Draw-budget counters (see Stats3D). frame* reset each BeginFrame.
+    // frame* reset each BeginFrame.
     uint64_t frameTris_ = 0, frameLines_ = 0, frameDraws_ = 0;
     Counters counters_;
 
-    // ---- A6b: the ripped arena (see the public API above) ------------------
     struct ArenaBucket {
         unsigned vbo = 0, ibo = 0;
         uint32_t idxCount = 0;
@@ -377,7 +329,13 @@ private:
         bool nearVeil = false;     // untextured glass: thin the alpha up close
         bool nearEdge = false;     // goal trim: fade the lightmap shell up close
         bool useColor = false;     // mesh stored vertex colours
-        int floatsPerVert = 13;    // +3 when useColor
+        int floatsPerVert = 14;    // +3 when useColor
+        bool clipThrough = false;  // field rim: pitch-facing side only
+        int maskTexId = -1;         // alpha mask; -1 = off
+        float emissive[3] = {0.f, 0.f, 0.f};
+        int blend = 0;              // 0 off, 1 veil alpha, 2 mask alpha
+        bool tintTex = false;       // multiply a bound albedo by tintRgb
+        bool emissiveOn = false;
         std::string tag;   // first (mesh, material) baked here (diagnostics)
         int cell[3] = {0, 0, 0};
         float lo[3] = {0, 0, 0};  // world AABB (culling)
@@ -402,6 +360,14 @@ private:
     int arenaUniUseColor_ = -1;
     int arenaUniNearVeil_ = -1;
     int arenaUniGlowFade_ = -1;
+    int arenaUniMask_ = -1;
+    int arenaUniEmissive_ = -1;
+    int arenaUniUseNormal_ = -1;
+    int arenaUniUseMask_ = -1;
+    int arenaUniUseEmissive_ = -1;
+    int arenaUniUseSpec_ = -1;
+    int arenaUniBlend_ = -1;
+    int arenaUniTintTex_ = -1;
     ArenaPackStats arenaStats_;
     bool arenaReady_ = false;
 };

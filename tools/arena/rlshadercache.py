@@ -1,23 +1,8 @@
 #!/usr/bin/env python3
-"""rlshadercache.py — offline reader for Rocket League RefShaderCache.
-
-Phase H (workstream H) of the DFH Stadium (Day) pack path.  Reads the user's
-own `RefShaderCache-PC-D3D-SM5.upk`, inflates its Oodle-compressed image, and
-maps each material's compiled UniformExpressionTextureParameter list onto the
-material's `ReferencedTextures` array.
-
-Proof gate (Stairs_Mat): colour = Stairs_Pack, normal = Stairs_N.
-
-Nothing here vendors Psyonix bytes: inputs are the local install, outputs go
-to a gitignored path (`arena_assets/` or `/tmp`).  Requires a local Oodle
-shared library (`liboo2corelinux64.so.9` or `OO2CORE_SO`).
-
-Usage:
-  python3 tools/arena/rlshadercache.py \\
-      --cache /path/to/RefShaderCache-PC-D3D-SM5.upk \\
-      --stadium /path/to/Stadium_Day_P.upk \\
-      --out /tmp/arena_h/bindings.json
+"""Map a material's compiled texture parameters onto its ReferencedTextures array.
+Reads a local RefShaderCache package. Needs a local Oodle library. Writes outside the repo.
 """
+
 from __future__ import annotations
 
 import argparse

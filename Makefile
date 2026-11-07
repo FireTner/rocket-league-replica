@@ -9,7 +9,7 @@ WARN = -Wall -Wextra
 FPFLAGS = -ffp-contract=off -fno-fast-math -fno-strict-aliasing
 OPT = -O2
 RS_INC = -Ithird_party/RocketSim/src
-SRC_INC = -Isrc
+SRC_INC = -Isrc -Ithird_party/stb -Ithird_party/miniaudio
 SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null)
 SDL_LIBS := $(shell sdl2-config --libs 2>/dev/null)
 
@@ -64,11 +64,11 @@ build/headless_sim: $(HEADLESS_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $(RS_INC) $^ -o $@
 
-build/render_stub: src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/fx/FlipReset.cpp src/fx/WheelEmbers.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp src/render/stub_main.cpp
+build/render_stub: src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/fx/FlipReset.cpp src/fx/WheelEmbers.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp src/render/stub_main.cpp third_party/stb/stb_image_impl.cpp
 	mkdir -p build
 	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@
 
-GAME_SRCS = src/game/main.cpp src/game/FreeplayBall.cpp src/render/Renderer.cpp src/render/MatchHud.cpp src/render/PitchShadow.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/fx/FlipReset.cpp src/fx/GoalBurst.cpp src/fx/WheelEmbers.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/ArenaRip.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp
+GAME_SRCS = src/game/main.cpp src/game/FreeplayBall.cpp src/render/Renderer.cpp src/render/MatchHud.cpp src/render/PitchShadow.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/fx/FlipReset.cpp src/fx/GoalBurst.cpp src/fx/WheelEmbers.cpp src/models/Models.cpp src/models/ArenaTextures.cpp src/models/ArenaShell.cpp src/models/ArenaRip.cpp src/models/Fennec.cpp src/input/Keyboard.cpp src/input/Gamepad.cpp src/menu/Menu.cpp src/settings/Settings.cpp src/audio/Audio.cpp third_party/stb/stb_image_impl.cpp third_party/miniaudio/miniaudio.c
 
 build/game: $(GAME_SRCS) build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
 	mkdir -p build
@@ -84,7 +84,7 @@ headless: build/headless_sim
 render_stub: build/render_stub
 
 tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_adir /tmp/t_ball /tmp/t_touch /tmp/t_btrail /tmp/t_bspin /tmp/t_spark /tmp/t_audio /tmp/t_flip /tmp/t_mhud /tmp/t_pshadow /tmp/t_gburst /tmp/t_embers
-/tmp/t_audio: tests/test_audio.cpp src/audio/Audio.cpp
+/tmp/t_audio: tests/test_audio.cpp src/audio/Audio.cpp third_party/miniaudio/miniaudio.c
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -o $@ && $@
 /tmp/t_mhud: tests/test_match_hud.cpp
 	$(CXX) $(STD) $(WARN) $(SRC_INC) $^ -o $@ && $@
@@ -124,7 +124,7 @@ tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_ad
 /tmp/t_touch: tests/test_last_touch.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
 	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $^ -o $@ && $@
 # Ball-trail pixels. Needs a GL 4.5 compat context (gamescope headless works).
-/tmp/t_btrail: tests/test_ball_trail.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/fx/FlipReset.cpp src/fx/WheelEmbers.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp
+/tmp/t_btrail: tests/test_ball_trail.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/camera/Camera.cpp src/fx/FX.cpp src/fx/FlipReset.cpp src/fx/WheelEmbers.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp third_party/stb/stb_image_impl.cpp
 	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@ && $@
 # Wheel embers: supersonic flag + ground contact. Headless; Draw is not called.
 /tmp/t_embers: tests/test_wheel_embers.cpp src/fx/WheelEmbers.cpp
@@ -134,7 +134,7 @@ tests: /tmp/t_rt /tmp/t_kb /tmp/t_gp /tmp/t_cam /tmp/t_atex /tmp/t_rip /tmp/t_ad
 /tmp/t_bspin: tests/test_ball_spin.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a
 	$(CXX) $(STD) $(WARN) $(OPT) $(FPFLAGS) $(SRC_INC) $^ -o $@ && $@
 # Goal burst timer. Draw is not called; no GL context.
-/tmp/t_gburst: tests/test_goal_burst.cpp src/fx/GoalBurst.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp
+/tmp/t_gburst: tests/test_goal_burst.cpp src/fx/GoalBurst.cpp src/render/Renderer.cpp src/render/PbrGl.cpp src/models/Models.cpp src/models/Fennec.cpp src/models/ArenaShell.cpp src/models/ArenaTextures.cpp src/models/ArenaRip.cpp src/settings/Settings.cpp third_party/stb/stb_image_impl.cpp
 	$(CXX) $(STD) $(WARN) $(OPT) $(SRC_INC) $(SDL_CFLAGS) $^ $(SDL_LIBS) -lGL -o $@ && $@
 # Contact sparks: read-only scrape/touch view plus the presentation decision.
 /tmp/t_spark: tests/test_contact_sparks.cpp build/obj/src/sim/Sim.o $(ARENA_OBJ) build/librocketsim.a

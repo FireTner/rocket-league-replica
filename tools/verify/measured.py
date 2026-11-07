@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-# tools/verify/measured.py — MEASURED gate verifier (coordinator-owned).
-# Runs build/headless_sim over the frozen + gate tapes and checks Section 7
-# values. Exit 0 = all measured gates green, 1 = any FAIL, 2 = sim missing.
-# Writes gates_measured.json beside itself. MIT License.
+# Runs build/headless_sim on frozen tapes and checks the recorded numbers.
+# Exit 0 = all pass, 1 = any fail, 2 = sim missing.
+# Writes gates_measured.json beside itself.
 import csv, json, math, os, subprocess, sys
 
 SIM = "build/headless_sim"
@@ -40,7 +39,7 @@ def gate(gid, name, ok, detail):
 
 def main():
     if not (os.path.isfile(os.path.join(ROOT, SIM)) and os.access(os.path.join(ROOT, SIM), os.X_OK)):
-        print("headless_sim missing: build it with `make build/headless_sim`")
+        print("headless_sim missing: build it with `cmake --build build --target headless_sim`")
         return 2
 
     rows, cks = run("straight_throttle_600.csv", 600)
@@ -127,7 +126,7 @@ def main():
     r2, c2 = run("powerslide_circle_720.csv", 720)
     gate("TAS", "zero divergence", c1 == c2, f"{c1} vs {c2}")
 
-    # turn/flip spot checks (truth values from Round 5)
+    # turn/flip spot checks
     rows, cks = run("steer_left_360.csv", 360)
 
     def yaw(i):
@@ -217,8 +216,7 @@ def main():
          f"{len(evs2)} events (expect 0)")
 
     # ------------------------------------------------------------------
-    # I* input-semantics gates (MASTER_PROMPT_PHYSICS.md §8 B3/B4).
-    # These isolate the INPUT side: the dodge threshold is the preset
+    # Input checks. The dodge threshold is the preset
     # dodgeDeadzone (CarConfig.h:37 = 0.5f) tested against
     # |yaw|+|pitch|+|roll| (Car.cpp:705-706).
     # ------------------------------------------------------------------

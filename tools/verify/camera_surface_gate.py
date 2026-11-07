@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
-"""CS1-CS5 — camera truth-surface gate (LOCAL ONLY, SKIPs loudly).
-
-Ground truth = the camera class/function/property surface extracted from the
-user's own Rocket League install by `tools/decomp/camera_surface.py`.  That
-fixture is Psyonix-derived data, so it NEVER enters the repo: it lives in the
-gitignored `decomp/` directory.  Without it this gate SKIPs (exit 0), exactly
-like `mesh_gates.py` without a mesh dump.
-
-It answers one question for docs/CAMERA_DECOMP.md: does the real game still
-have the mechanism-bearing symbols our `src/camera/` port claims?  It never
-grades feel or numbers — that stays with measured.py / visual_gates.py.
-
-Usage:
-    python3 tools/verify/camera_surface_gate.py            # default fixture
-    python3 tools/verify/camera_surface_gate.py --fixture X.json
-    python3 tools/verify/camera_surface_gate.py --regen    # re-extract first
+"""Compare a local camera-symbol fixture with the mechanisms src/camera claims.
+The fixture is gitignored. Without it the check SKIPs and exits 0.
 """
+
 import argparse
 import json
 import os
@@ -26,8 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 DEFAULT_FIXTURE = os.path.join(REPO, 'decomp', 'camera_surface.json')
 
-# Identity pinned in docs/CAMERA_DECOMP.md; a change means RL patched its
-# package format and the fixture/analysis must be re-baselined.
+# A change of engine version means the package format changed; re-baseline the fixture.
 EXPECTED_ENGINE = 10897
 
 CLASSES = {
@@ -78,8 +64,9 @@ PROPERTIES = {
                              'TransitionDelta', 'Transition'],
 }
 
-# Our implemented mechanisms (src/camera/Camera.h) -> the real symbols that
-# justify them.  Every mechanism needs at least one live symbol.
+# Mechanisms the game still has, mapped to live RL symbols.
+# Snap swivel and air heading are settings. The old look-target filter is not
+# part of the chase rig, so it is not listed here.
 MECHANISMS = [
     ('ball-aim slew', ['CameraState_BallCam_TA.UpdateFocus',
                        'CameraState_BallCam_TA.RotationRate']),
@@ -92,8 +79,6 @@ MECHANISMS = [
     ('swivel + snap-back', ['CameraState_TA.UpdateFreeLook',
                             'Camera_TA.UpdateSwivel',
                             'Camera_TA.SwivelDieRate']),
-    ('target filter', ['CameraState_Car_TA.FocusInterp',
-                       'Camera_X.ProcessCameraState']),
     ('transition blend', ['CameraStateBlender_X.BlendCameraState',
                           'CameraStateBlender_X.TransitionToState']),
     ('dynamic FOV/distance', ['CameraState_Car_TA.UpdateFOV',
@@ -133,7 +118,6 @@ def main():
         print('  The fixture is Psyonix-derived data and is gitignored by design')
         print('  (repo Rule 1). Re-create it from YOUR install with:')
         print('    python3 tools/decomp/camera_surface.py --out decomp/camera_surface.json')
-        print('  See docs/CAMERA_DECOMP.md.')
         return 0
 
     with open(args.fixture) as f:
@@ -148,8 +132,7 @@ def main():
     # CS1 — identity
     eng = doc.get('engine_version')
     if eng != EXPECTED_ENGINE:
-        fails += fail(f'CS1 package identity: engine {eng} != pinned {EXPECTED_ENGINE}; '
-                      're-baseline docs/CAMERA_DECOMP.md')
+        fails += fail(f'CS1 package identity: engine {eng} != pinned {EXPECTED_ENGINE}')
     else:
         print(f'  PASS CS1 identity engine={eng} licensee={doc.get("licensee_version")}')
         passes += 1

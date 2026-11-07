@@ -1,43 +1,6 @@
-// tools/meshgen — deterministic CLEAN-ROOM Soccar arena collision-mesh generator.
-//
-// Emits a RocketSim-loadable `.cmf` (CollisionMeshFile) built from published
-// Soccar dimensions and our own geometry code. It is NOT a Psyonix asset and is
-// NOT a dump: it will never hash-match one of RocketSim's 16 known SOCCAR mesh
-// hashes (third_party/RocketSim/src/RocketSim.cpp:20-28). That is the point —
-// repo rule 1 forbids vendoring Psyonix geometry, so the in-repo mesh is a
-// from-scratch reconstruction; a user-supplied RLArenaCollisionDumper dump
-// remains the only source of the *literal* mesh (docs/MESH_SETUP.md).
-//
-// What it does and does not model
-// -------------------------------
-// RocketSim's Arena::_SetupArenaCollisionShapes() ALWAYS adds analytic
-// floor/ceiling/side-wall PLANES for SOCCAR
-// (third_party/RocketSim/src/Sim/Arena/Arena.cpp:1030-1062): z=0, z=ARENA_HEIGHT,
-// x=+/-ARENA_EXTENT_X. So the mesh only has to supply what those planes cannot:
-//   * the two BACK walls (y = +/-5120) with a goal-mouth opening,
-//   * the four 45-degree corner chamfers (|x| + |y| = 8064),
-//   * the wall height profile: floor->wall fillet + wall + wall->ceiling fillet,
-//   * the goal recess (side walls, back net, net roof) and sharp mouth edges.
-// Duplicate side-wall or floor/ceiling triangles would fight the planes, so this
-// generator deliberately omits them.
-//
-// Height profile (per footprint edge, "u" = inward distance from the wall):
-//   0 <= u <= R   : concave floor fillet, center (R, R)
-//   R <= u <= Rc  : vertical wall
-//   u >= Rc       : concave ceiling fillet, center (Rc, H - Rc)
-// with R = RAMP_RADIUS, Rc = CEIL_RADIUS, H = CEILING_Z.
-//
-// Fidelity caveat (recorded, not hidden): the real arena's bottom ramp is
-// documented as "Approximately 256 (non-circular)"
-// (https://wiki.rlbot.org/v4/botmaking/useful-game-values/). We model it as a
-// circular fillet of that radius. Everything else in the footprint/goal comes
-// from published dimensions. See docs/MESH_SETUP.md for the full ledger.
-//
-// Determinism: pure float math over a fixed lattice; no RNG, no clock, no
-// iteration over unordered containers. Same input => byte-identical output.
-//
-// Usage: make_soccar_mesh <out.cmf> [--ramp-seg N] [--ceil-seg N]
-// MIT License. No third-party code, no Psyonix data.
+// Deterministic clean-room Soccar .cmf from published dimensions, not a game dump.
+// Omits floor, ceiling, and side walls because RocketSim adds those planes.
+// The floor fillet is a circular arc of the published radius (~256).
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -359,7 +322,7 @@ void PrintUsage(const char* prog) {
 	std::fprintf(stderr,
 		"usage: %s <out.cmf> [--ramp-seg N] [--ceil-seg N]\n"
 		"  Emits a clean-room Soccar collision mesh in RocketSim .cmf format.\n"
-		"  Place as <meshdir>/soccar/<name>.cmf; see docs/MESH_SETUP.md.\n", prog);
+		"  Place as <meshdir>/soccar/<name>.cmf.\n", prog);
 }
 
 } // namespace

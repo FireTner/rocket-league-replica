@@ -1,18 +1,4 @@
-// ArenaRip.cpp — the arena-pack reader (phase A6a).
-//
-// Reads an `rl-arena-pack/1` pack (docs/ARENA_PACK.md) into memory and decodes
-// its textures on the CPU.  No GL, no SDL, no windowing: plain C++ + STL, so
-// the whole thing is testable headless.
-//
-// The pack is Psyonix-owned data and is a RUNTIME INPUT (gitignored
-// `arena_assets/`); this file never writes anything and never copies pack
-// bytes into the repository.
-//
-// Contents:
-//   1. a small strict JSON reader (file-local; no public JSON dependency)
-//   2. a file-local SHA-256 (the manifest records the blob's hash)
-//   3. CPU DXT1 / DXT5 decoders, byte-identical to tools/arena/rldds.py
-//   4. the loader with loud validation
+// ArenaRip.cpp — loads an rl-arena-pack and decodes its textures on the CPU.
 #include "models/ArenaRip.h"
 
 #include <algorithm>
@@ -500,10 +486,7 @@ std::string Sha256Hex(const uint8_t* data, size_t len) {
 // ===========================================================================
 // 3. CPU DXT decoders.
 //
-// These are a byte-for-byte port of tools/arena/rldds.py (the reference
-// decoder of the ripper): same RGB565 expansion, same integer interpolation
-// (floor division, not rounding), same 1-bit-alpha mode for DXT1 and the same
-// interpolated alpha ramp for DXT5.
+// RGB565 expansion replicates the high bits. Interpolation uses floor division, not rounding.
 // ===========================================================================
 
 // 5 bits -> 8 bits: replicate the high bits into the low ones (0x1F -> 255).

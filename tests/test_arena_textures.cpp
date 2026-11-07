@@ -1,12 +1,5 @@
-// tests/test_arena_textures.cpp — headless verification for arena texture
-// mapping (A4). No GL context: it drives the pure texturegen::Fill* layer and
-// asserts the invariants the visual gates depend on, plus the UV math the draw
-// sites use. Exit code 0 = all checks pass.
-//
-// Why this test exists: the sandbox has no GPU, so the capture-based VG gates
-// cannot run here. The texture CONTENT and the UV mapping are still provable
-// without GL — this is the proof. Every value asserted below is either a
-// documented ledger value or a geometry invariant the gate measures.
+// Arena texture fill and UV math. No GL context.
+// Exit 0 when every check passes.
 #include <cmath>
 #include <cstdio>
 #include <cstdint>

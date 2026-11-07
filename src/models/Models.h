@@ -1,12 +1,10 @@
-// Models.h — A4 procedural stylized models, hitbox-proportioned.
-// Hitbox dims (from A3): Octane 120.5 x 86.7 x 38.7 uu, ball r=91.25 uu.
-// Ownership: A4. No external geometry — 100% procedural boxes/capsules.
+// Models.h — procedural car and ball.
 #pragma once
 #include "render/Renderer.h"
 
 namespace rl {
 
-// Hitbox constants (uu) — must match A3 physics.
+// Hitbox extents, uu. The ball radius is the collision radius.
 namespace dims {
     constexpr float kCarL = 120.5f;  // x length
     constexpr float kCarW = 86.7f;   // y width

@@ -15,6 +15,7 @@
 #include <string>
 
 #include "render/Renderer.h"
+#include "settings/Settings.h"
 
 static int failures = 0;
 #define CHECK(cond, msg)                                              \
@@ -27,8 +28,8 @@ static int failures = 0;
         }                                                             \
     } while (0)
 
-// The [arena] section of the shipped INI, read verbatim (the A5 Settings
-// loader ignores keys it does not know, so the raw file is the contract).
+// The [arena] section of the shipped INI, read verbatim. Settings ignores
+// keys it does not know, so this reads the raw file.
 static std::string ArenaSection(const std::string& path) {
     std::ifstream f(path);
     std::string line, out;
@@ -55,10 +56,10 @@ int main() {
     std::string v;
     CHECK(rl::ReadIniKey("config/settings.ini", "arena", "arena_dir", &v),
           "arena_dir is present");
-    CHECK(v.empty(), "arena_dir defaults to empty (the analytic shell)");
+    CHECK(v == rl::kDefaultArenaDir, "arena_dir defaults to the stadium pack");
     CHECK(rl::ReadIniKey("config/settings.ini", "arena", "mesh_dir", &v),
           "mesh_dir is present");
-    CHECK(v.empty(), "mesh_dir defaults to empty");
+    CHECK(v == rl::kDefaultMeshDir, "mesh_dir defaults to the collision mesh");
 
     std::printf("[3] case-insensitive section + key\n");
     CHECK(rl::ReadIniKey("config/settings.ini", "ARENA", "Arena_Dir", &v),

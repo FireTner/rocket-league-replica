@@ -1,24 +1,7 @@
-"""Write a decrypted + inflated copy of an RL package for a UE3 reader.
-
-Our own MIT tool (repo Rule 1): it reads a package from the user's own install
-and writes the working copy OUTSIDE this repository, where UELib-style readers
-can mmap it as one plaintext image.  No package bytes, no key and no decrypted
-copy ever land in the tree — the destination is refused if it resolves inside
-this repo (see docs/CAMERA_DECOMP.md for the legal boundary).
-
-What the output is: the plaintext package summary, the AES-256-ECB decrypted
-header (`[NameOffset, TotalHeaderSize)`), and every zlib chunk inflated in
-place, i.e. `rlupk.Package(...).image`.  Export `SerialOffset` values are
-already in that image's coordinate space (offset 0 = file summary).
-
-Usage:
-    python3 tools/decomp/unpack.py <src.upk> <dst.upk>
-    python3 tools/decomp/unpack.py <src.upk>          # -> <src>_decrypted.upk
-
-The package key is a LOCAL INPUT, never in this repo: put your own copy in
-`~/.rl-decomp/upk.key` (64 hex digits) or export `$RL_UPK_KEY`.  Without one
-this prints a loud SKIP and exits 3, so a public clone stays inert-but-runnable.
+"""Write a decrypted, inflated copy of a local .upk outside this repo.
+Refuses a destination inside the tree. Without a local key, exits 3.
 """
+
 import argparse
 import os
 import sys

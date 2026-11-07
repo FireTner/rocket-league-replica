@@ -1,13 +1,7 @@
-# tools/verify/sim_shim.py — MIT License
-"""Shim: verification reads A1 SimAPI + A5 Controls.h via shims if missing.
-Never blocks: try_measured() returns {} when the real sim is absent, and
-check.py falls back to labelled STUB expectations.
-
-When A1 lands, they should EITHER:
-  (a) drop a real `sim_api.py` next to this file exposing read_*() helpers, or
-  (b) ship `build/headless_sim` with the CLI in tools/tas/TAPE_FORMAT.md —
-      this shim will auto-detect it and parse MEASURED values from dumps.
+"""Locate headless_sim or a python sim API for the number checklist.
+try_measured() returns {} when neither is usable, and the checklist uses its stub.
 """
+
 import csv, math, os, shutil, subprocess
 
 MODE = "STUB (no SimAPI/headless_sim found; analytic expectations only)"
@@ -17,7 +11,7 @@ def _find_sim():
         p = shutil.which(c) or (c if os.path.isfile(c) and os.access(c, os.X_OK) else None)
         if p:
             return p
-    # A1 python SimAPI, if they drop one here
+    # python SimAPI, if one is dropped next to this file
     for c in ("tools/verify/sim_api.py", "src/sim/sim_api.py"):
         if os.path.isfile(c):
             return c
@@ -33,7 +27,7 @@ def try_measured():
     if sim.endswith(".py"):
         MODE = f"MEASURED via python SimAPI ({sim}) — not yet implemented, STUB fallback"
         return {}
-    # headless_sim binary path: full MEASURED flow lives here once A1 ships it.
+    # headless_sim binary path.
     MODE = f"MEASURED via {sim} (headless dumps)"
     try:
         return _measure_via_binary(sim)

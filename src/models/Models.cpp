@@ -1,8 +1,4 @@
-// Models.cpp — procedural car + RL-style ball.
-// Ball: truncated-icosahedron equirect generated in code (no assets):
-// white hexagons, black pentagons. Shading comes from the scene lights.
-// Car: hitbox-proportioned stylized body (replaced by the Fennec GLB mesh
-// when assets/models/fennec.bin is present — see Fennec.cpp).
+// Models.cpp — procedural car and the ball's panel texture.
 #include "Models.h"
 #include "BallOrient.h"
 #include <GL/gl.h>
@@ -16,8 +12,7 @@ namespace rl {
 
 namespace {
 // Modelview frame from world-space forward/up (unit): maps local
-// +x = forward, +y = left, +z = up onto the car. Recovers pitch/roll that a
-// bare yaw cannot express (car-orientation legibility, W3).
+// +x = forward, +y = left, +z = up. Yaw alone drops pitch and roll.
 void CarFrame(const float pos[3], const float fwd[3], const float up[3]) {
     float f[3] = {fwd[0], fwd[1], fwd[2]};
     float u[3] = {up[0], up[1], up[2]};
@@ -201,9 +196,7 @@ static float BLen(BallV a) { return std::sqrt(BDot(a, a)); }
 // Each texel is the face hit by its equirect direction. The print is
 // fixed in this object frame; DrawBall's modelview spins it.
 //
-// Panel bytes are UNVERIFIED swatches of the work-order white/black.
-// They sit a little inside 0 and 255 so the existing key+ambient still
-// shade the panel and a separate specular lobe has headroom.
+// Panel bytes sit inside 0 and 255 so key and ambient still shade them.
 static void PaintBallPanels(unsigned char* img) {
     const unsigned char kHexR = 242, kHexG = 244, kHexB = 247;
     const unsigned char kPentR = 18, kPentG = 18, kPentB = 20;
@@ -451,10 +444,7 @@ static void PaintBallPanels(unsigned char* img) {
         std::fprintf(stderr, "[ball] panel rays missed %d texels\n", misses);
 }
 
-// G4 texture chains (GRAPHICS45 §5/G4): full mip chain generated ONCE at
-// upload, trilinear minification, aniso when the driver offers it. Same
-// treatment as ArenaTextures.cpp; kept file-local so no header decl changes.
-// glGenerateMipmap is GL 3.0+ core, our context is 4.5-compat — no loader.
+// Mip chain and anisotropy at upload. glGenerateMipmap comes from libGL.
 extern "C" void glGenerateMipmap(unsigned int target);
 #ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
 #define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
@@ -470,7 +460,7 @@ static void FinishBallUpload() {
     if (exts && std::strstr(exts, "GL_EXT_texture_filter_anisotropic")) {
         GLfloat maxAniso = 1.0f;
         glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &maxAniso);
-        const GLfloat kAnisoCap = 4.0f;  // G4: R4-class cap
+        const GLfloat kAnisoCap = 4.0f;
         GLfloat chosen = maxAniso < kAnisoCap ? maxAniso : kAnisoCap;
         if (chosen < 1.0f) chosen = 1.0f;
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, chosen);
@@ -498,7 +488,7 @@ static unsigned BuildBallTexture() {
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
-    FinishBallUpload();  // G4: wrap preserved, filters upgraded to chained
+    FinishBallUpload(); // wrap stays; this adds the mip chain
     return tex;
 }
 
@@ -518,11 +508,8 @@ void DrawBall(Renderer& r, const Snapshot& s) {
         BallOrientationMatrix(s.ballRot, orient);
         glMultMatrixf(orient);
     }
-    // Gloss under the existing key and fill. Local to this draw: the arena
-    // keeps the zero specular from Renderer::Init. Shininess is UNVERIFIED
-    // (no published fixed-function exponent). Separate specular is added
-    // after the texture multiply, so the lobe still reads on a black pentagon.
-    // Key/fill specular colours match those lights' diffuse in Renderer::Init.
+    // Specular is local to this draw and restored after. It is applied after the
+    // texture multiply so it still shows on a black pentagon.
     GLfloat prevSpec[4] = {0, 0, 0, 1};
     GLfloat prevShine = 0.0f;
     GLint prevCtl = GL_SINGLE_COLOR;

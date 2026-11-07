@@ -1,141 +1,8 @@
 #!/usr/bin/env python3
-"""rlpkg.py — install-wide package index and sibling-package access (A3b).
-
-PHASE A3b of `MASTER_PROMPT_ARENA_1TO1.md`.  A3 round 2 measured that the
-stadium package (`Stadium_Day_P.upk`) is missing 55 of its 80 textures and
-that the surviving external links point at **sibling packages of the same UE3
-package group**.  This module finds those siblings in the user's own install
-and opens them.
-
-===============================================================================
-MEASURED FACTS (all measured on the install, not assumed)
-===============================================================================
-1. **A cooked `.upk` is ONE flat file**: the summary is plaintext at offset 0,
-   the *name table* starts at `NameOffset` and is **AES-256-ECB encrypted**
-   with the public Rocket League package key (the ECB stream starts exactly at
-   `NameOffset`, NOT at a 16-byte-aligned file offset — MEASURED: decrypting
-   `Stadium_Day_P.upk` from `NameOffset = 1699` yields the first name
-   `2x1_A_MIC`, while decrypting from the aligned 1683 does not).
-
-2. **The package's own name is NOT in the name table.**  MEASURED on
-   `Stadium_Day_P.upk`: the 2007 name-table entries are *object* names
-   (alphabetically sorted: `2x1_A_MIC`, `2x1_B_MIC`, ... `WarmupMesh`) and
-   the string `Stadium_Day_P` does **not** occur.  UE3 derives the package
-   name from the FILE name at load time; the cooked file stores the *linked*
-   packages instead, as `Package`-class exports.
-
-3. **THE LINKED-PACKAGE MECHANISM IS THE KEY TO THE WHOLE TASK.**  A cooked
-   file contains, besides its own objects, `UPackage` exports whose names are
-   the names of the *linked packages* the group spans.  MEASURED on
-   `Stadium_Day_P.upk`: 143 `Package` exports / 99 distinct names
-   (`Adverts`, `City`, `City_Textures`, `Grass_Textures`, `Mat`, `Meshes`,
-   `Noise`-style groups, `SM`, `Textures`, `TiledPatterns`, ...).  An object
-   that belongs to a linked package has that `Package` export as its `Outer`
-   — MEASURED: `Noise_Generic_01_Pack` has outer `Noise`, `Curve_Fire_01_Pack`
-   outer `Gradients`, `CarbonFiber_N` outer `Detail_CarbonFiber`,
-   `Logo_RocketLeague` outer `GFX_Shared_Logos`.
-
-4. **A linked package is DUPLICATED into every file of the group.**  MEASURED:
-   the export `Noise_Generic_01_Pack` exists in `Startup.upk`, `TAGame.upk`
-   and `BG_Park_Snowy.upk`; `Curve_Fire_01_Pack` in `Startup.upk`,
-   `TAGame.upk`, `BG_Park_Snowy.upk` and `BG_UtopiaSnow.upk`;  the same for
-   `Logo_RocketLeague`, `StadiumFloorLightMap`, `CarbonFiber_N`.  So the
-   provider of a package is **not unique**; the index maps a package name to
-   *all* files that declare it and the resolver picks one.
-
-5. **HOW AN IMPORT NAMES ITS PACKAGE.**  `FObjectImport.PackageIndex` is the
-   import's OUTER:
-     * **negative** -> another *import* of the same file, and that import's
-       `ObjectName` (an FName index into the *importing* file's name table) is
-       the package's name — MEASURED: `Noise` 12, `Gradients` 6,
-       `EngineMaterials` 2, `FieldSkin_FutureGrid` 2, `Stadiums_DetailNormals`
-       2, `Textures`(export) 2, one each in `Detail_CarbonFiber`,
-       `Detail_Sparkle`, `FieldSkin_Park`, `GFX_Shared_Logos`,
-       `Vehicle_Parent_Textures`, `ENV`, `EngineMeshes`;
-     * **positive** -> a `Package` **export** of the same file (the linked
-       package group) — MEASURED: `City_Textures` 2, `FutureTech_Textures` 2,
-       `Mat` 4, `Grass_Textures` 4, `TiledPatterns` 2, `LensFlares_Textures`
-       1, `Events` 1.
-   Either way the import names the package by its own name, and that name is
-   what the index is keyed by.
-
-6. **THE HEADER IS NOT ALWAYS ENCRYPTED.**  MEASURED: `EngineMaterials.upk`
-   (file_version 867, licensee 0) has a **plaintext** header — its name table
-   starts with `A\0`, `ArrayProperty\0`, `Base\0`, ...  The licensee-34 files
-   (`file_version` 868) are encrypted.  The reader therefore *auto-detects*
-   both and validates the result.
-
-7. **THE EXPORT ENTRY IS 72 BYTES FOR LICENSEE >= 1 AND 68 FOR LICENSEE 0.**
-   MEASURED: `Stadium_Day_P.upk` (licensee 34) has
-   `(DependsOffset - ExportOffset) / ExportCount = 234112 / 3251 = 72.0`
-   and the 72-byte layout parses every export name and class correctly;
-   `EditorMaterials.upk` (licensee 0) has `20740 / 305 = 68.0`.  The reader
-   therefore auto-detects the layout by validating the parsed table.
-
-8. **650 OF THE 3251 EXPORTS OF THE STADIUM PACKAGE ARE ZEROED PLACEHOLDER
-   SLOTS.**  MEASURED: exactly 650 exports have `ClassIndex == 0` (and a
-   zero name and `SerialSize == 0`).  A census that only looks at
-   `export_class_name()` is therefore off by 650 — `rlupk`'s class resolution
-   maps `ClassIndex == 0` onto the *last* export, which is why it reports
-   1160 `StaticMeshComponent` where the truth is 510.  This module reports
-   those slots as `class == None` and NEVER counts them as objects.
-
-9. **SOME PACKAGES CANNOT BE READ AT ALL** (the header does not decrypt with
-   the public key).  MEASURED: 24 of the 344 non-sound packages of the
-   install (`BB_P`, `CHN_Stadium_P`, `KO_*`, `Labs_*`, `Music_P`,
-   `Park_Bman_P`, `Park_Snowy_P`, `Stadium_Race_Day_P`,
-   `ThrowbackHockey_P`, `Woods_Night_P`, `FNI_Stadium_P`, `Farm_Night_P`,
-   `RefShaderCache-PC-D3D-SM5`, ...).  Their summary parses, their plaintext
-   pre-load table parses, but **no 16-byte block of the region before
-   `NameOffset` decrypts to a legal name entry** under any ECB origin
-   (MEASURED: 1298 origins x 3 blocks x 13 offsets searched, 0 hits), so the
-   name table is not recoverable with this key.  They are reported as
-   `unreadable` with that reason — never silently skipped.  A3b re-measured
-   this with the *decoded* key over **every** origin in the first 350 000
-   bytes of `Music_P.upk`, `Park_Snowy_P.upk` and `Stadium_Race_Day_P.upk`:
-   **0 candidate origins** (the 6134 unreadable `_SF` sound packages are the
-   rest of the unreadable set; they carry no textures or meshes).
-
-10. **A COPY OF A LINKED-PACKAGE OBJECT IS IDENTICAL IN EVERY FILE THAT
-    HOLDS IT.**  MEASURED for the stadium's materials: `Stairs_Mat` exists in
-    **41** files, all with `Outer == Materials` and all with the same export
-    body size (974 B); `Advert_Strip_Mat` in **27** files (712 B);
-    `Statue_MAT` in **10** files.  A head-only sweep of all 11 998 readable
-    files finds **zero** copies of those materials that own a
-    `MaterialExpressionTextureSample*` expression, and **zero** copies with
-    `Outer == None` (no file in the install owns the `Materials` package as
-    its own package).  So a material whose graph the cook stripped is
-    stripped **install-wide**: a sibling package cannot restore it, and only
-    an *import* (a reference to a texture that lives in another package) can
-    be followed across the group.
-
-11. **A TEXTURE WITH THE `0x00000021` MIP-0 RECORD HAS NO PIXELS ANYWHERE.**
-    MEASURED: the record is `[0x21, 0, -1, -1, -1, size_x, size_y]` — the
-    uncompressed size is 0 and the cache offset is -1, while the *mip tail*
-    records that follow it are normal `0x00010003` file-cache records with
-    real offsets.  The same-named copies in the sibling files carry the same
-    `0x21` record (MEASURED for `Stairs_Pack` in `CHN_Stadium_Rocks.upk`,
-    `BrushedMetal_N` in `antenna_classic_SF.upk`, `ENV_PartlyCloudy` in
-    `Swoosh_Lights.upk`, `Grate_Square_Pack` in `TrainStation_P.upk`), and
-    the `.tfc` entry that holds the mip tail has exactly the tail's
-    uncompressed size (MEASURED: `Stairs_Pack` mip1 -> `Textures5.tfc`
-    entry `total_u == 262144 == 128*512*4`), so the mip 0 is not in the
-    cache either.  Such a texture is **not** recoverable from the group.
-
-===============================================================================
-Public API
-    index_install(directory)        -> index dict (package -> files) + report
-    resolve_package(name, index)   -> the file path(s) that provide `name`
-    open_sibling(name, index)      -> an opened `rlupk.Package` for a sibling
-    import_package_name(pkg, i)    -> the internal package name of an import
-    read_head(path)                -> the head-only view of one `.upk`
-    SiblingResolver(index)         -> locate an object in the sibling packages
-                                      (`locate`, `locate_many`, `open_file`)
-
-Rule 1: no package byte, no texture pixel and no index file may enter the
-repository tree.  The index is written to `/tmp/rl_a3b/pkgindex.json` by
-default and the tool refuses any output path inside the repo.
+"""Index a local install and open the sibling packages a stadium file links.
+A cooked .upk stores linked package names as Package exports, not its own file name.
 """
+
 import argparse
 import json
 import os
@@ -534,7 +401,7 @@ def read_head(path, key=None):
 
 # ------------------------------------------------------------------- the index
 def _guard_out(path):
-    """Refuse to write the index inside the repository tree (Rule 1)."""
+    """Refuse to write the index inside the repository tree."""
     real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     repo = os.path.realpath(_REPO)
     if real == repo or real.startswith(repo + os.sep):

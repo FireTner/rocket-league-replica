@@ -1,23 +1,5 @@
-// probe_camera_air.cpp — R1 probe for CAMERA_PORT_PROMPT #2 (car-cam
-// air-velocity heading). Port of upstream rl_camera.cpp:218-355 behavior
-// against OUR src/camera/Camera.h API.
-//
-// Bug (current): the car rig always sits behind carYaw (the nose), even
-// airborne. Upstream: ground = rigid facing; air = eased onto the horizontal
-// velocity heading (blend 200→900 uu/s, rate 2.5+7*stiffness), with a
-// pitch-immune facing axis (half-turn continuity) so pitching past vertical
-// cannot orbit the camera.
-//
-// Scenarios (car-cam, ballCamOn=false; 9-arg legacy API = ground truth today):
-//  D: air flip — travel +X at 900 uu/s, nose +Y. Fixed: eye settles behind
-//     the VELOCITY (-X). Broken: eye sits behind the NOSE (-Y, 90 deg off).
-//  E: pitch through vertical — scalar nose bearing flips 0 -> PI in one
-//     frame (what atan2(fwd.y,fwd.x) reports when the nose passes 90 deg
-//     pitch). Fixed: eye holds (~0 travel). Broken: eye orbits 180 deg
-//     around the car (~840 uu of travel).
-//
-// Build: g++ -std=c++20 -Isrc tools/probe_camera_air.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_air && /tmp/probe_air
-// No SDL, no GL context.
+// Car-cam air heading: the airborne eye eases onto horizontal velocity, not the nose.
+// Pitching through vertical must not orbit the eye. Checks src/camera/Camera.h.
 #include <cmath>
 #include <cstdio>
 

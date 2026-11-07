@@ -7,13 +7,7 @@
 namespace rl {
 
 namespace {
-// Ball-streak look. UNVERIFIED — no game function for the ribbon.
-// 6 samples, tail dropped past 280 uu, half-width 12 uu (ball visual
-// radius is 92.75, so this stays a thin streak). Fade is 0.12 s of sim
-// time after the ball drops under kBallTrailSpeedFloor.
-// shortcut: a segment longer than 220 uu is skipped, so a hitch frame at
-// high speed leaves a gap; upgrade if the streak must stay continuous
-// across multi-tick frames.
+// A segment longer than kBallTrailMaxSeg is skipped, so a hitch leaves a gap.
 constexpr float kBallTrailMaxLen = 280.0f;
 constexpr float kBallTrailMaxSeg = 220.0f;
 constexpr float kBallTrailHalfW = 12.0f;
@@ -131,8 +125,7 @@ void FX::DrawPads(Renderer& r, const Pad* pads, int n) {
         float sc = 0.25f + 0.75f * frac * frac; // spin-up scale
         float pr = plateR * sc;
         // Dark hexagonal plate (6-sided cylinder, ~8 uu thick, on the floor).
-        // LIT (V6): the plate must read as a solid, not a flat decal. The trim
-        // rings, ground halo and pickup burst stay UNLIT -- they are glows.
+        // The plate is lit. Trim, halo, and the pickup burst stay unlit.
         if (r.LightingOn()) glEnable(GL_LIGHTING);
         glBegin(GL_TRIANGLE_FAN);
         glColor4f(0.23f, 0.25f, 0.28f, 1.0f);
@@ -174,8 +167,6 @@ void FX::DrawPads(Renderer& r, const Pad* pads, int n) {
                        1.0f, p.big ? 0.63f : 0.80f, p.big ? 0.09f : 0.27f,
                        (p.big ? 0.30f : 0.22f) * pulse);
             float oz = floatZ + 10.0f * std::sin(time_ * 2.0f + (float)i);
-            // Orbs are LIT spheres (V6): a lit sphere reads as a ball; the
-            // previous flat-shaded version was a disc.
             if (r.LightingOn()) glEnable(GL_LIGHTING);
             r.DrawSphere(p.x, p.y, oz, orbR * pulse, p.big ? 12 : 10,
                          1.0f, p.big ? 0.72f : 0.82f, p.big ? 0.16f : 0.35f);
@@ -197,10 +188,7 @@ void FX::DrawPads(Renderer& r, const Pad* pads, int n) {
 }
 
 void FX::DrawBallIndicator(Renderer& r, const Snapshot& s) {
-    // RL ball ground indicator: the highlight under the ball with BOTH
-    // circles — outer glow ring (0.98r..1.25r) + inner filled disc (0.62r),
-    // light cyan-white, fading/growing as the ball rises (floor by ~1950 uu).
-    // Radii, z, and alpha are the recipe VG4 measures. Do not retune them.
+    // Outer ring 0.98r..1.25r and inner disc 0.62r. Both fade as the ball rises.
     const float rBall = 91.25f;
     float t = s.ballPos[2] / 1950.0f;
     if (t < 0) t = 0; if (t > 1) t = 1;
@@ -208,15 +196,7 @@ void FX::DrawBallIndicator(Renderer& r, const Snapshot& s) {
     float ringA = 0.9f + (0.12f - 0.9f) * t;
     float discA = 0.32f + (0.05f - 0.32f) * t;
     float bx = s.ballPos[0], by = s.ballPos[1];
-    // The markings sheet is one arena-sized quad at z=1 and it writes depth
-    // with the depth test off (ArenaShell DrawArenaBuckets, B2). The disc is
-    // on that plane and the ring is 1 uu above it. That gap is smaller than
-    // the quad's window-depth slope at a low camera, so both circles lose
-    // the test in speckles and vanish into the turf as the camera moves.
-    // Polygon offset changes window depth only — projected radii stay put.
-    // Stronger than the pack field-line decal (-1.5, -2 in Renderer.cpp) so
-    // the marker also stays above those lines. UNVERIFIED: not an RL
-    // measurement; a screen-space bias, checked on the play-camera orbit.
+    // Polygon offset keeps the marker above the markings quad. Radii stay in world space.
     GLfloat prevFactor = 0.0f, prevUnits = 0.0f;
     glGetFloatv(GL_POLYGON_OFFSET_FACTOR, &prevFactor);
     glGetFloatv(GL_POLYGON_OFFSET_UNITS, &prevUnits);
@@ -240,12 +220,8 @@ void FX::DrawBallIndicator(Renderer& r, const Snapshot& s) {
 }
 
 void FX::DrawBoostFlame(Renderer& r, const Snapshot& s) {
-    // Short bright twin exhaust. One jet per nozzle: two crossed ribbons
-    // with a white-hot to orange gradient, not nested cones and not smoke.
-    // Oriented on -carForward with carUp, so pitch and roll carry it.
-    // Length follows remaining boost. UNVERIFIED: no live RL capture here.
-    // Nozzle sits just behind the documented Fennec rear face (local x=-65.9,
-    // nose +x, Fennec.cpp). Side 18 and down 6 are UNVERIFIED socket guesses.
+    // Two crossed ribbons on -carForward. Length follows remaining boost.
+    // Nozzle is just behind the Fennec rear face (local x = -65.9, nose +x).
     if (!s.boosting || s.boost <= 0.0f) return;
     float amt = s.boost / 100.0f;
     if (amt < 0.0f) amt = 0.0f;
@@ -349,9 +325,7 @@ void FX::DrawDrift(Renderer& r, const Snapshot& s) {
                        s.carPos[1] - f[1]*38.0f + l[1]*(w*44.0f),
                        1.5f, 16.0f, 10, 0.08f, 0.08f, 0.09f, 0.5f);
     }
-    // Contact sparks while grinding the ground. Separate from the
-    // supersonic black sparkles in DrawTrail (those are not drawn here).
-    // Left as-is for workstream G. Still gated on the 2200 speed member.
+    // Grind sparks. Separate from DrawTrail's black sparkles. Still requires the 2200 uu/s flag.
     if (sliding && s.carSpeed >= supersonic_) {
         for (int i = 0; i < 4; i++) {
             float ph = time_ * 17.0f + i * 2.7f;
@@ -380,9 +354,7 @@ void FX::DrawTrail(Renderer& r, const Snapshot& s) {
         glDisable(GL_LIGHTING);
         glDisable(GL_TEXTURE_2D);
         glDepthMask(GL_FALSE);
-        // Speed streak: crossed quads along the recent path. UNVERIFIED
-        // length 320 uu — chosen so it reads as a trail behind the car,
-        // shorter than the old 24-box chain. No live RL measurement.
+        // Crossed quads along the recent path, 320 uu.
         const float kStreakLen = 320.0f;
         float traveled = 0.0f;
         glBegin(GL_QUADS);
@@ -426,17 +398,15 @@ void FX::DrawTrail(Renderer& r, const Snapshot& s) {
             traveled += seg;
         }
         glEnd();
-        // Black sparkles. TUNED — owner stand-in (issue I4), not a claim
-        // that Rocket League's sparks are black. Own draw: not the streak
-        // quads above, not DrawSphere, not DrawDrift's grind sparks.
+        // Black sparkles. Not the streak quads and not DrawDrift's grind sparks.
         float fx = s.carForward[0], fy = s.carForward[1], fz = s.carForward[2];
         float ux = s.carUp[0], uy = s.carUp[1], uz = s.carUp[2];
         float lx = uy * fz - uz * fy, ly = uz * fx - ux * fz, lz = ux * fy - uy * fx;
         float ll = std::sqrt(lx * lx + ly * ly + lz * lz);
         if (ll > 1e-6f) {
             lx /= ll; ly /= ll; lz /= ll;
-            const float kHalf = 6.0f;   // UNVERIFIED sparkle size, uu
-            const float kThick = 1.4f;  // UNVERIFIED arm thickness, uu
+            const float kHalf = 6.0f;   // sparkle half-size, uu
+            const float kThick = 1.4f;  // arm thickness, uu
             glBegin(GL_QUADS);
             for (int i = 0; i < 8; i++) {
                 float cycle = time_ * 5.5f + i * 0.37f;
@@ -466,9 +436,7 @@ void FX::DrawTrail(Renderer& r, const Snapshot& s) {
         if (r.LightingOn()) glEnable(GL_LIGHTING);
     }
     if (explode_ > 0) {
-        // Goal shockwave: an expanding ground blast ring plus two upright
-        // rings around the ball, fading as it grows (radius/alpha exposed for
-        // the VG8 gate).
+        // Expanding ground ring plus two upright rings, fading as they grow.
         float rad = ShockwaveRadius();
         float a = ShockwaveAlpha();
         r.DrawRing(s.ballPos[0], s.ballPos[1], 3.0f, rad * 0.82f, rad, 64,
@@ -606,8 +574,7 @@ void FX::DrawContactSparks(Renderer& r, const ContactSparkFrame& c) {
                 float pz = c.z[p] + c.bz * dist + c.nz[p] * lift;
                 if (pz < 2.0f)
                     pz = 2.0f;
-                // White-yellow. UNVERIFIED colour. Not DrawTrail's black
-                // sparkles. DrawDrift's orange grind spheres stay there.
+                // White-yellow. Not DrawTrail's black sparkles.
                 r.DrawSphere(px, py, pz, 3.2f + 1.4f * float(2 - i), 6,
                              1.0f, 0.90f - 0.08f * i, 0.40f, 0.75f - 0.18f * i);
             }

@@ -1,71 +1,8 @@
 #!/usr/bin/env python3
-"""camera_trace_diff.py — replay a camera trace through OUR camera and diff it.
-
-`MASTER_PROMPT_CAMERA_EXACT.md` §6 P2.4: "replay a trace through our camera, print
-max/median per-field error (uu for Focus/Distance, rotator units for Rotation,
-degrees for FOV) and the 10 worst frames with inputs."
-
-Two replay backends, and the difference between them is the whole point:
-
-  * `--camera ours` (default for a real trace) compiles a tiny C++ driver against
-    **the real `src/camera/Camera.cpp`** (read-only; no Makefile change, the
-    driver is generated into a temp dir and cached by content hash) and feeds it
-    each frame's recorded inputs through `Camera::Update()`. What comes back is
-    our camera's `Eye()`, `Center()` and `EffFov()`.
-  * `--camera recorded` is the self-consistency path: it reconstitutes an
-    (eye, center) pair from the trace's OWN POV via the documented convention and
-    then runs the identical comparison. It must read **exactly 0.000000** on
-    every field; anything else means the format, the loader or the convention is
-    inconsistent, and P3's gate would be built on sand.
-
-POV -> WORLD POSITION CONVENTION (see the long note in `cam_trace.py`, which owns
-the single implementation — this tool only calls it):
-
-    focus = Center()                     distance = |Eye() - Center()|
-    rotation = rotator_from_dir(Center()-Eye())      fov = EffFov()
-    and the RL direction of the same fact:
-    Eye = Focus - forward(rotation) * Distance
-
-Reported as `UNVERIFIED` instead of guessed (never fabricated, never zero):
-
-  * **Roll** — our rig never rolls (`Camera.cpp` `rotationFromDir` writes 0.0 and
-    `Apply()` builds an up=+Z basis), so a recorded non-zero roll cannot be
-    blamed on any behaviour we could change. Excluded from the score.
-  * **POV time** — `Camera` exposes no POV-clock accessor; `OutPOV.Time` is
-    recorded but not comparable through the public API.
-  * **CurrentSwivel unit** — RL's `Camera_TA.CurrentSwivel` unit is not
-    established by the decompile. If the header does not declare
-    `swivel_convention: "radians"`, swivel is not scored.
-  * **The convention itself** — if the header's `pov_convention` is not the one
-    this tool implements, the whole table is marked `UNVERIFIED` and the numbers
-    are printed as a raw diagnostic only.
-
-Two subtleties the report states out loud instead of hiding:
-
-  * `Focus` is a point **on the aim ray**, so its error mixes a direction error
-    with a ray-**length** difference (`Camera.cpp` places `Center()` at
-    `max(target distance, 1000)`, RL places `Focus` at `OutPOV.Distance`).
-    `Rotation` is the same comparison with the length term removed.
-  * `Distance` is comparable only if the trace measured it the same way. The tool
-    probes the data (median `|Eye - Center|` vs median recorded `Distance`,
-    ratio must land in [0.5, 2.0]) instead of trusting a declaration; outside
-    that window it prints `UNVERIFIED` with both medians and the reason, because
-    scoring a semantics difference as a camera error would be a fabricated table.
-
-A trace with `source: "synthetic"` prints a loud banner: the fixture is generated,
-not recorded, so its error table is a **plumbing demonstration** and says nothing
-about our camera's accuracy.
-
-CLI
----
-    python3 tools/decomp/camera_trace_diff.py --trace decomp/traces/x.rlt
-    python3 tools/decomp/camera_trace_diff.py --trace ... --camera recorded
-    python3 tools/decomp/camera_trace_diff.py --self-check
-    python3 tools/decomp/camera_trace_diff.py --report      # needs a live trace
-
-Exit codes: 0 ok, 2 trace/driver failure, 3 SKIP (no usable trace, e.g. no real
-recording exists yet — the same contract `camera_surface_gate.py` uses).
+"""Replay a camera trace through src/camera/Camera.cpp and print per-field error.
+Roll is not scored. A synthetic trace checks the plumbing, not camera accuracy.
 """
+
 import argparse
 import hashlib
 import json
@@ -85,7 +22,7 @@ import cam_trace as ct  # noqa: E402
 REPO_ROOT = os.path.dirname(os.path.dirname(_HERE))
 TRACE_DIR = os.path.join(REPO_ROOT, "decomp", "traces")
 
-SUPERSONIC_UU = 2200.0   # G8 threshold, cited: docs/number_gates.md / AGENTS.md
+SUPERSONIC_UU = 2200.0   # supersonic speed, uu/s
 DEFAULT_TOP = 10
 
 #: how the worst frames are ranked when --rank composite (documented weights:
@@ -179,6 +116,10 @@ int main(int argc, char** argv) {
 """
 
 COMPILE_FLAGS = ["-std=c++20", "-O2", "-ffp-contract=off", "-fno-fast-math", "-Isrc"]
+CAMERA_UNITS = (
+    "src/camera/Camera.cpp",
+    "src/camera/Camera.h",
+)
 CXX = os.environ.get("CXX", "g++")
 
 
@@ -193,8 +134,8 @@ def replay_inputs(tr):
     Convention choices, all documented and none of them guessed silently:
       * `carYaw` (radians, 0 = +X) is the car's UE yaw rotator converted once;
       * `carFwd` is the nose vector of the car's (pitch, yaw) rotator;
-      * `carSpeed` is |car velocity| and `supersonic` is the measured G8
-        threshold (2200 uu/s) applied to it — a recorder may also store the
+      * `carSpeed` is |car velocity| and `supersonic` is 2200 uu/s
+        applied to it — a recorder may also store the
         game's own flag, but this keeps the replay independent of the hook;
       * swivel inputs are passed through as recorded (the caller already applied
         the deadzone, per `Camera::Update`'s contract).
@@ -236,7 +177,7 @@ def run_recorded(tr):
 
 def _driver_cache_dir():
     h = hashlib.sha1()
-    for rel in ("src/camera/Camera.cpp", "src/camera/Camera.h"):
+    for rel in CAMERA_UNITS:
         with open(os.path.join(REPO_ROOT, rel), "rb") as f:
             h.update(f.read())
     h.update(DRIVER_SRC.encode("utf-8"))

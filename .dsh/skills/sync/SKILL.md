@@ -62,7 +62,7 @@ setsid rsync -az 'third_party/RocketSim/A1_VENDOR.txt' 'firetner@192.168.0.109:/
 ```
 
 Deliberately excluded: `build/` (machine-specific binaries — rebuild with
-`make all` on B), `render_pacing.log`, `__pycache__` / `*.pyc`.
+`cmake -B build && cmake --build build` on B), `render_pacing.log`, `__pycache__` / `*.pyc`.
 
 ## Step 5 — checksum verify (required, not optional)
 

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-# tools/soak/analyze.py — MIT License
-"""Analyze a real soak run (for use once the binary exists).
-Usage: analyze.py perf.csv --p99-budget 17.5 --drops phys_trace.csv
-perf.csv columns: frame,dt_ms      phys_trace.csv columns: frame,owed,done,drops
-Prints PASS/FAIL per gate counter. Exit 0 iff phys_drops==0 (p99 reported, waived on llvmpipe via --llvmpipe).
+"""Read soak perf.csv (frame,dt_ms) and optional phys_trace.csv (frame,owed,done,drops).
+Exit 0 iff phys_drops == 0. --llvmpipe waives the p99 budget.
 """
+
 import argparse, csv, statistics, sys
 
 def main():

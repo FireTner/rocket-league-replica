@@ -1,25 +1,4 @@
-// PbrGl.h — G6a PBR-lite (GRAPHICS45 §5/G6 step 1), presentation-owned.
-//
-// Technique: specular highlight + roughness factor + simple IBL ambient
-// lift, applied to the car/ball material path behind `[render] pbr=false`
-// (default OFF = byte-identical fixed-function path).
-//
-// Implementation is FIXED-FUNCTION-COMPOSITED on purpose: no GLSL, no
-// program compile (so "compile once at enable/startup" is trivially
-// satisfied — there is nothing to compile), no VBO, no per-draw
-// glGetError, no GL state that leaks between frames (re-applied every
-// BeginFrame when enabled, never touched when disabled). The single
-// material path is the global fixed-function specular + shininess +
-// ambient state; it concentrates on cars/ball because those are the
-// glossy low-roughness surfaces, while the arena sheets stay
-// diffuse-dominated.
-//
-// No new dependency (technique only — Blinn/Phong-specular + ambient
-// IBL-mean thinking as in Bevy/RLViser-style PBR-lite discussions);
-// therefore no THIRD_PARTY.md edit.
-//
-// Ownership: G6a. G6b (shadows) / G6c (atmosphere) must not edit this
-// file — add their own Pbr* files + their own INI keys instead.
+// PbrGl.h — fixed-function specular, shininess, and ambient lift.
 #pragma once
 
 namespace rl {

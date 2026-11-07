@@ -13,7 +13,7 @@ within 0.2 s. Offsets and the full vertical-velocity copy stay UNVERIFIED (I3).
 ## Commands
 
 ```
-make /tmp/t_ball
+ctest --test-dir build -R test_freeplay_ball --output-on-failure
 python3 tools/verify/measured.py
 ```
 

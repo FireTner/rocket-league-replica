@@ -1,8 +1,5 @@
-// Contact-spark contract. The sim view is read-only. This file must fail
-// to compile until Sim::GetCarScrape / GetBallTouch exist, then it checks
-// the presentation decision in fx/ContactSparks.h.
-//
-// Build (after the view exists): see the Makefile /tmp/t_spark rule.
+// Contact sparks: read-only scrape and touch view, plus the presentation decision.
+// Fails to compile until Sim::GetCarScrape and GetBallTouch exist.
 #include <cmath>
 #include <cstdio>
 

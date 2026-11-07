@@ -1,31 +1,15 @@
-# Local-only dev speedups for RocketLeague — source this, don't commit shell globals.
-# Usage: source tools/dev-local.sh   (per-shell, dies with the shell)
-# Does NOT touch the Makefile (g++ only, no cmake per AGENTS.md).
-# CXX ?= in the Makefile means these env overrides win without edits.
+# Local dev speedups. Source this shell; the overrides die with it.
+# Usage: source tools/dev-local.sh
+# CMake already launches ccache when it is on PATH. This pins the cache dir.
 
-export CC="ccache gcc"
-export CXX="ccache g++"
-
-# ccache is only a speedup if it actually caches: history showed 0 hits /
-# 0.0 GiB (cold /tmp + wiped cache), so every `make all` paid full price.
-# Pin a persistent dir and warn once when ccache is missing or cold.
 export CCACHE_DIR="${CCACHE_DIR:-$HOME/.cache/ccache}"
 if ! command -v ccache >/dev/null 2>&1; then
   echo "dev-local WARN: ccache not on PATH — builds will be full price" >&2
 fi
 
-# Parallel builds by default: `make all` -> `make -j$(nproc) all`
-make() {
-  if [[ "$*" != *"-j"* ]]; then
-    command make -j"$(nproc)" "$@"
-  else
-    command make "$@"
-  fi
-}
-
-# Optional mold linker: `make LDFLAGS="-fuse-ld=mold" all`
-# Left off by default; checksums come from tick math, not link order,
-# but drop mold first if any checksum ever differs.
+# Optional mold linker, at configure time:
+# cmake -B build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+# Left off by default; checksums come from tick math, not link order.
 
 # rtk routing for eligible git subcommands, with fallback to real git.
 # Interactive shells only (guarded by caller); pipes/&&/redirects bypass.
@@ -36,4 +20,4 @@ git() {
   esac
 }
 
-echo "dev-local on: CC=$CC CXX=$CXX, parallel make (-j$(nproc)), git->rtk wrapper"
+echo "dev-local on: ccache launcher, git->rtk wrapper"

@@ -1,23 +1,15 @@
 #!/usr/bin/env python3
-# tools/tas/replay.py — MIT License
-"""TAS tape record/replay harness (A6).
-Modes:
-  validate  — check a tape against TAPE_FORMAT.md, report clamp/parse events.
-  self      — run the analytic reference model over a tape, dump states+checksum.
-  sim       — drive headless_sim CLI if present, else fall back to self-check.
-  compare   — diff two state dumps tick-by-tick, report drift curve stats.
-  drift     — self-model 10k-tick drift-vs-baseline report (analytic; STUB-labelled
-              until headless_sim exists). Writes docs/drift_curve.md data table.
-Exit codes: 0 ok, 1 usage/parse error, 2 divergence detected (compare), 3 sim missing
-(only when --strict and no headless_sim found).
+"""Validate, replay, and compare TAS tapes.
+Tape CSV: tick,throttle,steer,pitch,yaw,roll,jump,boost,handbrake at 120 Hz. Exit 0 ok, 1 usage, 2 divergence, 3 sim missing.
 """
+
 import argparse, csv, hashlib, math, os, shutil, subprocess, sys
 
 HEADER = ["tick","throttle","steer","pitch","yaw","roll","jump","boost","handbrake"]
 RATE = 120.0
 DT = 1.0 / RATE
 
-# Analytic expectations (mirror docs/number_gates.md). Kinematic only — STUB model.
+# Analytic kinematic stub, not the sim.
 ACCEL_FULL = 1410.0      # uu/s^2 at full throttle, low speed
 BOOST_EXTRA = 890.0      # extra accel while boosting (1410 -> 2300 total)
 V_MAX = 2300.0           # boost top speed

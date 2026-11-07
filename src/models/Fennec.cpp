@@ -1,11 +1,19 @@
-// Fennec.cpp — see Fennec.h. GL 2.1 vertex-array draw (VBO when available).
+// Fennec.cpp — loads and draws the Fennec body mesh.
+// Mesh and albedo sheets: CC-BY-4.0, Jako (https://sketchfab.com/fairlight51).
+// fennec.bin is FEN1 (positions, normals, indices) plus a TEX1 block
+// (UVs, per-material index ranges, the CC-BY albedo PNGs).
+// Optional local replacements, never shipped: car_assets/fennec/<name>.png
+// where <name> is the sheet name stored in TEX1 (rim, chassis).
 #include "Fennec.h"
 #include "render/Renderer.h"
-#define GL_GLEXT_PROTOTYPES 1 // VBO entry points (GL 1.5 core) in Mesa's gl.h
+#define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
+#include "stb_image.h"
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 namespace rl {
@@ -29,11 +37,18 @@ int PartTris() {
     return n;
 }
 
-float Smooth01(float a, float b, float x) {
-    float t = (x - a) / (b - a);
-    if (t < 0) t = 0;
-    if (t > 1) t = 1;
-    return t * t * (3 - 2 * t);
+void SpecFor(uint32_t flags, bool textured, float& sr, float& sg, float& sb, float& shine) {
+    if (flags & kGlass) {
+        sr = 0.55f; sg = 0.58f; sb = 0.62f; shine = 96.0f;
+    } else if (flags & kMetal) {
+        sr = 0.50f; sg = 0.46f; sb = 0.32f; shine = 64.0f;
+    } else if (flags & kTeam) {
+        sr = 0.35f; sg = 0.35f; sb = 0.40f; shine = 48.0f;
+    } else if (textured) {
+        sr = 0.14f; sg = 0.14f; sb = 0.14f; shine = 24.0f;
+    } else {
+        sr = 0.05f; sg = 0.05f; sb = 0.05f; shine = 12.0f;
+    }
 }
 
 // Procedural reference paint (license-clean approximation of the target
@@ -91,14 +106,51 @@ void BakePaint(Part& part, std::vector<float>& out, bool orange) {
         if (glass > 0) {
             r += (0.02f - r) * glass; g += (0.03f - g) * glass; b += (0.05f - b) * glass;
         }
-        // Metallic flake: deterministic per-vertex shimmer (+/-4%), baked once.
-        // Catches the key light at glancing angles like the reference clearcoat.
-        float h = std::sin(x * 12.9898f + y * 78.233f + z * 37.719f) * 43758.5453f;
-        h -= (float)(int)h;
-        if (h < 0) h += 1.0f;
-        float fl = 0.96f + 0.08f * h;
-        out[i * 3 + 0] = r * fl; out[i * 3 + 1] = g * fl; out[i * 3 + 2] = b * fl;
+        inter[i * 8 + 6] = u;
+        inter[i * 8 + 7] = v;
     }
+    glGenBuffers(1, &g_mesh.vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, g_mesh.vbo);
+    glBufferData(GL_ARRAY_BUFFER, inter.size() * sizeof(float), inter.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    for (Image& im : g_mesh.images) {
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = nullptr;
+        if (!im.png.empty() && im.w == 0) {
+            px = stbi_load_from_memory(im.png.data(), (int)im.png.size(), &w, &h, &n, 4);
+        }
+        im.png.clear();
+        if (px) {
+            im.w = w;
+            im.h = h;
+            im.png.assign(px, px + size_t(w) * size_t(h) * 4);
+            stbi_image_free(px);
+        }
+        LoadOverride(im);
+        if (im.w <= 0 || im.png.size() < size_t(im.w) * size_t(im.h) * 4) {
+            im.png.clear();
+            continue;
+        }
+        glGenTextures(1, &im.id);
+        glBindTexture(GL_TEXTURE_2D, im.id);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, im.w, im.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, im.png.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        im.png.clear();
+        std::fprintf(stderr, "[fennec] sheet %s %dx%d\n", im.name.c_str(), im.w, im.h);
+    }
+    for (Mat& m : g_mesh.mats) {
+        if (m.idx.empty()) continue;
+        glGenBuffers(1, &m.ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, m.idx.size() * sizeof(uint32_t), m.idx.data(), GL_STATIC_DRAW);
+    }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    return g_mesh.vbo != 0;
 }
 
 void DrawTrim(bool orange, Renderer& r) {
@@ -182,6 +234,42 @@ void DrawPart(const Part& part, bool orange) {
                        GL_UNSIGNED_INT, part.idx.data());
     }
     glDisableClientState(GL_COLOR_ARRAY);
+    glBindBuffer(GL_ARRAY_BUFFER, g_mesh.vbo);
+    glVertexPointer(3, GL_FLOAT, 8 * sizeof(float), (const void*)0);
+    glNormalPointer(GL_FLOAT, 8 * sizeof(float), (const void*)(3 * sizeof(float)));
+    glTexCoordPointer(2, GL_FLOAT, 8 * sizeof(float), (const void*)(6 * sizeof(float)));
+    for (const Mat& m : g_mesh.mats) {
+        if (m.idx.empty() || !m.ibo) continue;
+        const bool unlit = (m.flags & kEmissive) != 0;
+        if (unlit || !r.LightingOn()) glDisable(GL_LIGHTING);
+        else glEnable(GL_LIGHTING);
+        if (!unlit) {
+            float sr, sg, sb, shine;
+            SpecFor(m.flags, m.tex >= 0, sr, sg, sb, shine);
+            const GLfloat spec[4] = {sr, sg, sb, 1};
+            glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, spec);
+            glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, shine);
+        }
+        const bool textured = m.tex >= 0 && m.tex < (int)g_mesh.images.size() && g_mesh.images[m.tex].id;
+        if (textured) {
+            glEnable(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, g_mesh.images[m.tex].id);
+            glColor3f(1, 1, 1);
+        } else {
+            glDisable(GL_TEXTURE_2D);
+            float cr = m.r, cg = m.g, cb = m.b;
+            if (m.flags & kTeam) {
+                if (orange) { cr = 1.0f; cg = 0.42f; cb = 0.06f; }
+            }
+            glColor3f(cr, cg, cb);
+        }
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
+        glDrawElements(GL_TRIANGLES, (GLsizei)m.idx.size(), GL_UNSIGNED_INT, (const void*)0);
+        r.NoteExternalDraw(uint64_t(m.idx.size() / 3));
+    }
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisableClientState(GL_NORMAL_ARRAY);
     glDisableClientState(GL_VERTEX_ARRAY);
 }
@@ -205,6 +293,7 @@ void DrawBody(float orange, Renderer& r, float steerRad, float spinRad) {
     }
     DrawTrim(isO, r);
 }
+
 } // namespace
 
 bool ReadPart(FILE* f, Part& part) {
@@ -269,6 +358,7 @@ bool FennecLoad(const char* path) {
             return false;
         }
     }
+    const bool tex = ReadTex1(f, nv);
     std::fclose(f);
     for (Part& part : g_parts) UploadPart(part);
     g_ok = true;

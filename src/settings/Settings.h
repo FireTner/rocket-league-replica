@@ -1,7 +1,4 @@
-// A5-owned: versioned settings structs + INI load/save/migrate.
-// Source of truth for config/settings.ini (schema v1, see docs/INI_SCHEMA.md).
-// Other streams read via Settings::Load; the menu edits the same struct.
-// MIT License. Only dependency: C++20 standard library.
+// Versioned free-play settings, loaded and saved as an INI file.
 #pragma once
 
 #include <string>
@@ -16,32 +13,27 @@ struct CameraSettings {
     float angle = -3.0f;
     float stiffness = 0.45f;
     bool ballcam = true;
-    // RL profile sliders (BakkesModSDK ProfileCameraSettings field list;
-    // ranges/defaults per CarBaller's Liquipedia/v1.74 notes + Thespike best).
-    float transitionSpeed = 1.2f;  // 1..2 ballcam<->car-cam blend rate
-    float swivelSpeed = 5.0f;      // 1..10 right-stick look rate
-    bool shake = true;             // RL ships with camera shake ON
-    bool invertSwivel = false;     // flip swivel pitch (CameraSave)
-    bool snap = true;              // snap swivel back to default on release
-                                   // (RL "Snap Camera to Default"; schema v1
-                                   // additive, INI-only — no menu slider)
+    float transitionSpeed = 1.5f;  // ball-cam blend, 1..2. Matches the on-disk profile.
+    float swivelSpeed = 5.0f;      // how fast the stick offset eases, 1..10
+    bool shake = false;            // off: the chase rig does not shake
+    bool invertSwivel = false;     // flip swivel pitch
+    bool snap = true;              // released stick returns the swivel; off holds it
+    bool airHeading = false;      // airborne: blend nose heading toward velocity
 };
 
-// Each binding is a list of physical key names (SDL key names, e.g. "W",
-// "Up", "LeftShift", "Space", "Escape", "F1"). Paired axes use two slots:
-// [0] = negative/secondary slot... documented per-field below.
+// Key names are SDL names ("W", "Up", "LeftShift", "Space").
+// An axis is slotA minus slotB, so slotA is the +1 side.
 struct AxisBinding {
-    std::vector<std::string> slotA;  // e.g. throttle-forward keys
-    std::vector<std::string> slotB;  // e.g. throttle-back keys
+    std::vector<std::string> slotA;
+    std::vector<std::string> slotB;
 };
 
 struct InputBindings {
-    AxisBinding throttle;  // A=forward  B=back
-    AxisBinding steer;     // A=left     B=right
-    AxisBinding pitch;     // A=forward key (W)  B=back key (S); reuses drive keys,
-                           // Keyboard negates to sim pitch (W -> pitch -1 = nose DOWN)
-    AxisBinding yaw;       // A=left     B=right; reuses steer keys
-    AxisBinding roll;      // A=roll-left (Q) B=roll-right (E)
+    AxisBinding throttle;  // A forward, B back
+    AxisBinding steer;     // A left, B right. Steer +1 is left.
+    AxisBinding pitch;     // Same keys as throttle. The keyboard maps W to pitch -1 (nose down).
+    AxisBinding yaw;       // A left, B right
+    AxisBinding roll;      // A rolls left (Q), B rolls right (E)
     std::vector<std::string> jump = {"L"};
     std::vector<std::string> boost = {"K"};
     std::vector<std::string> handbrake = {"LeftShift", "RightShift"};
@@ -50,17 +42,13 @@ struct InputBindings {
     std::vector<std::string> resetBall = {"C"};
     std::vector<std::string> unlimited = {"U"};
     std::vector<std::string> menu = {"Escape"};
-    std::vector<std::string> kickoff[5];  // kickoff[i] = ball drill i (keys 1..5)
+    std::vector<std::string> kickoff[5];  // ball drills 0..4, keys 1..5
 };
 
-// Gamepad bindings, SDL_GameControllerButton names ("A", "LeftShoulder",
-// "DPadUp", ...). Kept separate from the keyboard table so both devices stay
-// first-class and neither rebinding pass can clobber the other.
+// Button names are SDL controller buttons ("A", "LeftShoulder", "DPadUp").
+// Kept apart from the keyboard table so a rebind of one does not change the other.
 struct GamepadBindings {
-    // Left stick is fixed: X -> steer, Y -> throttle (src/input/Gamepad.h).
-    // Radial deadzone applied to the stick VECTOR before its components are
-    // used. 0.08 is a common Steam/RL-class default and is UNVERIFIED against a
-    // licensed source — see docs/INI_SCHEMA.md.
+    // Left stick is fixed: X is steer, Y is throttle. Deadzone is radial, on the vector.
     float deadzone = 0.08f;
     std::string jump = "A";
     std::string boost = "B";
@@ -79,47 +67,37 @@ struct PhysicsSettings {
 
 struct BoostSettings {
     bool unlimited = false;
-    float drain = 33.33f;    // boost units per second while boosting
-    float recharge = 10.0f;  // boost units per second (pads give 12/100 flat)
+    float drain = 33.33f;    // units per second while boosting
+    float recharge = 10.0f;  // units per second
 };
 
+// The build writes collision_meshes/soccar/*.cmf. The stadium pack is local.
+inline constexpr char kDefaultMeshDir[] = "collision_meshes";
+inline constexpr char kDefaultArenaDir[] = "arena_assets/stadium_day";
+
 struct ArenaSettings {
-    bool soccar = true;  // true = standard soccar map (only map this phase)
-    // Directory containing dumped/generated arena collision meshes, laid out
-    // as <mesh_dir>/soccar/*.cmf (RocketSim COLLISION_MESH_BASE_PATH
-    // convention). Empty = RocketSim's default "./collision_meshes/".
-    // Psyonix-owned dumps are runtime-only and never committed; the in-repo
-    // clean-room mesh is generated by tools/meshgen. See docs/MESH_SETUP.md.
-    std::string meshDir;
-    // Directory holding a ripped arena visual pack (arena.json + arena.bin).
-    // Empty = the analytic shell. A menu save writes this back; --arenadir
-    // still wins at startup (flag > ini). Packs stay outside the repo.
-    std::string arenaDir;
+    bool soccar = true;
+    // <mesh_dir>/soccar/*.cmf. An empty file value keeps kDefaultMeshDir.
+    // A missing key uses that default. Dumps stay runtime-only.
+    std::string meshDir = kDefaultMeshDir;
+    // arena.json pack. A present empty value is the analytic shell.
+    // A missing key uses the stadium pack. --arenadir still wins.
+    std::string arenaDir = kDefaultArenaDir;
 };
 
 struct GameSettings {
-    int kickoffIndex = 0;  // 0=center 1=left 2=right 3=back-left 4=back-right
+    int kickoffIndex = 0;  // 0 center, 1 left, 2 right, 3 back-left, 4 back-right
 };
 
-// GRAPHICS45 G2/G5: render presentation knobs (schema v1 additive, defaults
-// keep gated captures on the existing fixed-function path). msaa=0/off is the
-// shipped single-sample path; >0 requests MSAA samples via SDL_GL attrs.
-// maxFps=0/off keeps the shipped present pacing (vsync, or uncapped with
-// --no-vsync); >0 caps the frame rate via clamp+sleep in EndFrame, but ONLY
-// when vsync is off. pacingLog=false keeps render_pacing.log out of the CWD
-// (V9); true re-enables the append for soak analysis.
 struct RenderSettings {
-    int msaa = 0;  // 0=off, else 2/4/8/16 samples (clamped 0..16)
-    int maxFps = 0;     // 0=off, else capped fps (clamped 15..1000, --no-vsync only)
-    bool pacingLog = false;  // true = append render_pacing.log (soak analysis)
-    // G6a PBR-lite (GRAPHICS45 §5/G6 step 1, schema v1 additive): false keeps
-    // the shipped fixed-function path byte-identical; true enables the
-    // specular + roughness + IBL-lift car/ball material (src/render/PbrGl.*).
+    int msaa = 0;        // 0 = off, else sample count clamped to 0..16
+    int maxFps = 0;      // 0 = off. A cap applies only while vsync is off.
+    bool pacingLog = false;
     bool pbr = false;
-    // Glass-wall alpha on the fixed-function shell. 0.40 matches the baked
-    // glass vertex alpha (ArenaShell kGlassA) so a missing key leaves the
-    // current walls unchanged. CROSS_CHECK's "0.30" is the pre-ledger value.
+    // Glass alpha. 0.40 matches the baked shell so a missing key is unchanged.
     float wallOpacity = 0.40f;
+    // Pack-shader specular. Off until the ini turns it on.
+    bool packSpec = false;
 };
 
 struct Settings {
@@ -134,17 +112,13 @@ struct Settings {
     GameSettings game;
     RenderSettings render;
 
-    // Canonical defaults (== shipped config/settings.ini).
     static Settings Defaults();
 
-    // Load/Save the INI file. Returns false on I/O or parse error (err set).
-    // Load is tolerant: missing file/keys fall back to defaults; unknown keys
-    // are ignored; schema < kSchemaVersion is migrated via Migrate().
+    // Missing file or keys keep defaults. Returns false on I/O or a parse error.
     static bool Load(const std::string& path, Settings& out, std::string* err = nullptr);
     static bool Save(const std::string& path, const Settings& s, std::string* err = nullptr);
 
-    // Forward-migrate an older struct in place (fills new keys with defaults,
-    // clamps ranges). fileSchema is the [version] schema read from disk.
+    // Fills keys added after fileSchema and clamps ranges.
     static void Migrate(Settings& s, int fileSchema);
 };
 

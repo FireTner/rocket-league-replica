@@ -1,10 +1,4 @@
-// FX.h — A4 FX: boost pads, boost flame, supersonic streak, black sparkles
-// (TUNED owner stand-in), goal shockwave ring, demo/pickup feedback,
-// camera-shake overlay. Airborne spin circles are not drawn.
-// All procedural (no textures/audio assets). Ownership: A4.
-//
-// FX advances on SIM time (the coordinator feeds it tick-delta seconds), so
-// every timer, pulse and burst is deterministic for offscreen capture.
+// FX.h — pads, boost flame, trails, shockwave, and shake. Timers use sim seconds.
 #pragma once
 #include "fx/ContactSparks.h"
 #include "fx/WheelEmbers.h"
@@ -24,8 +18,7 @@ class FX {
 public:
     FX();
 
-    // Advance timers (respawn spin-up, bursts, slow-mo beat). dt is SIM
-    // seconds (tick delta / 120), not wall time — see the class comment.
+    // dt is sim seconds (tick delta / 120), not wall time.
     void Update(float dt, const Snapshot& s);
 
     // Draw all pads (glow color + spin-up scale). Call after camera Apply.
@@ -46,9 +39,8 @@ public:
     // while boost is firing. Length follows remaining boost. Not a smoke cloud.
     void DrawBoostFlame(Renderer& r, const Snapshot& s);
 
-    // Powerslide/drift tire smoke. The orange grind sparks in here are contact
-    // sparks (workstream G), separate from the supersonic black sparkles.
-    // Call after camera Apply. Deterministic (sim time).
+    // Powerslide tire smoke. Orange grind sparks here are separate from the
+    // supersonic black sparkles.
     void DrawDrift(Renderer& r, const Snapshot& s);
     // Flip-reset disc (src/fx/FlipReset) while Snapshot.flipReset is set.
     // The old airborne spin arcs stay removed.
@@ -71,16 +63,12 @@ public:
     // Returns slow-mo scale (1.0 normal, ~0.25 during beat) for sim hookup.
     float GoalBeat() const { return slowmo_; }
 
-    // Goal shockwave ring geometry (W5). Radius grows from the goal-mouth
-    // scale outward over the 2 s explosion; alpha fades to 0. Exposed so the
-    // VG8 gate can assert the growth curve from captured frames.
+    // Shockwave radius grows over the 2 s explosion; alpha fades to 0.
     float ShockwaveRadius() const;
     float ShockwaveAlpha() const;
     bool ShockwaveActive() const { return explode_ > 0; }
 
-    // Camera-shake overlay (W5). Presentation-only: the caller adds the
-    // returned world x/y offset to the eye. Zero when no event is active,
-    // and the coordinator disables it for freecam/capture.
+    // World x/y offset added to the eye. Zero when no event is active.
     void ShakeOffset(float out[2]) const;
 
     // Events (also auto-armed from Snapshot transitions in Update):
@@ -90,11 +78,7 @@ public:
 
     void SetSupersonicThreshold(float v) { supersonic_ = v; }
 
-    // uu/s. UNVERIFIED — issue I2 stays open. No game function names this
-    // floor, and it is not the car's 2200 uu/s supersonic line. Round split
-    // of two contacts measured in this sim (tests/test_last_touch.cpp,
-    // seed 1, fallback arena): soft 386.6 (throttle 0.25, no boost, y=-220)
-    // and hard 2797.6 (throttle 1 + boost, y=-2000). 1500 sits in that gap.
+    // uu/s. Not the car's 2200 uu/s supersonic line.
     static constexpr float kBallTrailSpeedFloor = 1500.0f;
 
 private:
@@ -119,7 +103,7 @@ private:
     uint32_t ballTrailTick_ = 0;
     bool ballTrailHaveTick_ = false;
     float ballTrailFade_ = 0.0f;
-    // Contact-spark burst (workstream G). Sim-time deadline + last hit point.
+    // Contact-spark burst. Sim-time deadline and last hit point.
     float ballSparkUntil_ = 0;
     float ballSparkX_ = 0, ballSparkY_ = 0, ballSparkZ_ = 0;
     WheelEmbers wheelEmbers_;

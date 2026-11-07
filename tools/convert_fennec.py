@@ -74,8 +74,7 @@ def main():
     # Everything below is ROW-MAJOR: `mat[r][c]` is row r, column c. glTF stores
     # its `matrix` array column-major, so `to_rows` transposes it on the way in.
     # (The previous revision fed a column-major list into row-major indexing in
-    # both `mul` and `xform`, producing an inconsistent transform - the root of
-    # the corrupt datum in VISUAL_BUGS_TODO V2.)
+    # both `mul` and `xform`, producing an inconsistent transform.)
     def to_rows(flat):
         return [[flat[r + 4 * c] for c in range(4)] for r in range(4)]
 
@@ -123,7 +122,7 @@ def main():
 
     def nrm(nm, v):
         """Transform a normal with the inverse-transpose, then renormalise.
-        Translation is NEVER applied to a normal (VISUAL_BUGS_TODO V1)."""
+        Translation is NEVER applied to a normal."""
         x = nm[0][0] * v[0] + nm[0][1] * v[1] + nm[0][2] * v[2]
         y = nm[1][0] * v[0] + nm[1][1] * v[1] + nm[1][2] * v[2]
         z = nm[2][0] * v[0] + nm[2][1] * v[1] + nm[2][2] * v[2]

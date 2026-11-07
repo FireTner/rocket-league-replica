@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""A5 reference INI parser (independent of src/settings/Settings.cpp).
-
-Proves the config/settings.ini contract round-trips with a second,
-independent implementation: parse -> assert -> modify -> save -> reparse.
-
-Usage: python3 tools/ini_roundtrip.py   (run from repo root)
-Exit 0 = PASS.
+"""INI parser independent of src/settings/Settings.cpp.
+Round-trips config/settings.ini: parse, modify, save, reparse. Exit 0 is pass.
 """
+
 import re
 import sys
 from pathlib import Path

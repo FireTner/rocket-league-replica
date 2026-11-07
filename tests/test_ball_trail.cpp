@@ -1,5 +1,5 @@
-// Ball-trail colour, soft-touch, fade, and triangle cost.
-// Offscreen GL. The speed floor is FX::kBallTrailSpeedFloor (UNVERIFIED).
+// Ball-trail colour, soft-touch, fade, and triangle cost. Offscreen GL.
+// The speed floor is FX::kBallTrailSpeedFloor.
 // Soft and hard speeds are the contacts measured by test_last_touch.
 #include <cstdint>
 #include <cstdio>

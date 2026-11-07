@@ -8,7 +8,7 @@ build/
 # NEVER commit collision_meshes/: a dump produced by RLArenaCollisionDumper is
 # Psyonix-owned geometry and must stay a runtime-only, user-supplied input
 # (repo rule 1). The in-repo clean-room mesh is NOT tracked here either — it is
-# regenerated deterministically by `make meshgen`. See docs/MESH_SETUP.md.
+# regenerated deterministically by the default CMake build. See docs/MESH_SETUP.md.
 collision_meshes/
 
 # Local scratch
@@ -33,3 +33,16 @@ __pycache__/
 # user-local inputs and must never be committed or re-uploaded.  The pack
 # FORMAT is documented in docs/ARENA_PACK.md; the tool is ours (MIT).
 arena_assets/
+
+# Optional car sheets ripped from the user's own install. The shipped Fennec
+# uses the CC-BY-4.0 albedo embedded in assets/models/fennec.bin. Files here
+# (car_assets/fennec/rim.png, chassis.png) replace those at runtime and are
+# never committed.
+car_assets/
+
+# Ripped sound packs (repo rule 1).
+#
+# sound_assets/ holds the wav pack from tools/audio/rip_sounds.py. The clips
+# are decoded from the user's OWN install, so they are runtime-only and must
+# never be committed or re-uploaded. The manifest format is ours.
+sound_assets/

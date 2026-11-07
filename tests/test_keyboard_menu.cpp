@@ -1,8 +1,4 @@
-// A5 contract test: headless keyboard mapping + menu behaviour.
-// Build: g++ -std=c++20 -I src tests/test_keyboard_menu.cpp
-//        src/settings/Settings.cpp src/input/Keyboard.cpp src/menu/Menu.cpp
-//        $(pkg-config --cflags --libs sdl2) -o /tmp/t_km && /tmp/t_km
-// Uses only SDL scancode/keycode constants + name lookups (no video init).
+// Keyboard mapping and menu behaviour. No video init.
 #include <SDL2/SDL.h>
 
 #include <cstdio>

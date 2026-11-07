@@ -1,46 +1,7 @@
-"""UE3 (Rocket League) arena-object reader — local-only analysis.  **SPIKE.**
-
-Reads the user's OWN Rocket League packages. Carries no Psyonix bytes; writes
-nothing into the repository tree (docs/ARENA_RIP.md, AGENTS.md Rule 1).
-
-STATUS (2026-10-20, round A1) — read docs/ARENA_RIP.md / ARENA_RIP_LOG.md:
-
-  VERIFIED   `read_properties` / `_walk` — UE3 tagged properties for this cook.
-             Type-driven walk reaches the `None` terminator on all 119
-             StaticMesh exports of `Stadium_Day_P.upk`.
-             `BoolProperty` carries ONE value byte after its 24-byte tag (Size
-             stays 0), so its record is 25 bytes; the `None` terminator is an
-             8-byte FName and the render data starts right after it.
-
-  VERIFIED   `parse_static_mesh` — the STRUCTURAL path, and the shipped one.
-             Resolves **119 of 119** StaticMesh exports.  The measured layout
-             is documented at the `# raster stream parse` comment below:
-             tagged properties, 56-byte bounds head (FBoxSphereBounds + flag +
-             FBox), int32 version 6, an opaque middle, `[N][12][N]` + N float3
-             positions, a 12-byte-per-vertex tangent/UV block, then
-             `int32 count` + `uint16[count]` indices.
-             The historic 12/119 was NOT a second layout: the BoolProperty value
-             byte shifts the render stream by one byte per bool, and the old
-             locator scanned 4-byte-aligned offsets only.
-
-  MEASURED   `find_vertices` / `find_indices` — the *heuristic* locator, kept as
-             the fallback path (`resolve_geometry` reports which path ran; it is
-             used by 0 of 119 meshes). It assumes 4-byte alignment and a
-             per-vertex magnitude window (`is_coord`):
-               * positions are plain float3, preceded by `[count=N][12][N]`;
-               * the index buffer is `int32 count` + `uint16[count]`, every
-                 index < N, count divisible by 3;
-               * the stream after the positions holds FPackedNormal bytes
-                 (0x7f / 0x80 / 0xff) — the normal+UV stream.
-
-  NOT DECODED  the opaque middle between the bounds head and the position
-             declaration (sections / per-LOD bookkeeping), the tangent/UV block
-             contents, materials/textures, actor+component transforms, the pack
-             format, and `--arenadir` (the flag does not exist yet).
-
-So: positions + indices are now complete for this package and validated against
-the arena oracle; the rest of the rip is still ahead.
+"""Read StaticMesh positions, indices, normals, UVs, and sections from a local .upk.
+Writes nothing.
 """
+
 import struct
 
 # ---------------------------------------------------------------- primitives
@@ -204,8 +165,8 @@ def prop_vec(props, name, default=(0.0, 0.0, 0.0)):
 #
 # `A` (the number of 4-byte groups after the two packed normals) and the
 # record `stride` are 1..4 / 8+4*A in the measured set; the 24-byte header
-# plus the 16-byte index-block descriptor are the "40 bytes" that the A1
-# round saw as `stream_gap == 12*N + 40`.
+# plus the 16-byte index-block descriptor are the 40 bytes in
+# `stream_gap == 12*N + 40`.
 #
 # The declaration used to be located by scanning *4-byte-aligned* offsets for
 # `[N][12][N]`.  That is exactly why only 12 of 119 meshes resolved: the
@@ -719,7 +680,7 @@ def parse_static_mesh(pkg, export):
         # 12-byte-per-vertex block present?  (measured: gap == 12*N + 40)
         'tangent_block': istart - 4 - pos_end >= num_verts * POS_STRIDE,
         'position_bbox': bbox,
-        # ---- round A2: normals, UVs, sections ----
+        # normals, UVs, sections
         'vertex_stream': stream,
         'normals': stream['normals'] if stream else None,
         'tangents': stream['tangents'] if stream else None,
@@ -748,7 +709,7 @@ def resolve_geometry(pkg, export):
     return geo
 
 
-# Arena truth this extraction is checked against (docs/ARENA_RIP.md): field
+# Arena bounds this extraction is checked against: field
 # half-length 4096, goal mouth ±2688, centre circle radius ~707, the DFH base
 # spans ±31000.  These five meshes are the oracle that says the extraction is
 # real geometry and not noise.
@@ -791,7 +752,7 @@ if __name__ == '__main__':
     oracle = [0, 0]
     worst_dev = 0.0
     exact_bbox = 0
-    # ---- round A2 accumulators ----
+    # normal / UV accumulators
     nverts_total = 0
     n_len = 0
     n_len_lo = 9.0
@@ -841,7 +802,7 @@ if __name__ == '__main__':
             if dev == 0.0:
                 exact_bbox += 1
             head_equal += 1
-        # ---- round A2: normals / UVs / sections ----
+        # normals / UVs / sections
         nverts = geo['num_verts']
         nverts_total += nverts
         normals = geo.get('normals')
@@ -934,7 +895,7 @@ if __name__ == '__main__':
           f'relative ({exact_bbox}/{ok} bit-exact)')
     print(f'\ngeometry resolved {ok}, unresolved {miss}')
 
-    # ---------------------------------------------------------------- A2 ----
+    # normals / UVs / sections
     digest = hashlib.sha256('\n'.join(sorted(table)).encode()).hexdigest()
     print('\n--- A2 normals / UVs / sections ---')
     print(f'normals: {n_len} decoded over {ok} meshes, '

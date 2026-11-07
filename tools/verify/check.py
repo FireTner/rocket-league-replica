@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-# tools/verify/check.py — MIT License
-"""Number-checklist runner (A6).
-Each gate tries, in order:
-  1. MEASURED — import the real SimAPI/Controls shims or headless_sim if present.
-  2. STUB     — analytic expectation model (clearly labelled).
-Never blocks on missing A1/A5 code: stubs + notes instead.
-Exit 0 always unless --strict and a MEASURED gate fails (stub UNKNOWN never fails).
+"""Run the number checklist against the sim when it is present, otherwise a labelled stub.
+Exit 0 unless --strict and a measured row fails.
 """
+
 import argparse, csv, json, math, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -1,150 +1,8 @@
 #!/usr/bin/env python3
-"""rlmat.py — diffuse-texture resolver for cooked Rocket League UE3 packages.
-
-PHASE A3 (round 2) of `MASTER_PROMPT_ARENA_1TO1.md` ("materials + textures").
-Given one of the user's own cooked packages (e.g. `Stadium_Day_P.upk`), this
-module resolves every `Material` / `MaterialInstanceConstant` object to the
-`Texture2D` its surface uses, decodes that texture to exactly `w*h*4` RGBA8
-bytes (`tools/arena/rldds.py`) and writes a machine-readable handoff for the
-packer (A5).
-
-Nothing here ships or copies a game byte: pixel data only ever goes to a
-directory outside the repo tree (`--out`, default `/tmp/rl_a3/tex`), and the
-module refuses to write inside the checked-out repo.
-
-===============================================================================
-MEASURED FORMAT FACTS (licensee-34 cook, `Stadium_Day_P.upk`)
-Every fact below was measured on the package, not assumed.  The full evidence
-is in `docs/ARENA_RIP_LOG.md`, rounds A1/A2/A3.
-
-1. TAGGED PROPERTIES.  A 4-byte preamble followed by UE3 tags: `FName` int64
-   (name), `FName` int64 (type), `int32 Size`, `int32 ArrayIndex`, value.
-   `ByteProperty` and `StructProperty` carry one extra 8-byte `FName`
-   (enum / struct name) inside the tag.  `BoolProperty` costs ONE value byte
-   after the 24-byte tag and leaves `Size == 0`.  The block ends on an 8-byte
-   `None` `FName`; that terminator is sometimes the LAST 8 bytes of the
-   export, so a walker that insists on a full 24-byte tag before testing the
-   name rejects legal exports.  84/84 `Material`, 58/58
-   `MaterialInstanceConstant`, 62/62 `Texture2D`, 18/18 `LightMapTexture2D`,
-   53/53 `MaterialExpressionTextureSampleParameter2D` and 186/186
-   `MaterialExpressionStaticSwitchParameter` walk at preamble 4.
-
-2. `Material.Expressions` is `int32 count` followed by `count` raw `int32`
-   object references (no per-element tags).  MEASURED: for all 84 materials
-   the set of non-zero references is EXACTLY the set of exports the material
-   owns (outer chain) — 0 mismatches.  The array is mostly zeros: the cook
-   strips the graph but keeps the array length.
-
-3. THE MATERIAL GRAPH IS STRIPPED AT COOK TIME.  Every `FExpressionInput`
-   survives as a `StructProperty` whose value is a NESTED TAGGED BLOCK
-   (`Expression` ObjectProperty, `OutputIndex`/`Mask*` IntProperties), but the
-   `Expression` reference is `None` in 46 of the 84 `DiffuseColor` inputs,
-   the property is absent in 38, and only 3 materials keep a live
-   `DiffuseColor.Expression` — and all three lead to a dead end (a
-   `MaterialExpressionStaticSwitchParameter` whose `A`/`B` are `None`).
-   `MaterialFunction.FunctionExpressions` is 100% null for all 5 functions.
-   => There is NO graph path from a material to its texture in this cook.
-
-4. THE ONLY TEXTURE CARRIERS ARE THE PARAMETER EXPRESSIONS:
-   * `MaterialExpressionTextureSampleParameter2D` — 53 exports, each with
-     `ParameterName` (NameProperty), `Texture` (ObjectProperty), `Material`
-     (ObjectProperty back-pointer to the owning material) and `Coordinates`.
-   * `MaterialExpressionTextureSampleParameterCube` — 7 exports.
-   * `MaterialInstanceConstant.TextureParameterValues` — 25/58 MICs carry the
-     array; its value is `int32 count` followed by, per element, a full nested
-     TAGGED BLOCK (`ParameterName` NameProperty, `ParameterValue`
-     ObjectProperty, `ExpressionGUID` StructProperty) each ending in its own
-     8-byte `None`.  32 entries in total; the walker consumes each array
-     exactly.
-   All 60 sampler exports are owned by an in-package `Material`.
-
-5. MEASURED PARAMETER NAMES (this package).  Texture-sample parameters:
-   `ColorLookup` 16, `Diffuse` 12, `WetMask` 5, `Masks` 3, `DiffuseQuarter` 3,
-   `GrassMask` 2, `LightMap` 2, `Normal` 2, `AdTexture` 1, `BallTracker` 1,
-   `Detail` 1, `ENV` 1, `LensTexture` 1, `NormalTexture` 1, `TextureDiffuse` 1,
-   `TextureNormal` 1; cube samples: `CubeMap` 7.  MIC texture overrides:
-   `ColorLookup` 9, `Diffuse` 7, `AdTexture` 6, `LightMap` 3, `CubeMap` 2,
-   `BallTracker` 1, `ENV` 1, `FieldSkin` 1, `Normal` 1, `NormalTexture` 1.
-   The albedo family is therefore MEASURED as
-   {Diffuse, DiffuseQuarter, TextureDiffuse, AdTexture, FieldSkin}; the
-   non-albedo families (normal / mask / lookup / lightmap / cubemap / env /
-   lens / tracker / detail) are excluded by name because the package itself
-   stores that name.
-
-6. EXTERNAL TEXTURES.  47 `Texture2D` imports; their `Outer` names the
-   package they live in: `Noise` 12, `Gradients` 6, `FieldSkin_FutureGrid` 2,
-   `EngineMaterials` 2, `Stadiums_DetailNormals` 2, `Textures` 2, and one each
-   in `Detail_CarbonFiber`, `Detail_Sparkle`, `FieldSkin_Park`,
-   `GFX_Shared_Logos`, `Vehicle_Parent_Textures`.  16 further `Texture2D`
-   imports have their `Outer` on a `Package` EXPORT of this same file
-   (`City_Textures`, `FutureTech_Textures`, `Mat`, `Grass_Textures`,
-   `LensFlares_Textures`) — UE3 "linked package groups": the object itself is
-   still in another file but is grouped here.
-
-7. `Texture2D` mip chain (after the property block): a 16-byte head
-   (`0x00010000`, `0`, `0`, `int32 NumMips`) then one record per mip:
-     - `0x00010000` inline:     (`flags`, `DataSize`, `DataSize`) + `DataSize` bytes
-     - `0x00010003` file-cache: (`flags`, `DataSize`, `CacheSize`, `CacheOffset`,
-                                  `0`, `SizeX`, `SizeY`) with the bytes in
-                                  `<TextureFileCacheName>.tfc` next to the package
-     - `0x00000021` no payload: (`flags`, `0`, `-1`, `-1`, `-1`, `SizeX`, `SizeY`)
-   followed by a 60-byte trailer.
-
-8. A `.tfc` cache entry is the SAME chained compressed-chunk container the
-   package uses (`tag 0x9E2A83C1`, `block_size` 0x20000, then per-block
-   (compressed, uncompressed) sizes and zlib blocks); inflating it yields
-   exactly `DataSize` bytes.
-
-9. THE MATERIAL -> TEXTURE LINK IS ONLY HALF PRESENT, AND THE PACKAGE PROVES
-   IT.  `texture_referrers()` scans EVERY export's tagged properties (object
-   properties, int32 reference arrays and nested tagged blocks) for references
-   to an in-package texture: MEASURED, 55 of the 80 in-package textures have
-   NO referrer inside the package at all (`Advert_Strip`, `CityLights_01_Pack`,
-   `Statue_D`, `HandRail_D`, `Stairs_Pack`, `LombardyPoplar_Branch`,
-   `Park_BannerFlag00_RGB`, `ForcefieldHex`, `LightArray_Arrow_D`,
-   `StadiumLight_D`, `CountryFlagsCombined`, `MetalBeamGradient_Pack`,
-   `Grate_Square_Pack`, `DustParticles`, ...).  Those textures are the ones
-   the arena's materials use; the link that named them lived in a SIBLING
-   file of the same UE3 package group and was not cooked into this one.
-   => The diffuse of most placed materials is NOT recoverable from this
-   package; the honest ceiling is what the report states.  A name-stem
-   heuristic would bind only 5 of the 38 untextured used materials uniquely,
-   so guessing by name is not even a viable fallback (and is not used).
-
-10. THE SECTION -> MATERIAL JOIN IS THE COMPONENT'S MATERIAL ARRAY.  A
-    `StaticMeshComponent` carries the list in `OverrideMaterials` (or
-    `Materials`), sometimes on its ARCHETYPE (a prefab instance only
-    serialises its diffs), so the archetype chain is walked root-first.
-    MEASURED: the array length equals the mesh's section count for 112 of the
-    119 meshes (A2's section-count histogram {1:92, 2:19, 3:5, 5:1, 12:2} vs.
-    the component-side histogram {1:84, 2:19, 3:5, 5:2, 12:2}; the 7 meshes
-    without a list and the one over-long array explain the 1/5 difference), so
-    slot `i` of the array is the material of section `i`.
-
-===============================================================================
-Public API
-    open_package(path)                     -> RLMatPackage
-    material_chain(pkg, material_export)   -> list of resolved steps
-    diffuse_texture(pkg, material_export)  -> (texture_export, provenance) | None
-    decode_texture(pkg, texture_export)    -> {width, height, format, rgba, ...}
-    texture_for_material(pkg, export)      -> the integration hook (see below)
-    resolve_all(pkg)                       -> summary dict
-    used_materials(pkg)                    -> the placed-instance material join
-    scan_textures(pkg)                     -> every in-package texture
-    main()                                 -> CLI summary
-
-Integration hook for the packer: for every (mesh, section) it already knows the
-material name; call
-
-    rlmat.texture_for_material(pkg, pkg.export_by_name(material_name))
-
-which returns `{'material','texture','width','height','format','rgba',
-'provenance','reason'}` (rgba is `width*height*4` bytes, reason is None on
-success).  `pkg.export_by_name` also accepts a `MaterialInstanceConstant` name.
-
-Usage:
-    python3 tools/arena/rlmat.py <pkg> [--out /tmp/rl_a3/tex]
+"""Resolve Material and MaterialInstanceConstant objects to their diffuse Texture2D.
+Decodes mip 0 to w*h*4 RGBA8. Reads a local package and writes outside the repo.
 """
+
 import argparse
 import json
 import os
@@ -636,7 +494,7 @@ def texture_info(pkg, texture_export):
     if not (0 < mip_count <= 32):
         info['error'] = 'implausible mip count %d' % mip_count
         return info
-    # Walk the mip chain.  MEASURED (workstream H): 11 textures in the stadium
+    # Walk the mip chain.  11 textures in the stadium
     # pack store mip0 as the empty `0x00000021` record; their pixels live in
     # the next file-cache mip (typically half-res).  UModel reads that mip1
     # from the `.tfc`.  Prefer mip0 when it has payload; otherwise take the
@@ -1723,8 +1581,8 @@ def resolve_all(pkg, sibling=None):
     used_total = len([l for l in used_objects if used_objects[l]])
 
     # the section-level join: a mesh's material array IS its section material
-    # list (MEASURED: the array length equals the mesh's section count, see the
-    # A3 round-2 log), so every slot is one section's material.
+    # list (the array length equals the mesh's section count),
+    # so every slot is one section's material.
     section_slots = 0
     section_resolved = 0
     section_named = 0
@@ -1860,7 +1718,7 @@ def resolve_all(pkg, sibling=None):
 
 # ---------------------------------------------------------------------------- CLI
 def _guard_out_dir(path):
-    """Refuse to write decoded pixels anywhere inside the repo tree (Rule 1)."""
+    """Refuse to write decoded pixels anywhere inside the repo tree."""
     real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     repo = os.path.realpath(_REPO)
     if real == repo or real.startswith(repo + os.sep):
@@ -1925,7 +1783,7 @@ def _write_outputs(summary, out_dir):
 
 
 def _handoff(summary, out_dir, path):
-    """The machine-readable handoff for the packer (A5)."""
+    """The machine-readable handoff for the packer."""
     tex_path = {}
     for r in summary['textures']:
         if r['decoded']:

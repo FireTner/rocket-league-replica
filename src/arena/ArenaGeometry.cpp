@@ -1,4 +1,4 @@
-// ArenaGeometry.cpp — analytic Soccar collision + visual mesh (stream A2).
+// Analytic Soccar collision and the visual mesh of that shell.
 #include "ArenaGeometry.h"
 
 #include <cmath>

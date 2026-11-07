@@ -1,15 +1,13 @@
 #!/bin/bash
-# tools/verify/capture.sh — deterministic offscreen capture helper (visual fixes).
+# Offscreen capture: gamescope headless, wait for the PPM, kill the group, write PNG.
 # Usage: capture.sh OUTDIR NAME [extra game args...]
-# Runs gamescope headless and waits for the PPM, then kills the process group
-# (gamescope can hang in teardown) and converts to PNG.
 set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${1:?outdir}"; NAME="${2:?name}"; shift 2
 mkdir -p "$OUT"; rm -f "$OUT/$NAME.ppm" "$OUT/$NAME.png"
 cd "$ROOT" || exit 1
 setsid gamescope --backend headless -W 1280 -H 720 -r 60 -- ./build/game \
-  --no-vsync --no-audio --meshdir collision_meshes --seed 7 --ticks 160 \
+  --shell --no-vsync --no-audio --meshdir collision_meshes --seed 7 --ticks 160 \
   --no-shake --shot-at-tick 120 --shot-path "$OUT/$NAME.ppm" "$@" \
   >"$OUT/$NAME.log" 2>&1 &
 p=$!

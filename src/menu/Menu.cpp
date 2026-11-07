@@ -1,4 +1,4 @@
-// A5-owned: menu implementation. MIT License.
+// Settings menu and free-play actions.
 #include "Menu.h"
 #include "../input/Gamepad.h"
 
@@ -116,7 +116,6 @@ void Menu::AddAction(const std::string& label, std::function<void()> fn) {
 }
 
 void Menu::BuildItems() {
-    // Every schema key appears below (menu never diverges from settings.ini).
     char info[64];
     std::snprintf(info, sizeof(info), "schema v%d", Settings::kSchemaVersion);
     items_.push_back(Item{"version.schema", info, ItemKind::Info, nullptr, nullptr, nullptr});
@@ -133,6 +132,8 @@ void Menu::BuildItems() {
     AddBool("camera.shake", "Camera shake", settings_.camera.shake);
     AddBool("camera.invert_swivel", "Invert swivel", settings_.camera.invertSwivel);
     AddFloat("render.wall_opacity", "Wall opacity", settings_.render.wallOpacity, 0.0f, 1.0f, 0.05f);
+    AddBool("camera.snap", "Snap swivel", settings_.camera.snap);
+    AddBool("camera.air_heading", "Air heading", settings_.camera.airHeading);
 
     AddHeader("INPUT");
     AddAxisBinding("input.throttle", "Throttle fwd/back", settings_.input.throttle);
@@ -383,7 +384,7 @@ std::string Menu::CapturePrompt() const {
 std::vector<std::string> Menu::RenderText() const {
     std::vector<std::string> lines;
     if (!open_) return lines;
-    lines.push_back("=== SETTINGS (schema v1) ===");
+    lines.push_back("=== SETTINGS ===");
     if (capturing_) lines.push_back(CapturePrompt());
     for (size_t i = 0; i < items_.size(); ++i) {
         const Item& it = items_[i];

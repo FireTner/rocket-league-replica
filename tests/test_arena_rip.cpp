@@ -1,25 +1,5 @@
-// tests/test_arena_rip.cpp — the contract test for the arena-pack reader (A6a).
-//
-// What it proves:
-//   * the pack at arena_assets/stadium_day loads into the documented tables
-//     (119 + 4 meshes, 451 + 26 placements, 178 sections, 83 materials,
-//     13 textures),
-//   * every texture decodes on the CPU to exactly w*h*4 RGBA8 bytes,
-//   * every mesh is internally consistent (vertex/uv/index counts, every
-//     index inside the vertex range) and every placement is finite and names
-//     a mesh the pack knows (0 orphans),
-//   * the world-space AABBs of the field meshes hit the arena oracle
-//     (field walls |x| ~ 4096, goal mouth +-2688, centre circle r ~ 707,
-//     the DFH base spanning +-31000),
-//   * a bad directory fails LOUDLY (false + a message that names the expected
-//     manifest) and never crashes,
-//   * the CPU DXT decoder is byte-identical to the Python reference decoder
-//     (tools/arena/rldds.py) whenever its output dump is present.
-//
-// The pack is Psyonix-owned data and a RUNTIME INPUT: it lives in the
-// gitignored arena_assets/ and is never copied into the repository.  A
-// machine without the pack SKIPS loudly and stays green — a missing pack
-// must never fail the suite.
+// Arena-pack reader: load, decode textures to w*h*4, mesh consistency, bounds.
+// A missing pack skips. A bad directory fails with a message and does not crash.
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -45,9 +25,8 @@ static int g_fail = 0;
 
 namespace fs = std::filesystem;
 
-// The oracle of the arena geometry (docs/ARENA_RIP_LOG.md round A4 §9 and
-// tools/arena/rlmesh.py ORACLE): the measured world-space bounds of the five
-// oracle meshes.
+// Measured world-space bounds of the five oracle meshes
+// (tools/arena/rlmesh.py ORACLE).
 struct Aabb {
   bool valid = false;
   double lo[3] = {0, 0, 0};
@@ -90,7 +69,7 @@ static void PrintAabb(const char* label, const Aabb& b) {
 }
 
 // ---- the Python reference cross-check -------------------------------------
-// The round-A3 dump of the Python decoder's output (tools/arena/rldds.py).
+// Python decoder dump (tools/arena/rldds.py).
 // Its files are named "<package>_<texture>_e<export>_<w>x<h>_<format>.rgba",
 // where <format> is a UE3 pixel format ("PF_DXT1", "PF_DXT5", ...).
 static bool ParsePythonTextureName(const std::string& file, std::string& name,
@@ -140,7 +119,7 @@ int main(int argc, char** argv) {
     std::printf(
         "ARENA_RIP SKIP: no arena pack at '%s' (arena.json is missing).\n"
         "  The pack is Psyonix-owned RUNTIME DATA: it lives in the gitignored\n"
-        "  arena_assets/ and must never be committed (AGENTS.md rule 1).\n"
+        "  arena_assets/ and must never be committed.\n"
         "  Skipping the loader contract test — a clean-room machine stays green.\n",
         packDir.c_str());
     return 0;
@@ -333,9 +312,8 @@ int main(int argc, char** argv) {
   int materialsWithTexture = 0;
   for (const ArenaMaterial& m : pack.materials)
     if (m.texture >= 0) ++materialsWithTexture;
-  // The resolved-diffuse coverage: the A5 round measured 248 of the 640 used
-  // section slots (38.75 %) resolving to a decoded diffuse texture.  The
-  // loader must reproduce that number from the pack's own tables.
+  // 248 of the 640 used section slots (38.75%) resolve to a decoded diffuse.
+  // The loader must reproduce that number from the pack's own tables.
   uint32_t slotsWithTexture = 0;
   const auto countSlots = [&](const ArenaInstance& inst) {
     for (int slot : inst.materialSlots) {

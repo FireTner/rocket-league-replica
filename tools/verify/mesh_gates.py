@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
-"""Mesh-mode collision gates (MASTER_PROMPT_PHYSICS.md section 9, C1-C7).
-
-These gates only mean something with an arena collision mesh loaded, so they
-SKIP loudly (never fake a PASS) when none is present. Run:
-
-    python3 tools/verify/mesh_gates.py                 # uses collision_meshes/
-    python3 tools/verify/mesh_gates.py --meshdir DIR
-
-Every gate records tape, seed, tick window, checksum, expectation, measured
-value and verdict. Expected values are cited against vendored RocketSim.
-
-Probes are driven through build/headless_sim with a neutral tape plus
---ballplace (test-harness placement), so the car never touches the ball.
+"""Collision checks that need an arena mesh. SKIP when none is loaded.
+Probes run through build/headless_sim. Expected values follow vendored RocketSim.
 """
+
 
 import argparse
 import csv
@@ -149,7 +139,7 @@ def run_gates(meshdir):
     # generates contacts at all. If it does not, report the blocker and SKIP
     # rather than emit PASSes that actually come from the analytic planes.
     if not mesh_collision_works(meshdir):
-        why = "loaded mesh generates no contacts (see docs/PHYSICS_1TO1_LOG.md Round 1)"
+        why = "loaded mesh generates no contacts"
         for g, d in (("C1a", "ball floor restitution"),
                      ("C1b", "max-speed containment"),
                      ("C3a", "chamfer contact"),
@@ -329,7 +319,7 @@ def main():
     args = ap.parse_args()
 
     if not os.path.isfile(HEADLESS):
-        print("FATAL: %s not built (run make all)" % HEADLESS)
+        print("FATAL: %s not built (run cmake --build build)" % HEADLESS)
         return 2
 
     meshdir = args.meshdir
@@ -338,7 +328,7 @@ def main():
         n.endswith(".cmf") for n in os.listdir(soccar))
     if not has_mesh:
         print("SKIP: no mesh - '%s' has no soccar/*.cmf" % meshdir)
-        print("      run `make meshgen`, or pass --meshdir DIR with a real dump")
+        print("      run `cmake --build build`, or pass --meshdir DIR with a real dump")
         print("# summary: 0 PASS, 0 FAIL, all mesh gates SKIPPED")
         return 0
 

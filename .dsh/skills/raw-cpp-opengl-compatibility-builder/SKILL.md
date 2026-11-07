@@ -9,9 +9,9 @@ Project-local skill. It encodes this repo's real constraints, not generic C++/GL
 
 ## Hard constraints (do not violate)
 
-- **C++20, g++ only, no cmake.** Build through the repo Makefile targets
-  (`make all`, `make game`, `make render_stub`), never a hand-rolled `g++` line —
-  the Makefile carries the determinism flags.
+- **C++20, CMake.** `cmake -B build && cmake --build build` is Release `-O2`
+  and uses ccache when it is installed. Never a hand-rolled `g++` line —
+  `CMakeLists.txt` carries the determinism flags.
 - **GL 4.5 compatibility profile; fixed-function is the default, not the
   ceiling.** `MASTER_PROMPT_VISUALS.md` §3's "no shaders, no VAO, no GL 3.x"
   freeze is **superseded** by `docs/RENDER_POLICY.md` (rev 2026-10-20): a
@@ -42,10 +42,10 @@ Project-local skill. It encodes this repo's real constraints, not generic C++/GL
   `--cam eye...,target...` capture, then inspect the dumped pixels. Do not reason
   about matrix math from the description alone.
 - Full bar before claiming done: `measured.py` 19/19, `mesh_gates.py` 13/13,
-  `visual_gates.py` VG1–VG16, `make tests`, `/tmp/arena_test` 55/55,
+  `visual_gates.py` VG1–VG16, `ctest --test-dir build`,
   `verify_vs_rocketsim.py` 110/110.
 - Docs-only changes run **no** build and **no** gates (`docs/GATE_POLICY.md`);
-  `make check-touched` prints the tier.
+  `python3 tools/verify/check_touched.py` prints the tier.
 
 ## Debug levers that already exist
 

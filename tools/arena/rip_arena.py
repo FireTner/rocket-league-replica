@@ -1,25 +1,7 @@
-"""Rip an arena into a versioned, deterministic pack — **PHASE A5**.
-
-Reads the user's OWN Rocket League install and writes a self-describing pack
-(`arena.json` + `arena.bin`) that the C++ loader (phase A6) can read without
-knowing anything about UE3.
-
-    python3 tools/arena/rip_arena.py --pack <Stadium_Day_P.upk> \\
-        --out arena_assets/stadium_day [--install <CookedPCConsole dir>]
-    python3 tools/arena/rip_arena.py --verify arena_assets/stadium_day
-
-RULE 1 (AGENTS.md): the pack lives ONLY under `arena_assets/` (gitignored) or
-outside the repository tree.  This module refuses to write anywhere else
-inside the repo and never copies a Psyonix byte into the tree.
-
-The pack format is specified normatively in `docs/ARENA_PACK.md`; the format
-identifier is `rl-arena-pack/1` and `FORMAT_VERSION` below must be bumped
-whenever the layout changes in a way a reader could notice.
-
-The five modules this tool consumes are owned by other agents and are used
-read-only: `rlmesh` (geometry), `rlmat` (materials/textures), `rldds`
-(texture decoding), `rlplace` (placements), `rlpkg` (sibling packages).
+"""Build a deterministic arena pack (arena.json + arena.bin) from a local install.
+The pack stays under arena_assets/ or outside the repo. Refuses any other path inside the tree.
 """
+
 import argparse
 import hashlib
 import json
@@ -87,8 +69,7 @@ def _f(x):
     """Normalise a float for the manifest.
 
     `-0.0` becomes `+0.0` and non-finite values are rejected, so the JSON
-    number is always the shortest round-trip repr of a finite IEEE-754 double
-    (the determinism rule of docs/ARENA_PACK.md).
+    number is always the shortest round-trip repr of a finite IEEE-754 double.
     """
     v = float(x)
     if v != v or v in (float('inf'), float('-inf')):
@@ -108,7 +89,7 @@ def sha256_file(path):
 def _guard_out_dir(path):
     """Refuse to write a pack anywhere in the repo except under `arena_assets/`.
 
-    RULE 1: the repository tree must never hold a Psyonix byte.  A pack is a
+    The repository tree must never hold a Psyonix byte.  A pack is a
     Psyonix byte container, so it may only live under `<repo>/arena_assets/`
     (gitignored) or completely outside the repository.
     """
@@ -336,7 +317,7 @@ def _collect_external_meshes(pkg, index):
 class MaterialResolver(object):
     """Resolve a material object to its diffuse texture (name + package).
 
-    Uses `rlmat.resolve_material` (A3/A3b) and resolves an IMPORTED material in
+    Uses `rlmat.resolve_material` and resolves an IMPORTED material in
     the sibling package that holds it.  Every outcome carries a reason from a
     closed set.
     """
@@ -524,7 +505,7 @@ class MaterialResolver(object):
 
         A name is NOT a reference: `BoostPad_Mat` exists as two exports in
         this package (MEASURED), only one of which owns a diffuse.  The
-        mesh-slot-list join of A3/A3b therefore counts a name as resolved when
+        mesh-slot-list join therefore counts a name as resolved when
         ANY export of that name resolves, and this method does the same, so
         the two numbers are comparable.  The binding chain of the pack itself
         never uses this path: it resolves the export INDEX.
@@ -674,8 +655,7 @@ def build_pack(pack_path, install_dir=None, index_path=DEFAULT_INDEX,
         bind(inst, mesh, ext_sec_count.get(mesh, 0), 'external_placement',
              ext_reasons)
 
-    # the comparison number: the MESH's own material slot list (what A3/A3b
-    # measured: 171 slots over the distinct placed meshes)
+    # the MESH's own material slot list (171 slots over the distinct placed meshes)
     used = rlmat.used_materials(mpkg)
     mesh_slot_slots = 0
     mesh_slot_resolved = 0

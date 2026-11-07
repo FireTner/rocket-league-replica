@@ -1,34 +1,17 @@
-# Audio notes — procedural synth, zero assets (MIT)
+# Audio
 
-## Design
-`src/audio/Audio.{h,cpp}` (game-owned; the sim never sees audio). SDL2 audio
-callback synth, 44.1 kHz f32 mono, 1024-sample buffer. No samples, no files.
+The default bed is a procedural synth (engine, boost hiss, jump, pickup, goal, demo). No assets.
 
-- **Engine**: saw-ish osc at 55 + 165·speed01 Hz + sub sine + breath noise,
-  gain follows speed. Always on while the game runs.
-- **Boost**: white-noise hiss while `IsBoosting`.
-- **One-shots** (lock-guarded 8-slot queue, mixed in the callback):
-  jump (220→440 Hz sweep, 0.10 s), small pad (880→1320, 0.12 s),
-  big pad (660→990, 0.20 s), goal (square-ish 523→784 swell, 0.80 s).
-- Events are game-detected: jump rising edge, boost-meter +5 jumps (pickups;
-  suppressed under unlimited-boost top-up), goal latch. `M` mutes,
-  `--no-audio` starts silent. Failure to open the device is never fatal.
+`--sounds DIR` (or `sound_assets/manifest.txt` when that file is present) plays the pack through miniaudio. `--synth` ignores the pack. `--no-audio` stays silent. A missing default pack stays on the synth. A `--sounds` directory with no `manifest.txt` is a fatal error.
 
-## Verification
-- Unit probe (`/tmp/audiotest.cpp`, dummy driver): all blips + mute path,
-  63 callbacks / 64512 frames in 1.5 s, clean shutdown, exit 0.
-- Game run (dummy driver): `audio_cb=215 audio_frames=220160` over 5 s at
-  44.1 kHz — callback alive alongside render+physics, no underrun errors.
-- On this box (no sound server under Xvfb) real output needs ALSA/Pulse;
-  mixing correctness is driver-independent (same callback).
+The device is 48 kHz with a requested period of 256 frames. A clip that is already 48 kHz is not resampled. Loop beds fade in 6 ms. With the pack loaded, the procedural saw and noise are silent, and the crowd bed is not started. Powerslide follows the held brake and fades out on release. miniaudio 0.11.22 (public domain or MIT-0) lives in `third_party/miniaudio/`.
 
-## Visual-pass status (Round 36)
+The pack is built from the user's own install and is gitignored:
 
-Audio was deliberately **not touched** by the visual pass (MASTER_PROMPT_
-VISUALS.md scopes it out; constraint 9 keeps it procedural). The only change
-that reaches audio is indirect: FX now advance on sim time instead of wall
-time, and audio still runs on its own wall-clock engine path, so the two are
-independent. No samples, no assets, no new dependencies.
+```sh
+python3 tools/audio/rip_sounds.py --vgmstream /path/to/vgmstream-cli
+./build/game
+```
 
 ## Known approximations
 - Distance and a light doppler are on. The ear is the published camera eye
@@ -40,3 +23,9 @@ independent. No samples, no assets, no new dependencies.
   pitch ratio clamped to [0.85, 1.15].
 - No crowd/ambient bed, no UI clicks. Engine timbre is a placeholder
   (saw+sub), not an RL recording. Still zero sample assets.
+
+`vgmstream-cli` is only needed to decode the banks. Playback is miniaudio. The tool refuses to write the pack anywhere in the repo except `sound_assets/`.
+
+Cues: jump, dodge, double jump, boost pad / full boost, boost loop, tires, air whoosh, landing, ball hit, ball roll / fly, slide, supersonic sting + loop, goal horn and explosion, demo. `--synth` is the procedural bed. No countdown (free play has no match clock) and no cosmetic boosts. Tires play at the recorded rate. Distance and a light doppler still apply: full volume inside 800 uu, inverse distance, floor 0.20; the engine oscillator uses radial speed versus the camera eye (ratio clamped to 0.85..1.15). Curves are UNVERIFIED.
+
+`python3 tools/audio/test_wwise_bnk.py` checks the bank parser against a synthetic bank.

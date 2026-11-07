@@ -1,30 +1,5 @@
-// probe_camera_swivel.cpp — R1 probe for CAMERA_PORT_PROMPT #4
-// (sphere-orbit swivel + snap-back).
-//
-// Port of upstream docs/carballer-facts/rl_camera.cpp:101-121 (placeEye:
-// sphere orbit R=hypot(dist,height), elev=e0-pitchOff, floor clamp via asin,
-// elev clamp +/-1.5, unabsorbed pitch returned as tilt) and :373-396
-// (swivel clamp -0.8/+0.7, snap-back at 2x rate after 0.05 s idle gated by
-// `snap`). Against OUR src/camera/Camera.h API (60 Hz Update).
-//
-// Ours today: orbit exists but pitch clamp is +/-1.0 rad, release dies back
-// exponentially (6/s, 0.05 deadzone) with no snap setting, the eye floor is
-// a flat want[2]<40 clamp, and unabsorbed pitch is dropped (no tilt).
-//
-// Build: g++ -std=c++20 -I src tools/probe_camera_swivel.cpp src/camera/Camera.cpp -lGL -o /tmp/probe_swivel && /tmp/probe_swivel
-// No SDL, no GL context (Update/Eye/Center never touch GL).
-//
-// PASS criteria (post-fix):
-//  S1/S2: after release, swivel offsets snap back to EXACTLY 0 quickly
-//         (linear 2x-rate return zeroes 0.7 rad in ~0.06 s at speed 5;
-//         exponential 6/s still holds ~0.16 rad at 0.25 s and never
-//         exact-zeroes before ~1.7 s).
-//  S3:    pitch clamp is asymmetric -0.8/+0.7 (upstream), not +/-1.0.
-//  S4:    held look-up from the ground rides the eye at the floor (~16 uu,
-//         not the flat 40) and the unabsorbed pitch reaches the view as
-//         tilt (view pitches up > 0.15 rad vs the no-swivel pose).
-//  S5:    rest geometry with no swivel is unchanged (regression guard,
-//         passes before AND after).
+// Swivel orbits the stiffness sphere and snaps back to zero after idle.
+// Held look-up keeps the eye above the floor. Checks src/camera/Camera.h.
 #include <cmath>
 #include <cstdio>
 

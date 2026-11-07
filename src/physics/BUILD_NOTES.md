@@ -11,8 +11,9 @@
 
 ## Toolchain
 
-- `g++ 16`, C++20, no cmake (per machine constraints). No dependencies:
-  headers use only `<cstddef>`; the verifier uses stdlib Python 3.
+- C++20. The repo build is CMake (Release `-O2`, ccache when installed).
+  These headers have no dependencies: they use only `<cstddef>`; the verifier
+  uses stdlib Python 3.
 
 ## Build / check (headless, < 10 s on 2× A6-9225)
 

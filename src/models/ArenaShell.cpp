@@ -1,42 +1,4 @@
-// ArenaShell.cpp — G3b arena draw-bucket VBOs (GRAPHICS45 §5/G3 step 2).
-//
-// Bake of the per-frame arena immediate calls in src/game/main.cpp (READ-ONLY
-// this step; main.cpp is G3c's to rewire) into build-once GL_STATIC_DRAW
-// buckets. Draw pattern is the Fennec precedent (Fennec.cpp:152-186,221-229):
-// fixed-function client arrays + glDrawElements, no VAOs/shaders.
-//
-// Bit-for-bit rules (docs/ARENA_BUCKETS.md §§4-6):
-// - Same vertex ORDER, same UVs/colors/normals, same state sandwiches as the
-//   immediate path: face-down ceiling normal -Z (Renderer.cpp:499-504), glass
-//   quadYaw inward + corner pi-rotation, crown radial normals, weave yaw per
-//   goal, GL_NORMALIZE stays ON (baked normals are unit-length, so it is
-//   idempotent), arc-length UVs (spanX=2546.1147/spanY=2520/kHexCell=420),
-//   negative-U corner REPEAT, float32 bake chain, quad diagonal
-//   (v0,v1,v2)+(v0,v2,v3). DrawSphere strips are converted with the TRUE strip
-//   triangulation (same vertex sets the driver rasterizes).
-// - Box normals: the immediate path scales the unit cube non-uniformly, then
-//   GL_NORMALIZE renormalizes — baked yaw-rotated face normals equal that
-//   result exactly (rotation of a unit axis normal is unit).
-// - DrawBox/textured helpers never touch blend/lighting/texture-enable beyond
-//   TextureScope; the buckets replicate those sandwiches and nothing more.
-// - Counters: NoteExternalDraw(bakedTris) per merged draw. The count used is
-//   what was BAKED (== what is drawn), so VG7 tris_last cannot shift by
-//   construction. The DrawBall/wheel uncounted-tris gap is NOT touched here.
-// - Mode: mesh vs fallback selected by meshMode (G3c passes
-//   sim->usingRealSoccar()); buffer sets are separate, never mixed.
-// - One-sided shell (V11): the bake is re-wound so each triangle's front face
-//   agrees with its own normals, and both arena draws run inside a CullScope
-//   (GL_CULL_FACE/GL_BACK). An eye outside a wall looks INTO the arena; the
-//   inside view keeps the same surfaces. Culling is off for every non-arena
-//   draw, and RL_NOCULL=1 restores the pre-V11 double-sided result.
-//
-// DEVIATION vs the G3a plan (docs/ARENA_BUCKETS.md §1), found while baking:
-// C1 is 8 glassSub quads = 16 tris, but the plan table says 24 tris / 8 draws
-// (impossible: 8 quads x 2 tris = 16; verified by counting the 8 glassSub
-// call sites at main.cpp:1237-1254). So baked mesh arena = 2122 tris (plan:
-// 2130), fallback = 1562 (plan-implied: 1570); the glass draw holds 472 mesh
-// / 216 fallback tris (plan: 480/224). Draw counts (9 GL draws) are exactly
-// as planned. The build log below prints baked-vs-plan so G3c/VG7 can cite it.
+// ArenaShell.cpp — static VBOs for the arena shell.
 #include "models/ArenaShell.h"
 
 #include "models/ArenaTextures.h"
@@ -78,7 +40,7 @@ struct Bucket {
         };
         for (int k = 0; k < 4; k++)
             v.insert(v.end(), vs[k], vs[k] + kStrideFloats);
-        // Plan §5 diagonal: (v0,v1,v2)+(v0,v2,v3) — the GL_QUADS convention.
+        // Quad diagonal (v0,v1,v2)+(v0,v2,v3).
         idx.push_back(b); idx.push_back(b + 1); idx.push_back(b + 2);
         idx.push_back(b); idx.push_back(b + 2); idx.push_back(b + 3);
         return b;
@@ -89,9 +51,7 @@ struct Bucket {
     uint64_t tris() const { return idx.size() / 3; }
 };
 
-// Rigid frame bake: world = T(cx,cy,cz) * Rz(yawRad) * local. Matches the
-// glTranslatef + glRotatef(yawDeg) sandwiches (runFrame, cornerGlass outer,
-// skirtChamfer outer, and the yaw-radians helpers in Renderer).
+// world = T(cx,cy,cz) * Rz(yawRad) * local. yawRad is radians.
 struct Frame {
     float cx = 0, cy = 0, cz = 0, c = 1, s = 0;
     static Frame at(float x, float y, float z, float yawRad) {
@@ -115,10 +75,7 @@ struct Frame {
     }
 };
 
-// DrawBox bake (Renderer.cpp:230-258): unit cube scaled by (sx,sy,sz), yaw in
-// RADIANS (Renderer converts to degrees for glRotatef), flat color, uv 0.
-// Normals are the yaw-rotated face axes (== what GL_NORMALIZE yields after
-// the immediate path's non-uniform scale — exact, see file header).
+// Unit cube scaled by (sx,sy,sz), yaw in radians. Normals are the yaw-rotated face axes.
 void emitBox(Bucket& bk, const Frame& f, float sx, float sy, float sz,
              float r, float g, float b, float a) {
     const float h = 0.5f;
@@ -145,7 +102,7 @@ void emitBox(Bucket& bk, const Frame& f, float sx, float sy, float sz,
     }
 }
 
-// DrawTexturedQuadXZ bake (Renderer.cpp:488-513). yaw in RADIANS.
+// Floor quad. yaw is radians.
 void emitQuadXZ(Bucket& bk, const Frame& f, float sx, float sy,
                 float uRep, float vRep, float r, float g, float b, float a,
                 bool faceDown) {
@@ -163,7 +120,7 @@ void emitQuadXZ(Bucket& bk, const Frame& f, float sx, float sy,
             w[3][0], w[3][1], w[3][2], n[0], n[1], n[2], r, g, b, a, 0, vRep);
 }
 
-// DrawTexturedQuadWall bake (Renderer.cpp:515-537). yaw in RADIANS.
+// Wall quad. yaw is radians. Local +y is the normal.
 void emitQuadWall(Bucket& bk, const Frame& f, float sx, float sy,
                   float uRep, float vRep, float r, float g, float b, float a,
                   float uOff, float vOff) {
@@ -183,8 +140,7 @@ void emitQuadWall(Bucket& bk, const Frame& f, float sx, float sy,
             vOff + vRep);
 }
 
-// arcSweep bake (main.cpp:917-1006): quarter-round strip in the runFrame-local
-// Y-Z plane, AS=12 quads + optional 12-tri cap fans, sinf/cosf float32 chain.
+// Quarter-round strip in the local Y-Z plane, 12 quads plus an optional cap fan.
 void emitArcSweep(Bucket& bk, const Frame& f, float tangentLen, float radius,
                   bool ceilingCourse, float u0, float u1, float v0, float v1,
                   float r, float g, float b, float a,
@@ -280,10 +236,7 @@ void emitArcSweep(Bucket& bk, const Frame& f, float tangentLen, float radius,
     }
 }
 
-// planRound bake (main.cpp:1029-1064): faceted vertical strip around a corner
-// bend, already in WORLD frame (roundJ/roundSkirt call it directly — no
-// runFrame). Flat mid-angle normals INTO the room, arc-length U. Replicates
-// the float chain literally, including std::cos/std::sin narrowed to float.
+// Faceted vertical strip around a corner, already in world space. Normals point into the room.
 void emitPlanRound(Bucket& bk, float ccx, float ccy, float R, float a0, float a1,
                    int steps, float z0, float z1, float u0, float spanX,
                    float v0, float v1, float r, float g, float b, float a) {
@@ -303,11 +256,7 @@ void emitPlanRound(Bucket& bk, float ccx, float ccy, float R, float a0, float a1
     }
 }
 
-// DrawSphere bake (Renderer.cpp:260-281): segs strips of (segs+1) vertex
-// pairs, std::sin/std::cos narrowed to float, then the TRUE
-// TRIANGLE_STRIP triangulation (same vertex SETS the driver rasterizes:
-// even tri {A,B,A'} odd tri {B,B',A'} — winding swaps don't change pixels
-// with culling off, and the sets match exactly).
+// Strip triangulation: even tri {A,B,A'}, odd tri {B,B',A'}.
 void emitSphere(Bucket& bk, float cx, float cy, float cz, float radius,
                 int segs, float r, float g, float b, float a) {
     if (segs < 6) segs = 6;
@@ -339,20 +288,7 @@ void emitSphere(Bucket& bk, float cx, float cy, float cz, float radius,
     }
 }
 
-// ---- cull winding (V11) ----------------------------------------------------
-// Re-wind each baked triangle so its CCW front face points along the vertex
-// normals it was authored with. The shell is one-sided by nature — the inside
-// is the visible side — but it used to be drawn with culling OFF, so an eye
-// that passes THROUGH a wall (freecam, or the chase cam pushed into a wall;
-// RL does this too and UE culls) looked at the wall's backside: the glass
-// blended its tint over the interior AND wrote depth at the wall plane, so
-// everything drawn AFTER the buckets (pads, cars, ball) was depth-rejected —
-// "the arena stops rendering" (docs/VISUAL_BUGS_TODO.md V11). Matching the
-// winding to the normals lets one GL_CULL_FACE/GL_BACK pass in the two arena
-// draws hide exactly the outward faces: from outside you look INTO the arena,
-// from inside the same surfaces stay front-facing and nothing changes.
-// Culling stays OFF for every other draw (car/ball/pads/FX are double-sided
-// today), so this bake change is pixel-neutral outside the arena draws.
+// Front faces follow the authored normals, so a back-face cull hides the outward side.
 void fixWinding(Bucket& bk) {
     for (size_t t = 0; t + 2 < bk.idx.size(); t += 3) {
         const float* a = &bk.v[(size_t)bk.idx[t] * kStrideFloats];
@@ -398,9 +334,7 @@ enum DrawId {
 const uint64_t kPlanMesh[kDraws] = {1440, 2, 416, 2, 144, 2, 480, 24, 4};
 const uint64_t kPlanFallback[kDraws] = {1392, 2, 288, 2, 16, 2, 224, 24, 4};
 
-// Bake all 9 buckets for one mode. Every literal below is copied from the
-// cited main.cpp call site (read-only this step); frame/UV/color rules match
-// the immediate path exactly.
+// Nine buckets for one mode. meshMode and the fallback set are never mixed.
 void bake(bool meshMode, Bucket out[kDraws]) {
     using namespace texturegen;
     const bool roundCorners = meshMode;
@@ -432,8 +366,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
     const float c4u1 = roundCorners ? (3968.0f + sideEnd) / spanX + mArcU : sideU;
 
     Bucket& opq = out[D_OPAQUE];
-    // A1 trim bars (main.cpp:1298-1328): fallback sharp-vertex bars vs mesh
-    // round/chamfer tangent-joint bars. Same 8-draw / 96-tri cost either way.
+    // Trim bars: sharp vertices in fallback, tangent joints when the corners are round.
     if (!roundCorners) {
         for (int jx = -1; jx <= 1; jx += 2)
             for (int jy = -1; jy <= 1; jy += 2) {
@@ -461,7 +394,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
                                    1024.0f, 0),
                     24.0f, 24.0f, 2048.0f, 0.32f, 0.42f, 0.60f, 1.0f);
     }
-    // A2 cross beams + shadow reveals (main.cpp:1408-1416): 9 x 2 draws.
+    // Cross beams and their shadow reveals.
     for (int i = 0; i < 9; i++) {
         float y = -5120.0f + 640.0f + i * 1120.0f;
         emitBox(opq, Frame::at(0, y, 2022.0f, 0), 7632.0f, 90.0f, 30.0f,
@@ -469,7 +402,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
         emitBox(opq, Frame::at(0, y, 2005.0f, 0), 7632.0f, 20.0f, 6.0f,
                 0.20f, 0.25f, 0.35f, 0.9f);
     }
-    // A3 longitudinal beams + reveals (main.cpp:1417-1423): 7 x 2 draws.
+    // Longitudinal beams and their reveals.
     for (int i = 0; i < 7; i++) {
         float x = -4096.0f + 585.0f + i * 1170.0f;
         emitBox(opq, Frame::at(x, 0, 2022.0f, 0), 90.0f, 9680.0f, 30.0f,
@@ -477,7 +410,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
         emitBox(opq, Frame::at(x, 0, 2005.0f, 0), 20.0f, 9680.0f, 6.0f,
                 0.20f, 0.25f, 0.35f, 0.9f);
     }
-    // A4 cove shadow lines (main.cpp:1499-1506): fixed 7936/5888 both modes.
+    // Cove shadow lines. Same placement in both modes.
     emitBox(opq, Frame::at(4096.0f - 262.0f, 0.0f, 2030.0f, 0), 4.0f, 7936.0f, 4.0f,
             0.28f, 0.50f, 0.85f, 0.9f);
     emitBox(opq, Frame::at(-4096.0f + 262.0f, 0.0f, 2030.0f, 0), 4.0f, 7936.0f, 4.0f,
@@ -486,7 +419,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
             0.28f, 0.50f, 0.85f, 0.9f);
     emitBox(opq, Frame::at(0.0f, -5120.0f + 262.0f, 2030.0f, 0), 5888.0f, 4.0f, 4.0f,
             0.28f, 0.50f, 0.85f, 0.9f);
-    // D1 cove glow strips (main.cpp:1431-1448): 4 straights + 4 mesh diagonals.
+    // Cove glow strips: four straights plus four diagonals in mesh mode.
     const float coveSide = roundCorners ? 7352.0f : 7936.0f;
     const float coveBack = roundCorners ? 5304.0f : 5888.0f;
     emitBox(opq, Frame::at(4096.0f - 262.0f, 0.0f, 2036.0f, 0), 12.0f, coveSide, 10.0f,
@@ -508,7 +441,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
         emitBox(opq, Frame::at(-3243.0f, -4267.0f, 2036.0f, -cq), 1671.6f, 12.0f, 10.0f,
                 0.45f, 0.72f, 1.0f, 0.9f);
     }
-    // A5/A6/D2 goals (main.cpp:1513-1533): trim (team), posts+spheres (white).
+    // Goal trim in team color, posts and spheres in white.
     for (int gg = 0; gg < 2; gg++) {
         float ys = gg == 0 ? 5120.0f : -5120.0f;
         float tr = gg == 0 ? 1.0f : 0.16f, tg = gg == 0 ? 0.48f : 0.55f,
@@ -541,12 +474,11 @@ void bake(bool meshMode, Bucket out[kDraws]) {
                 texturegen::kLampBulbZ, 1.0f, 0.96f, 0.82f, 1.0f);
     }
 
-    // B1 turf (main.cpp:895-896): one quad, full footprint.
+    // Turf: one quad, full footprint.
     emitQuadXZ(out[D_TURF], Frame::at(0, 0, -1, 0), 8192.0f, 10240.0f,
                1.0f, 1.0f, 1, 1, 1, 1, false);
 
-    // B3 floor-fillet bases (main.cpp:1118-1176): 2 side + 4 mouth-split
-    // (one cap fan each) + 4 chamfer arcSweeps.
+    // Floor fillets: two sides, four mouth splits, four chamfer arcs.
     Bucket& wb = out[D_WALLBASE];
     emitArcSweep(wb, Frame::deg(4096.0f, 0.0f, 0.0f, -90.0f), 2.0f * sideEnd, filR,
                  false, (sideEnd + 3968.0f) / spanX, (3968.0f - sideEnd) / spanX,
@@ -575,8 +507,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
     emitArcSweep(wb, Frame::deg(-3520.0f, -4544.0f, 0.0f, 135.0f), chamLen, filR, false,
                  c4u1 - mChamU, c4u1, 0.0f, 1.0f, 1, 1, 1, 1, false, false);
 
-    // Junction rounds (main.cpp:1370-1394, mesh only): base course here (B7);
-    // glass + crown courses join the glass bucket (C4) below.
+    // Corner rounds, mesh only. The base course is here; glass and crown join the glass bucket.
     const float rj[8][5] = {
         {4096.0f - roundR, 3968.0f - roundT, 0.0f, 45.0f, (sideEnd + 3968.0f) / spanX},
         {-4096.0f + roundR, 3968.0f - roundT, 180.0f, 135.0f, (3968.0f - sideEnd) / spanX},
@@ -603,13 +534,11 @@ void bake(bool meshMode, Bucket out[kDraws]) {
         }
     }
 
-    // B4 ceiling (main.cpp:1405-1407): face-down lit underside.
+    // Ceiling underside, normal -Z.
     emitQuadXZ(out[D_CEILING], Frame::at(0, 0, 2046.0f, 0), 8192.0f, 10240.0f,
                8192.0f / 2048.0f, 10240.0f / 2048.0f, 1, 1, 1, 1, true);
 
-    // B5 outer skirt (main.cpp:1453-1478): 4 straights + 4 chamfers (the inner
-    // pi rotation faces the quad inward; composed with the outer yaw here —
-    // Z-rotations commute, so one frame with the summed angle is exact).
+    // Outer skirt. The chamfer's extra pi faces the quad inward; z rotations commute.
     Bucket& sk = out[D_SKIRT];
     const float pi = (float)M_PI;
     auto skirtStraight = [&](float cx, float cy, float tanLen, float yawDeg) {
@@ -630,7 +559,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
     skirtChamfer(-3520.0f, 4544.0f, 45.0f);
     skirtChamfer(3520.0f, -4544.0f, -135.0f);
     skirtChamfer(-3520.0f, -4544.0f, 135.0f);
-    // B6 round skirts (main.cpp:1479-1496, mesh only).
+    // Round skirts, mesh only.
     if (roundCorners) {
         for (int j = 0; j < 8; j++)
             emitPlanRound(sk, rj[j][0], rj[j][1], roundR, rj[j][2] * d2r,
@@ -638,13 +567,12 @@ void bake(bool meshMode, Bucket out[kDraws]) {
                           0.9f, 0.93f, 0.20f, 0.25f, 0.35f, 1.0f);
     }
 
-    // B2 markings overlay (main.cpp:899-900): same footprint, lifted 2 uu.
-    // Depth-test OFF is a draw-time sandwich (see DrawArenaBuckets), not bake.
+    // Markings overlay, same footprint, lifted 2 uu.
+    // Depth-test off is applied at draw time, not in this bake.
     emitQuadXZ(out[D_MARKINGS], Frame::at(0, 0, 1.0f, 0), 8192.0f, 10240.0f,
                1.0f, 1.0f, 1, 1, 1, 1, false);
 
-    // C1 flat glass (main.cpp:1237-1254): 8 quads = 16 tris (see file header
-    // re the plan's 24-tri slip). quadYaw puts local +y INTO the arena.
+    // Flat glass, 8 quads. quadYaw puts local +y into the arena.
     auto glassSub = [&](float cx, float cy, float cz, float tanLen, float height,
                         float quadYawDeg, float uOff, float vOff) {
         emitQuadWall(gl, Frame::at(cx, cy, cz, quadYawDeg * pi / 180.0f),
@@ -667,8 +595,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
              (892.755f + 2944.0f) / spanX, 0);
     glassSub(0, -5120.0f - 2.0f, topCz, 1785.51f, topH, 0.0f,
              (2944.0f - 892.755f) / spanX, topV);
-    // C2 corner glass (main.cpp:1263-1292): NEGATIVE uRep under GL_REPEAT +
-    // pi rotation (quad-local +x points away from the field growth after it).
+    // Corner glass. Negative u repeat under GL_REPEAT, plus a pi rotation.
     auto cornerGlass = [&](float cx, float cy, float yawDeg, float uOff) {
         emitQuadWall(gl, Frame::at(cx, cy, glassCz, yawDeg * pi / 180.0f + pi),
                      chamLen, glassH, -mChamU, glassH / spanY,
@@ -680,8 +607,7 @@ void bake(bool meshMode, Bucket out[kDraws]) {
     cornerGlass(-3520.0f, 4544.0f, 45.0f, cu2);
     cornerGlass(3520.0f, -4544.0f, -135.0f, cu2);
     cornerGlass(-3520.0f, -4544.0f, 135.0f, cu1);
-    // C3 crown courses (main.cpp:1333-1364): ceiling-course arcSweeps, same u
-    // edges as the base below, v continuing the glass field.
+    // Crown arcs. Same u edges as the base, v continues the glass field.
     emitArcSweep(gl, Frame::deg(4096.0f, 0.0f, 2048.0f, -90.0f), 2.0f * sideEnd, filR,
                  true, (sideEnd + 3968.0f) / spanX, (3968.0f - sideEnd) / spanX,
                  crownV0, crownV1, 1, 1, 1, kGlassA, false, false);
@@ -706,10 +632,9 @@ void bake(bool meshMode, Bucket out[kDraws]) {
     emitArcSweep(gl, Frame::deg(-3520.0f, -4544.0f, 2048.0f, 135.0f), chamLen, filR,
                  true, c4u1 - mChamU, c4u1, crownV0, crownV1, 1, 1, 1, kGlassA,
                  false, false);
-    // (C4 round glass+crown were emitted with the B7 loop above, mesh only.)
+    // Round glass and crown were emitted with the corner loop above, mesh only.
 
-    // C5/C6 goal interiors (main.cpp:1571-1591): drawn after cars/ball with
-    // depth-test ON + depth-write OFF (draw-time sandwich, not bake).
+    // Goal interiors. Drawn after the cars and the ball, depth-test on, depth-write off.
     Bucket& sh = out[D_SHELL];
     Bucket& wv = out[D_WEAVE];
     for (int gg = 0; gg < 2; gg++) {
@@ -747,7 +672,7 @@ void buildMode(ModeSet& ms, bool meshMode) {
     Bucket cpu[kDraws];
     bake(meshMode, cpu);
     for (int d = 0; d < kDraws; d++)
-        fixWinding(cpu[d]); // V11: front faces follow the authored normals
+        fixWinding(cpu[d]); // front faces follow the authored normals
     const uint64_t* plan = meshMode ? kPlanMesh : kPlanFallback;
     uint64_t bakedTotal = 0, planTotal = 0;
     for (int d = 0; d < kDraws; d++) {
@@ -768,14 +693,14 @@ void buildMode(ModeSet& ms, bool meshMode) {
         bakedTotal += g.tris;
         planTotal += plan[d];
     }
-    // Proof line for G3c/VG7: baked (== drawn, == counted) vs plan-claimed.
+    // Baked triangle counts next to the claimed counts.
     std::fprintf(stderr,
                  "[buckets] built %s: 9 draws tris=%llu (plan %llu%s); "
                  "per-draw baked/plan: %llu/%llu %llu/%llu %llu/%llu %llu/%llu "
                  "%llu/%llu %llu/%llu %llu/%llu %llu/%llu %llu/%llu\n",
                  meshMode ? "mesh" : "fallback",
                  (unsigned long long)bakedTotal, (unsigned long long)planTotal,
-                 bakedTotal == planTotal ? "" : " DEVIATION (C1 16-vs-24, G3b notes)",
+                 bakedTotal == planTotal ? "" : " DEVIATION",
                  (unsigned long long)ms.d[0].tris, (unsigned long long)plan[0],
                  (unsigned long long)ms.d[1].tris, (unsigned long long)plan[1],
                  (unsigned long long)ms.d[2].tris, (unsigned long long)plan[2],
@@ -792,15 +717,11 @@ inline ModeSet& forMode(bool meshMode) {
     return meshMode ? g_mesh : g_fallback;
 }
 
-// Cull sandwich for the arena draws (V11, see fixWinding): back faces off for
-// the duration, prior state restored — same discipline as the depth-mask
-// sandwich below, so the frame stays a pure function of its draws.
+// Back-face cull for the arena draws. Prior cull state is restored.
 struct CullScope {
     GLboolean was = GL_FALSE;
     GLint mode = GL_BACK, face = GL_CCW;
-    // RL_NOCULL=1 restores the pre-V11 double-sided arena (debug lever like
-    // RL_NOTEX). With it set the bake re-wind is pixel-neutral, so a capture
-    // diff against an older build isolates the cull pass alone.
+    // RL_NOCULL=1 leaves the shell double-sided.
     static bool off() {
         static const bool s_off = std::getenv("RL_NOCULL") != nullptr;
         return s_off;
@@ -826,10 +747,7 @@ struct CullScope {
     }
 };
 
-// One bucket draw, Fennec pattern (Fennec.cpp:152-186): client arrays over a
-// bound VBO + glDrawElements. Textured draws replicate the TextureScope
-// sandwich (bind, draw, unbind, restore enable) and touch nothing else —
-// blend/lighting/depth-mask/test stay exactly as the caller left them.
+// Client arrays over a bound VBO. Textured draws restore the texture enable they change.
 void drawOne(Renderer& r, const GLBucket& g, unsigned tex, bool textured) {
     GLboolean texWas = glIsEnabled(GL_TEXTURE_2D);
     if (textured) {
@@ -905,17 +823,14 @@ void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet, float wallOpaci
     if (!ms.built)
         buildMode(ms, meshMode);
     unsigned glassTex = noHexNet ? PlainGlassTexture() : HexNetTexture();
-    CullScope cull; // V11: one-sided shell — an eye outside looks INTO the arena
-    // Emission order per plan §5: (a+d) -> turf -> wallbase -> ceiling ->
-    // skirt -> B2 overlay -> glass. Untextured draws touch no GL state beyond
-    // the arrays (exactly like DrawBox); textured draws add the bind sandwich.
+    CullScope cull; // an eye outside a wall looks into the arena
+    // Order: shell, turf, wall base, ceiling, skirt, markings, glass.
     drawOne(r, ms.d[D_OPAQUE], 0, false);
     drawOne(r, ms.d[D_TURF], TurfTexture(), true);
     drawOne(r, ms.d[D_WALLBASE], WallBaseTexture(), true);
     drawOne(r, ms.d[D_CEILING], CeilingTexture(), true);
     drawOne(r, ms.d[D_SKIRT], PlainGlassTexture(), true);
-    // B2 overlay (DrawTexturedOverlayXZ, Renderer.cpp:539-564): depth-TEST
-    // OFF sandwich, depth writes still on (mask untouched) — replicated.
+    // Markings: depth test off, depth writes still on.
     {
         GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
         glDisable(GL_DEPTH_TEST);
@@ -930,9 +845,8 @@ void DrawArenaGoalInteriors(Renderer& r, bool meshMode) {
     ModeSet& ms = forMode(meshMode);
     if (!ms.built)
         buildMode(ms, meshMode);
-    // C5+C6 (main.cpp:1568-1592): depth-TEST on, depth-WRITE off, restored
-    // after — so cars/balls inside the net show through veiled.
-    CullScope cull; // V11: the shell box + weave quad are one-sided too
+    // Goal interiors: depth test on, depth write off, then restored.
+    CullScope cull; // shell box and weave are one-sided too
     GLboolean maskWas = GL_TRUE;
     glGetBooleanv(GL_DEPTH_WRITEMASK, &maskWas);
     glDepthMask(GL_FALSE);
