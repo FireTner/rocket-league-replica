@@ -814,6 +814,7 @@ int main(int argc, char** argv) {
 		snap.boost = sim->GetBoost(player);
 		snap.boosting = sim->IsBoosting(player);
 		snap.supersonic = sim->IsSupersonic(player);
+		snap.flipReset = sim->HasFlipReset(player);
 		snap.handbrake = ctl.handbrake;
 		// Render-only airborne heuristic: clearly off the ground or moving
 		// vertically fast. No sim coupling (no new Sim API).

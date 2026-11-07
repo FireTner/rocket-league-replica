@@ -206,6 +206,12 @@ public:
 	bool IsSupersonic(int idx) const;
 	bool IsDemoed(int idx) const; // true from demolition until auto-respawn (3 s)
 
+	// RocketSim CarState::HasFlipReset (Car.cpp): airborne, still able to
+	// flip, and hasJumped is false — the flip came from wheel contact, not
+	// from a jump. A grounded car and a normal dodge window are false.
+	// Read-only. Does not write car, ball, or world state.
+	bool HasFlipReset(int idx) const;
+
 	// Read-only contact for presentation. Does not write car, ball, or world
 	// state. Wheel slip matches Car::_UpdateWheels (Car.cpp:436-454): lateral
 	// and long speed at the contact, uu/s. World-body point is the hitbox

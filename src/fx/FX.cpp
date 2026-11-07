@@ -1,5 +1,6 @@
 // FX.cpp — procedural FX implementation.
 #include "FX.h"
+#include "fx/FlipReset.h"
 #include <GL/gl.h>
 #include <cmath>
 
@@ -365,9 +366,10 @@ void FX::DrawDrift(Renderer& r, const Snapshot& s) {
     if (r.LightingOn()) glEnable(GL_LIGHTING);
 }
 
-void FX::DrawAir(Renderer&, const Snapshot&) {
-    // Airborne spin used to draw three arcs plus a stall ring around the car.
-    // Removed. A flip is readable from the car's orientation. No new ring.
+void FX::DrawAir(Renderer& r, const Snapshot& s) {
+    // The old spin arcs stay gone. This draws the flip-reset disc only
+    // while Snapshot.flipReset is set (RocketSim HasFlipReset).
+    DrawFlipReset(r, s);
 }
 
 void FX::DrawTrail(Renderer& r, const Snapshot& s) {

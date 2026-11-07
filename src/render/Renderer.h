@@ -98,6 +98,9 @@ struct Snapshot {
     bool supersonic = false;
     bool handbrake = false;  // powerslide/drift smoke gate (from input)
     bool airborne = false;   // no ground contact (z + vz heuristic, render-only)
+    // RocketSim CarState::HasFlipReset, filled from Sim::HasFlipReset.
+    // True only for an unused wheel-granted flip. A jump dodge window is false.
+    bool flipReset = false;
     float angSpeed = 0.0f;   // rad/s of fwd/up frame change (flip/stall streaks)
     bool ballCam = true;
     bool demoed = false;           // demo respawn hook for FX
