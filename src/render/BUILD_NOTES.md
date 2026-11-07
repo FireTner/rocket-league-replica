@@ -1032,3 +1032,24 @@ Measured offscreen on machine B (`NVIDIA GeForce RTX 4060 Laptop GPU`,
 `4.6.0 NVIDIA 615.78.08`): `[arena] sky/cards blended: (none)` and the skip
 list above. `SkyDome_MAT` still takes the pale tint. Boost-pad light cones
 stay on the earlier `FXActor_TA` skip and never reach this gate.
+
+## Floor_Team1 lightmap (2026-11-07) — rect stays empty
+
+`Field_STD_Floor_Team1`'s FLightMap2D pair is the only lightmap the
+component references. On the local Stadium_Day cook that chart does not
+hold shade, so the pitch-mesh `useLm` disable in `Renderer.cpp` stays.
+
+DirectionalMax × scale, lit = luminance > 0.06:
+
+| sample | lit |
+|---|---|
+| Team1 stored rect (510×510) | 1.19% (average texture 1.68%) |
+| Team1 `uv*s+b` vertices | 8.21% |
+| Team2 stored rect | 1.14% |
+| StadiumBase `uv*s+b` (control) | 70.9% |
+| Team1 UVs shifted +0.5 in v | 45.8%, half the samples still black |
+
+The 8×8 of the Team1 rect is 0 in the interior; the lit texels are sparse
+edge bleed. The grass MIC's `LightMap` parameter is None. The disable stays.
+No-pack VG1 md5 `b2385ad3b465b15a74dda175e31a0edf` (two captures, machine B,
+NVIDIA GeForce RTX 4060 Laptop GPU, 4.6.0 NVIDIA 615.78.08).
