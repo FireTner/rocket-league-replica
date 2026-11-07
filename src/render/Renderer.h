@@ -364,12 +364,18 @@ private:
         uint64_t tris = 0;
         int texId = -1;      // -1 = a tinted fallback material (see tintRgb)
         int lmTexId = -1;    // -1 = no baked lightmap (shader uses white)
+        int nrmTexId = -1;   // -1 = no normal map (geometric normal only)
+        int nrmMode = 0;     // 1 = RGB tangent normal, 2 = XY + reconstructed Z
         float lmScale[3] = {1.f, 1.f, 1.f};  // DirectionalMax ScaleVectors
         float tintRgb[3] = {0.55f, 0.55f, 0.55f};
         bool unlit = false;  // emissive / fake-lit sections ignore scene lighting
         bool decal = false;  // field markings: polygon offset so they sit on the turf
         bool transparent = false;  // force-field/glass: blended pass, no depth write
         bool alphaTest = false;    // tree cards / masked foliage
+        bool lmLuma = false;       // this bucket's lightmap stays greyscale
+        bool emit = false;         // add tintRgb as an emissive term
+        bool useColor = false;     // mesh stored vertex colours
+        int floatsPerVert = 13;    // +3 when useColor
         std::string tag;   // first (mesh, material) baked here (diagnostics)
         int cell[3] = {0, 0, 0};
         float lo[3] = {0, 0, 0};  // world AABB (culling)
@@ -381,11 +387,17 @@ private:
     unsigned arenaProg_ = 0;       // pack-only GLSL ≤ 4.50 program
     int arenaUniDiffuse_ = -1;
     int arenaUniLightmap_ = -1;
+    int arenaUniNormal_ = -1;
     int arenaUniTint_ = -1;
     int arenaUniLmScale_ = -1;
+    int arenaUniEmit_ = -1;
     int arenaUniUseDiff_ = -1;
     int arenaUniUseLm_ = -1;
+    int arenaUniUseNrm_ = -1;
+    int arenaUniNrmMode_ = -1;
+    int arenaUniLmLuma_ = -1;
     int arenaUniAlphaTest_ = -1;
+    int arenaUniUseColor_ = -1;
     ArenaPackStats arenaStats_;
     bool arenaReady_ = false;
 };

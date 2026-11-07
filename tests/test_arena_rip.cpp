@@ -245,6 +245,12 @@ int main(int argc, char** argv) {
     CHECK(m.normals.size() == m.positions.size(),
           "mesh '%s': normals (%zu) != positions (%zu)", m.name.c_str(),
           m.normals.size(), m.positions.size());
+    CHECK(m.tangents.size() == m.positions.size(),
+          "mesh '%s': tangents (%zu) != positions (%zu)", m.name.c_str(),
+          m.tangents.size(), m.positions.size());
+    CHECK(m.colors.empty(),
+          "mesh '%s': this cook stores no vertex colours (got %zu floats)",
+          m.name.c_str(), m.colors.size());
     CHECK(m.uvs.size() == 2u * verts, "mesh '%s': uvs are not 2 per vertex",
           m.name.c_str());
     CHECK(m.indices.size() % 3 == 0, "mesh '%s': %zu indices is not a multiple "

@@ -65,14 +65,21 @@ struct ArenaSection {
 //
 //   positions : 3 floats per vertex
 //   normals   : 3 floats per vertex
-//   uvs       : 2 floats per vertex (UV channel 0 — the only stored channel)
+//   tangents  : 3 floats per vertex (the pack's `tangents` array)
+//   uvs       : 2 floats per vertex (diffuse channel)
+//   colors    : 3 floats per vertex, only when the pack stores a `colors`
+//               array. This cook's vertex stream is packed tangent + packed
+//               normal + UV channels (stride 8+4*channels). It has no colour,
+//               and the stadium pack does not either — `colors` stays empty.
 //   indices   : triangle-corner indices, 3 per triangle
 struct ArenaMesh {
   std::string name;
   std::vector<float> positions;  // 3 per vertex
   std::vector<float> normals;    // 3 per vertex
+  std::vector<float> tangents;   // 3 per vertex (empty if the pack omits them)
   std::vector<float> uvs;        // 2 per vertex (diffuse channel)
   std::vector<float> uvsLm;      // 2 per vertex (lightmap channel; /2)
+  std::vector<float> colors;     // 3 per vertex, only when a `colors` array exists
   int diffuseUvChannel = 0;
   int lightmapUvChannel = 0;
   std::vector<uint16_t> indices;

@@ -953,3 +953,21 @@ need a framebuffer this renderer does not have, so the ellipse is a
 stand-in, not a mesh silhouette. The analytic shell never calls it.
 `tests/test_pitch_shadow.cpp` checks the ray, the height offset, and that a
 blob past the pitch is dropped.
+
+## Pack stadium shader (2026-11-07)
+
+The pack-only program (`kArenaVs` / `kArenaFs`) is
+
+`albedo * lightmapColour * wrap + emissive`.
+
+`ArenaRip` loads the pack's `tangents` (3 floats per vertex). This cook's
+vertex stream is packed tangent + packed normal + UVs and the pack has no
+`colors` array, so vertex colour is not multiplied and none is invented.
+A real `_N` map bound in the diffuse slot is sampled as a tangent-space
+normal (RGB, or XY with reconstructed Z when B is the constant 128 of
+`Hexagons_N` / PF_V8U8). `Step_N` stays albedo. Lightmap hue is kept, with
+the same shade curve as before. `DFH_Day_StadiumBase2` stays luminance: its
+live chart is cyan (~0.67, 1.18, 1.18) and that cast paints the concrete
+purple. Trim-light and goal-generator materials (fallback tint 8 and 9) add
+those existing team colours as an emissive term. The no-pack path does not
+compile or draw this program. Mesh skips are unchanged.
