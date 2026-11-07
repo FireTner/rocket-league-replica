@@ -6,9 +6,31 @@
 
 namespace rl {
 
-namespace {
 constexpr int kRate = 44100;
 constexpr float kMaster = 0.30f;
+// UNVERIFIED: full volume inside 800 uu, then inverse distance, floor 0.20.
+constexpr float kRefDist = 800.0f;
+constexpr float kMinGain = 0.20f;
+// UNVERIFIED: 343 m/s * 100 uu/m. Pitch ratio c/(c+v), v positive receding.
+constexpr float kSpeedOfSound = 34300.0f;
+
+float AudioDistanceGain(float distUu) {
+    if (distUu < kRefDist) distUu = kRefDist;
+    float g = kRefDist / distUu;
+    if (g < kMinGain) g = kMinGain;
+    return g;
+}
+
+float AudioDopplerRatio(float radialSpeedUu) {
+    float denom = kSpeedOfSound + radialSpeedUu;
+    if (denom < 1000.0f) denom = 1000.0f;
+    float ratio = kSpeedOfSound / denom;
+    if (ratio < 0.85f) ratio = 0.85f;
+    if (ratio > 1.15f) ratio = 1.15f;
+    return ratio;
+}
+
+namespace {
 
 // One-shot recipes: {freq0, freq1, durSeconds, kind} kind 0=sine,1=square-ish.
 struct Recipe { float f0, f1, dur; int kind; };
@@ -71,11 +93,17 @@ void Audio::Shutdown() {
     }
 }
 
-void Audio::Engine(float speed01, bool boosting) {
+void Audio::Engine(float speed01, bool boosting, float carDistUu, float ballDistUu,
+                   float radialSpeedUu) {
     if (speed01 < 0) speed01 = 0;
     if (speed01 > 1) speed01 = 1;
+    if (carDistUu < 0) carDistUu = 0;
+    if (ballDistUu < 0) ballDistUu = 0;
     speed01_.store(speed01);
     boosting_.store(boosting);
+    carDist_.store(carDistUu);
+    ballDist_.store(ballDistUu);
+    radialSpeed_.store(radialSpeedUu);
 }
 
 void Audio::PlayJump() {
@@ -137,10 +165,13 @@ void Audio::SDLCALL Audio::Cb(void* userdata, Uint8* stream, int len) {
     bool muted = self->muted_.load();
     float spd = self->speed01_.load();
     bool boosting = self->boosting_.load();
+    float carGain = AudioDistanceGain(self->carDist_.load());
+    float ballGain = AudioDistanceGain(self->ballDist_.load());
 
     // Engine: saw-ish 55+165*spd Hz + sub sine + breath noise.
-    float freq = 55.0f + 165.0f * spd;
-    float engGain = muted ? 0.0f : (0.10f + 0.12f * spd) * kMaster;
+    // Doppler (UNVERIFIED) scales the oscillator from radial speed vs the ear.
+    float freq = (55.0f + 165.0f * spd) * AudioDopplerRatio(self->radialSpeed_.load());
+    float engGain = muted ? 0.0f : (0.10f + 0.12f * spd) * kMaster * carGain;
 
     SDL_LockMutex(self->blipLock_);
     Blip active[kBlips];
@@ -162,7 +193,7 @@ void Audio::SDLCALL Audio::Cb(void* userdata, Uint8* stream, int len) {
         float s = engGain * (0.6f * saw + 0.4f * sub) + engGain * 0.15f * nz;
 
         if (boosting && !muted)
-            s += 0.25f * kMaster * nz; // boost hiss
+            s += 0.25f * kMaster * carGain * nz; // boost hiss, same ear distance
 
         // One-shots.
         for (int b = 0; b < kBlips; b++) {
@@ -179,7 +210,9 @@ void Audio::SDLCALL Audio::Cb(void* userdata, Uint8* stream, int len) {
             float osc = rc.kind == 0
                 ? std::sin(2.0f * 3.14159265f * f * bt)
                 : (std::fmod(2.0f * f * bt, 2.0f) < 1.0f ? 0.6f : -0.6f);
-            if (!muted) s += 0.5f * kMaster * env * osc;
+            // Goal horn is the ball one-shot; other blips stay at the car.
+            float srcGain = active[b].type == 4 ? ballGain : carGain;
+            if (!muted) s += 0.5f * kMaster * srcGain * env * osc;
             active[b].pos++;
         }
         if (s > 1.0f) s = 1.0f;

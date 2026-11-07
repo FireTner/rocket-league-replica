@@ -31,5 +31,12 @@ time, and audio still runs on its own wall-clock engine path, so the two are
 independent. No samples, no assets, no new dependencies.
 
 ## Known approximations
-- No doppler, no distance attenuation (ball), no crowd/ambient bed, no
-  UI clicks. Engine timbre is a placeholder (saw+sub), not an RL recording.
+- Distance and a light doppler are on. The ear is the published camera eye
+  (`Camera::Eye()`, after shake). The engine (and car one-shots, and boost
+  hiss) use car-to-ear distance; the goal horn uses ball-to-ear distance.
+  Doppler scales only the engine oscillator from the car's radial speed
+  versus that eye (positive = receding). Curves are UNVERIFIED: full volume
+  inside 800 uu, inverse distance, floor 0.20; speed of sound 34300 uu/s;
+  pitch ratio clamped to [0.85, 1.15].
+- No crowd/ambient bed, no UI clicks. Engine timbre is a placeholder
+  (saw+sub), not an RL recording. Still zero sample assets.

@@ -11,6 +11,13 @@
 
 namespace rl {
 
+// UNVERIFIED spatial curves (no published RL source). Ear distances are uu.
+// Full volume at or inside 800 uu, inverse distance after that, floor 0.20.
+float AudioDistanceGain(float distUu);
+// c = 34300 uu/s. radialSpeedUu > 0 means the source is receding from the ear.
+// Ratio is clamped to [0.85, 1.15].
+float AudioDopplerRatio(float radialSpeedUu);
+
 class Audio {
 public:
     Audio();
@@ -26,8 +33,15 @@ public:
     void SetMuted(bool m) { muted_.store(m); }
     bool Muted() const { return muted_.load(); }
 
-    // Per-frame continuous state (call from the render loop).
-    void Engine(float speed01, bool boosting);
+    // Per-frame continuous state (call from the render loop, after the
+    // camera eye is published). The ear is that eye — the same point
+    // Camera::Eye() hands the renderer.
+    // carDistUu / ballDistUu: source-to-ear distance in uu.
+    // radialSpeedUu: car speed away from the ear (positive = receding),
+    // uu/s. Drives a light doppler on the engine oscillator only.
+    // Distance and doppler constants are UNVERIFIED (no published RL source).
+    void Engine(float speed01, bool boosting, float carDistUu, float ballDistUu,
+                float radialSpeedUu);
 
     // One-shots (call on game events).
     void PlayJump();
@@ -52,6 +66,9 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<float> speed01_{0};
     std::atomic<bool> boosting_{false};
+    std::atomic<float> carDist_{800};
+    std::atomic<float> ballDist_{800};
+    std::atomic<float> radialSpeed_{0};
     Blip blips_[kBlips] = {};
     SDL_mutex* blipLock_ = nullptr;
     uint32_t phase_ = 0;   // engine oscillator phase (callback-owned)
