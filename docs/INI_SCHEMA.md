@@ -169,6 +169,7 @@ stub — see `src/input/BUILD_NOTES.md`):
 | max_fps | int | 0    | 0..1000 | Frame-rate cap: 0=off (shipped pacing — vsync, or uncapped with `--no-vsync`). >0 clamps to 15..1000 and sleeps the remainder in `EndFrame`, but ONLY when vsync is off (`--no-vsync`); vsync-on behavior is unchanged. Clamp + sleep only — never drops a physics tick. Needs restart (read at context creation). |
 | pacing_log | bool | false | —   | `true` = append `render_pacing.log` in the CWD on every pacing print (soak analysis); `false` = stderr only, no CWD file (V9 fix). |
 | pbr | bool | false | — | G6a PBR-lite: `false` = shipped fixed-function path (gated captures stay pixel-stable); `true` = specular highlight + roughness factor + IBL ambient lift on the car/ball material (`src/render/PbrGl.*`). Applied at frame start; needs restart (read at context creation). |
+| wall_opacity | float | 0.40 | 0..1 | Arena glass-wall alpha on the fixed-function shell. `0.40` is the baked glass vertex alpha (`ArenaShell` `kGlassA`), so a missing key keeps the current walls. Menu step is 0.05. Applied on the glass bucket each frame (no restart). Does not retint the arena. `docs/CROSS_CHECK.md` §5 still says 0.30; that was the pre-ledger bake. |
 
 Extended in v1 (additive, schema stays 1): missing `[render]` falls back to
 the defaults above; older binaries ignore the unknown section. Both

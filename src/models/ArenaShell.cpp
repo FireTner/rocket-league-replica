@@ -853,9 +853,41 @@ void drawOne(Renderer& r, const GLBucket& g, unsigned tex, bool textured) {
     r.NoteExternalDraw(g.tris, 0);
 }
 
+// Glass vertex alpha is baked at 0.40 (kGlassA). The default setting matches
+// that, so the modulate path stays untouched. Any other opacity replaces only
+// the alpha combine: texture alpha * wallOpacity, RGB still texture * vertex.
+void drawGlass(Renderer& r, const GLBucket& g, unsigned tex, float opacity) {
+    if (opacity == 0.40f) {
+        drawOne(r, g, tex, true);
+        return;
+    }
+    if (opacity < 0.0f) opacity = 0.0f;
+    if (opacity > 1.0f) opacity = 1.0f;
+    GLint envMode = GL_MODULATE;
+    GLfloat envColor[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    glGetTexEnviv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, &envMode);
+    glGetTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, envColor);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_COMBINE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_RGB, GL_MODULATE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_RGB, GL_TEXTURE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_RGB, GL_SRC_COLOR);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_RGB, GL_PRIMARY_COLOR);
+    glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_RGB, GL_SRC_COLOR);
+    glTexEnvi(GL_TEXTURE_ENV, GL_COMBINE_ALPHA, GL_MODULATE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE0_ALPHA, GL_TEXTURE);
+    glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND0_ALPHA, GL_SRC_ALPHA);
+    glTexEnvi(GL_TEXTURE_ENV, GL_SOURCE1_ALPHA, GL_CONSTANT);
+    glTexEnvi(GL_TEXTURE_ENV, GL_OPERAND1_ALPHA, GL_SRC_ALPHA);
+    const GLfloat constant[4] = {1.0f, 1.0f, 1.0f, opacity};
+    glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, constant);
+    drawOne(r, g, tex, true);
+    glTexEnvfv(GL_TEXTURE_ENV, GL_TEXTURE_ENV_COLOR, envColor);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, envMode);
+}
+
 } // namespace
 
-void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet) {
+void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet, float wallOpacity) {
     ModeSet& ms = forMode(meshMode);
     if (!ms.built)
         buildMode(ms, meshMode);
@@ -878,7 +910,7 @@ void DrawArenaBuckets(Renderer& r, bool meshMode, bool noHexNet) {
         if (depthWas)
             glEnable(GL_DEPTH_TEST);
     }
-    drawOne(r, ms.d[D_GLASS], glassTex, true);
+    drawGlass(r, ms.d[D_GLASS], glassTex, wallOpacity);
 }
 
 void DrawArenaGoalInteriors(Renderer& r, bool meshMode) {

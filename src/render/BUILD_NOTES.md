@@ -894,3 +894,11 @@ Machine A was not measured.
 Indicator size was not retuned. The rest of VG1–VG16 was not re-run. No
 30-minute soak. The gate file was restored after the run so a partial
 `--only` write did not replace the shared record.
+
+## Wall opacity (schema v1 additive)
+
+`[render] wall_opacity` (default 0.40, clamp 0..1, menu step 0.05) is the
+glass-bucket alpha. 0.40 matches baked `kGlassA`, and that value still takes
+the existing `GL_MODULATE` path. Any other value sets a `GL_COMBINE` alpha of
+texture alpha × the setting for that one draw, then restores the tex env.
+RGB is unchanged. Goal-interior shells stay on their baked alpha.

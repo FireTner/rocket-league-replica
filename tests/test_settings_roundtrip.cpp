@@ -47,6 +47,7 @@ int main() {
     CHECK(s.boost.unlimited == false, "boost.unlimited == false");
     CHECK(s.arena.soccar == true, "arena.soccar == true");
     CHECK(s.game.kickoffIndex == 0, "game.kickoff_index == 0");
+    CHECK(s.render.wallOpacity == 0.40f, "render.wall_opacity == 0.40");
 
     std::printf("[2] modify every section, save to /tmp/rt_out.ini\n");
     s.camera.fov = 100.0f;
@@ -63,6 +64,7 @@ int main() {
     s.boost.drain = 50.0f;
     s.arena.soccar = false;
     s.game.kickoffIndex = 3;
+    s.render.wallOpacity = 0.65f;
     bool saved = rl::Settings::Save("/tmp/rt_out.ini", s, &err);
     CHECK(saved, ("save: " + (saved ? std::string("ok") : err)).c_str());
 
@@ -88,10 +90,22 @@ int main() {
     CHECK(r.boost.recharge == 10.0f, "untouched recharge intact (10)");
     CHECK(r.arena.soccar == false, "soccar mutation survived (false)");
     CHECK(r.game.kickoffIndex == 3, "kickoff_index mutation survived (3)");
+    CHECK(r.render.wallOpacity == 0.65f, "wall_opacity mutation survived (0.65)");
 
     std::printf("[4] tolerance checks\n");
     rl::Settings d = rl::Settings::Defaults();
     CHECK(d.camera.fov == 110.0f && d.physics.tick == 120, "Defaults() matches shipped ini");
+    CHECK(d.render.wallOpacity == 0.40f, "Defaults() wall_opacity is 0.40");
+    {
+        std::ofstream bare("/tmp/rt_no_wall.ini");
+        bare << "[version]\nschema = 1\n[camera]\nfov = 110\n";
+        bare.close();
+        rl::Settings bareS;
+        CHECK(rl::Settings::Load("/tmp/rt_no_wall.ini", bareS, &err),
+              "ini without wall_opacity loads");
+        CHECK(bareS.render.wallOpacity == 0.40f,
+              "missing wall_opacity keeps the 0.40 glass default");
+    }
     rl::Settings missing;
     bool missOk = rl::Settings::Load("/tmp/does_not_exist_xyz.ini", missing, &err);
     CHECK(!missOk && missing.camera.fov == 110.0f, "missing file -> defaults + false");

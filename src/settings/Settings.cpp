@@ -279,6 +279,7 @@ void Settings::Migrate(Settings& s, int fileSchema) {
     s.render.msaa = ClampI(s.render.msaa, 0, 16);
     s.render.maxFps = ClampI(s.render.maxFps, 0, 1000);
     if (s.render.maxFps > 0 && s.render.maxFps < 15) s.render.maxFps = 15;
+    s.render.wallOpacity = ClampF(s.render.wallOpacity, 0.0f, 1.0f);
     // Gamepad: deadzone range documented in INI_SCHEMA.md; empty button names
     // fall back to the default binding (an empty name is a misconfiguration,
     // not a valid unbind).
@@ -431,6 +432,7 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
     getI("render", "max_fps", out.render.maxFps);
     getB("render", "pacing_log", out.render.pacingLog);
     getB("render", "pbr", out.render.pbr);  // G6a PBR-lite, default OFF
+    getF("render", "wall_opacity", out.render.wallOpacity);
 
     if (!ok) {
         if (err) *err = errors;
@@ -508,7 +510,8 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "\n[render]\nmsaa = " << s.render.msaa << "\n"
         << "max_fps = " << s.render.maxFps << "\n"
         << "pacing_log = " << (s.render.pacingLog ? "true" : "false") << "\n"
-        << "pbr = " << (s.render.pbr ? "true" : "false") << "\n";
+        << "pbr = " << (s.render.pbr ? "true" : "false") << "\n"
+        << "wall_opacity = " << f(s.render.wallOpacity) << "\n";
     if (!out) {
         if (err) *err = "write failed for " + path;
         return false;
