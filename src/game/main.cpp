@@ -31,6 +31,7 @@
 #include "models/ArenaRip.h"
 #include "models/ArenaTextures.h"
 #include "render/Renderer.h"
+#include "render/MatchHud.h"
 #include "settings/Settings.h"
 #include "sim/Sim.h"
 #include "game/FreeplayBall.h"
@@ -478,12 +479,15 @@ int main(int argc, char** argv) {
 	float prevBoostHud = 0;
 	float prevBoostFx = 0; // pickup-burst edge, independent of audio
 	bool prevJumpHeld = false;
+	// Cosmetic 3-2-1. Rearmed on spawn; the sim keeps stepping.
+	uint64_t kickoffTick = 0;
+	auto armKickoff = [&]() { kickoffTick = sim->tick(); };
 
 	// Menu wired to free-play actions.
 	rl::Menu menu(settings, rl::FreePlayActions{
-		[&]() { sim->ResetCarToSpawn(player); sim->ResetCarToSpawn(botIdx); },
+		[&]() { sim->ResetCarToSpawn(player); sim->ResetCarToSpawn(botIdx); armKickoff(); },
 		[&]() { sim->ResetBall(); },
-		[&](int) { sim->ResetCarToSpawn(player); sim->ResetCarToSpawn(botIdx); sim->ResetBall(); },
+		[&](int) { sim->ResetCarToSpawn(player); sim->ResetCarToSpawn(botIdx); sim->ResetBall(); armKickoff(); },
 		[&]() { camera.ToggleBallCam(); },
 		[&]() { unlimitedBoost = !unlimitedBoost; },
 		[&]() {
@@ -576,6 +580,7 @@ int main(int argc, char** argv) {
 					shotTaken = 2; // capture before EndFrame below
 				} else if (k == SDLK_r) {
 					sim->ResetCarToSpawn(player);
+					armKickoff();
 				} else if (k >= SDLK_1 && k <= SDLK_5) {
 					RunBallDrill(sim, player, (int)(k - SDLK_1));
 				}
@@ -639,8 +644,10 @@ int main(int argc, char** argv) {
 				menu.Open();
 			if (ev.toggleBallcam)
 				camera.ToggleBallCam();
-			if (ev.resetCar)
+			if (ev.resetCar) {
 				sim->ResetCarToSpawn(player);
+				armKickoff();
+			}
 			if (ev.resetBall)
 				sim->ResetBall();
 			if (ev.toggleUnlimitedBoost)
@@ -1297,6 +1304,8 @@ int main(int argc, char** argv) {
 			renderer.DrawText2D((int)(cx - w / 2), (int)(cy - 16), num, 4, 1, 1, 1);
 			renderer.DrawText2D((int)(cx - 24), (int)(cy + 14), "BOOST", 1, 0.85f, 0.9f, 1.0f);
 		}
+		// Off during --shot-at-tick so VG1 captures stay byte-identical.
+		rl::MatchHud::Draw(renderer, sim->tick(), kickoffTick, shotAtTick < 0);
 		if (shotAtTick >= 0 && (long long)sim->tick() >= shotAtTick && !shotTaken) {
 			shotTaken = 1;
 			const char* p = shotPath.empty() ? "shot_tick.ppm" : shotPath.c_str();

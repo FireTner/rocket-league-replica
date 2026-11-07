@@ -902,3 +902,11 @@ glass-bucket alpha. 0.40 matches baked `kGlassA`, and that value still takes
 the existing `GL_MODULATE` path. Any other value sets a `GL_COMBINE` alpha of
 texture alpha × the setting for that one draw, then restores the tex env.
 RGB is unchanged. Goal-interior shells stay on their baked alpha.
+
+## Free-play match clock (2026-11-07)
+
+`src/render/MatchHud` draws `mm:ss` from `tick/120` and a 3-2-1 countdown for
+360 ticks after session start and after a car spawn / kickoff reset. It does
+not step the sim. `Draw` is skipped when `--shot-at-tick` is set so gated
+captures (VG1) keep the previous pixels. `tests/test_match_hud.cpp` covers
+the formatting.
