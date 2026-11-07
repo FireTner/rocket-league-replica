@@ -165,12 +165,10 @@ are the user's own install, read at runtime, gitignored. See
   never see an arena dir.
 - The pack format is ours and versioned (`rl-arena-pack/1`), so the loader is
   ours to change.
-- **DEBT:** the game reads `[arena] arena_dir` with its own tolerant reader
-  (`rl::ReadIniKey`) because the `Settings` struct does not carry the key — a
-  menu "Save & close" therefore **drops** `arena_dir` from
-  `config/settings.ini` (asserted by the roundtrip test, so the debt is
-  visible, not silent). The settings owner must fold `arena_dir` into
-  `ArenaSettings`.
+- `ArenaSettings::arenaDir` carries `[arena] arena_dir`. `Settings::Load`
+  reads it and `Settings::Save` writes it back, so a menu Save & close keeps
+  a non-empty path. The default stays empty (the analytic shell). Startup
+  still resolves the directory with `rl::ReadIniKey` (flag > ini).
 
 ## Open debts (honest list, carried to the next owner)
 
@@ -183,9 +181,7 @@ are the user's own install, read at runtime, gitignored. See
 3. **The 26 imported placements are not drawn** — they are the sky sphere and
    the billboard sprites of the sibling package; none carries a decoded
    diffuse, so they are counted and reported, never silently dropped.
-4. **`arena_dir` is dropped by `Settings::Save`** (see above) until the
-   settings owner folds it into `ArenaSettings`.
-5. **The 5 LOD meshes pack LOD0 only** — the extra LOD triangles are carried
+4. **The 5 LOD meshes pack LOD0 only** — the extra LOD triangles are carried
    in the index buffer and flagged, but the buffer is not split per LOD.
-6. **A7 is deferred** — no side-by-side fidelity captures, no A/B perf
+5. **A7 is deferred** — no side-by-side fidelity captures, no A/B perf
    verdict lines, and `tools/verify/arena_gates.py` (AN1–AN7) does not exist.

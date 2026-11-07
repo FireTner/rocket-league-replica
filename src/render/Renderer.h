@@ -17,9 +17,9 @@
 namespace rl {
 
 // ---- tolerant INI reader (A6b) ---------------------------------------------
-// Reads ONE key out of ONE section of an INI file. The `[arena] arena_dir`
-// key is NOT carried by the A5 `Settings` struct (`src/settings/**` is out of
-// A6b's scope), so the game reads it with this reader instead.
+// Reads ONE key out of ONE section of an INI file. Startup still resolves
+// `[arena] arena_dir` here (flag > ini). `ArenaSettings::arenaDir` stores the
+// same key so `Settings::Save` writes it back.
 //
 // Rules (a subset of docs/INI_SCHEMA.md's grammar): `;` or `#` starts a
 // comment, `[section]` headers, `key = value` pairs; section and key names

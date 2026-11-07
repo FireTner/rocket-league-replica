@@ -5,11 +5,10 @@
 // Headless: no GL context is created (the reader is plain C++).  Exit 0 = all
 // checks pass.
 //
-// Why a separate file instead of the settings roundtrip: the reader lives in
-// src/render/Renderer.h (A6b's owned file) because src/settings/** is out of
-// A6b's scope — the A5 `Settings` struct does not carry `arena_dir`, so the
-// game reads that one key itself.  The roundtrip test still covers the
-// shipped file's [arena] section (see tests/test_settings_roundtrip.cpp).
+// Why a separate file instead of the settings roundtrip: startup still
+// resolves `[arena] arena_dir` with this reader (flag > ini). `Settings`
+// stores the same key and the roundtrip test proves Save writes it back
+// (see tests/test_settings_roundtrip.cpp).
 #define SDL_MAIN_HANDLED 1  // keep SDL from renaming main()
 #include <cstdio>
 #include <fstream>

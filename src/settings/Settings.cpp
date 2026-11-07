@@ -426,6 +426,8 @@ bool Settings::Load(const std::string& path, Settings& out, std::string* err) {
     {
         const std::string* v = ini.get("arena", "mesh_dir");
         if (v) out.arena.meshDir = *v;  // free text; empty = built-in default
+        const std::string* arenaDir = ini.get("arena", "arena_dir");
+        if (arenaDir) out.arena.arenaDir = *arenaDir;  // empty = analytic shell
     }
     getI("game", "kickoff_index", out.game.kickoffIndex);
     getI("render", "msaa", out.render.msaa);
@@ -506,6 +508,7 @@ bool Settings::Save(const std::string& path, const Settings& s, std::string* err
         << "recharge = " << f(s.boost.recharge) << "\n"
         << "\n[arena]\nsoccar = " << (s.arena.soccar ? "true" : "false") << "\n"
         << "mesh_dir = " << s.arena.meshDir << "\n"
+        << "arena_dir = " << s.arena.arenaDir << "\n"
         << "\n[game]\nkickoff_index = " << s.game.kickoffIndex << "\n"
         << "\n[render]\nmsaa = " << s.render.msaa << "\n"
         << "max_fps = " << s.render.maxFps << "\n"
