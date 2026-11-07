@@ -997,3 +997,38 @@ has no texture and no lightmap. `OOBFloor` stays the grey-green tint; its
 only resolved texture is `Hexagons_Pack_B`, which is not a colour bind.
 FieldSkin on the main pitch meshes is unchanged. No-pack frames do not
 enter this path.
+
+## Day sky diffuse and stadium cards (2026-11-07)
+
+Pack path only (`Renderer::BuildArenaPack`). This change does not edit
+`kArenaVs` / `kArenaFs`. The goal-net draw, the pitch-overlay rules, and
+the Floor_Team lightmap reject stay as they are. No pack still issues no
+arena GL call.
+
+`SkySphere01` keeps a resolved albedo. The pale tint `(0.73, 0.82, 0.90)`
+is only the fallback when that albedo is missing. On the local DFH day pack,
+`SkyDome_MAT` is `untextured-by-design` (no sampler), and the other shell
+(`FogHemisphere_V2_Mat` → `Curve_FogDusk_01`, 2×512) is a fog lookup, not an
+albedo, so the dome stays the tint.
+
+Fog, shaft, cloud, and sprite sections join the existing transparent bucket
+only when `ArenaSectionTransparent` already matches, or when their diffuse
+has a texel alpha below 250 (the pack shader blends with `t.a`; there is no
+new blend mode). Anything else is counted and skipped. Measured on that
+pack, none of them qualify:
+
+* `CloudPlane` / `DaytimeClouds_INST` (no diffuse)
+* `FieldSpotLights_Team1_Combined` / `LightCone_Team1_MIC`
+* `FieldSpotLights_Team2_Combined` / `LightCone_Team2_MIC`
+* `SpriteXY` / `LightCone_Team1_MIC`, `SpriteXY` / `LightCone_Team2_MIC`
+* `FogMesh_01` / `StadiumFog_Team1_MIC`, `FogMesh_01` / `StadiumFog_Team2_MIC`
+* `Circle_Sprite` / `FogSheet_Mat` (`FillFlare` is opaque and not an albedo)
+* `Circle_Sprite` / `CubeMap_HotSpot_Mat`, `CubeMap_HotSpot_Team1_MIC`,
+  `CubeMap_HotSpot_Team2_MIC`, `HotSpot_Mat`
+* `SkySphere01` / `FogHemisphere_V2_Mat`
+* external `Cube` / `SkyBoxFilter_MIC` (not a card; still not drawn)
+
+Measured offscreen on machine B (`NVIDIA GeForce RTX 4060 Laptop GPU`,
+`4.6.0 NVIDIA 615.78.08`): `[arena] sky/cards blended: (none)` and the skip
+list above. `SkyDome_MAT` still takes the pale tint. Boost-pad light cones
+stay on the earlier `FXActor_TA` skip and never reach this gate.
