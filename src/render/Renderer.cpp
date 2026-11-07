@@ -870,36 +870,38 @@ constexpr float kFieldUvScale = 1.0f / 8192.0f;
 // Sky dome radius, inside the camera far plane (40000) and outside the bowl.
 constexpr float kSkyRadius = 36000.0f;
 
-// Transparent (in-game blended) arena sections: the force-field cage/glass
-// that reads as a faint blue veil with thin hex lines in RL (see the second
-// reference capture: buildings visible through it). The pack's materials
-// carry no blend flag, so this is a name join — the only materials/meshes
-// with these substrings are the 6 glass/cage materials and the 11 FF_*/glass
-// meshes (verified against the DFH Stadium day manifest: no opaque material
-// or mesh matches). Matched sections draw in the blended pass; everything
-// else stays in the opaque pass.
+// Force-field glass and the goal/side/roof nets, drawn in the blended pass.
+//
+// DFH Stadium day material rows have no blend, opacity, or masked flag.
+// The keys are name, class, source, package, file, export, status, rule,
+// parameter, diffuse_texture, texture_index, section_slots. These six
+// materials are the whole glass/net set in that pack. The four mesh names
+// are the DynamicMeshActor shells, so an empty slot on those shells still
+// blends.
+//
+// The test is exact, not a substring. "glass" on the mesh name also covers
+// Stadium_GlassSupports (DarkMetal_Mat / MetalBeam_SoftEdge_Mat) and the
+// grate section of Goal_STD_Glass; those stay in the opaque pass.
+//
+// Beach_NetFence_MIC binds Hexagons_Pack_01_T. Upload converts that mask
+// to an ice-blue net whose alpha peaks at G*80/255 (0.31). The blended
+// pass keeps the lines and drops the holes. uAlphaTest at 0.5 would
+// discard every texel of that mask, so the nets are not alpha-tested.
+// Untextured glass (ForceField_HexGage, HexGlass_*, Glass_Projected_*)
+// has no mask; upload stamps a 1x1 texel at kArenaGlassAlpha so the same
+// blend path is see-through. The shader's untextured alpha is 1, and
+// kArenaFs is left unchanged.
 inline bool ArenaSectionTransparent(const std::string& meshName,
                                     const std::string& matName) {
-    auto has = [](const std::string& hay, const char* needle) {
-        if (hay.empty()) return false;
-        std::string n = hay;
-        for (char& c : n) c = char(std::tolower((unsigned char)c));
-        return n.find(needle) != std::string::npos;
-    };
-    // Mesh side: FF_Roof/FF_Side/FF_Goal/FFCage + *Glass* (covers the 11
-    // transparent meshes; null-slot glass placements are caught here even
-    // though they bind no material).
-    if (has(meshName, "glass") || has(meshName, "cage") ||
-        has(meshName, "fence") || has(meshName, "force") ||
-        (meshName.size() >= 3 && (meshName[0] == 'F' || meshName[0] == 'f') &&
-         (meshName[1] == 'F' || meshName[1] == 'f') && meshName[2] == '_'))
+    if (matName == "Beach_NetFence_MIC" ||
+        matName == "ForceField_HexGage_MIC" ||
+        matName == "Glass_Projected_V2_Mat" ||
+        matName == "Glass_Projected_V2_Team2_MIC" ||
+        matName == "HexGlass_WithArrows_Team1_MIC" ||
+        matName == "HexGlass_WithArrows_Team2_MIC")
         return true;
-    // Material side: Beach_NetFence, ForceField_HexGage, Glass_*, HexGlass_*.
-    if (has(matName, "glass") || has(matName, "force") ||
-        has(matName, "cage") || has(matName, "fence") ||
-        has(matName, "netfence") || has(matName, "hexglass"))
-        return true;
-    return false;
+    return meshName == "FF_Goal" || meshName == "FF_Side" ||
+           meshName == "FF_Roof" || meshName == "FFCage_Full";
 }
 
 // Pale ice-blue veil for untextured glass (matches the fallbackTint "glass"
@@ -1276,11 +1278,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         if (inst.mesh.rfind("Sprite", 0) == 0 ||
             inst.mesh.rfind("FogMesh", 0) == 0 ||
             inst.mesh.rfind("FieldSpotLights", 0) == 0 ||
-            inst.mesh.rfind("CloudPlane", 0) == 0 ||
-            // Goal/side force-field nets bind Hexagons_Pack_01_T; opaque they
-            // read as a purple/blue moiré slab across the goal camera.
-            inst.mesh.rfind("FF_", 0) == 0 ||
-            inst.mesh.rfind("FFCage", 0) == 0) {
+            inst.mesh.rfind("CloudPlane", 0) == 0) {
             ++skipped;
             continue;
         }
@@ -1512,17 +1510,19 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             if (texId >= 0 && size_t(texId) < pack.textures.size())
                 boostPad = pack.textures[size_t(texId)].name.rfind(
                                "BoostPad_", 0) == 0;
-            // Force-field/glass transparency (no blend flag in the pack, so a
-            // name join — see ArenaSectionTransparent). Transparent sections
-            // get their own buckets (key.transparent). Untextured ones take
-            // the pale veil, unless a team tint was already chosen.
+            // Force-field/glass transparency. The pack has no blend flag;
+            // ArenaSectionTransparent is the exact material/mesh list.
+            // Transparent sections get their own buckets (key.transparent).
+            // Team/hex glass keeps fallback tint 4. Other untextured glass
+            // takes the ice-blue veil. Alpha is stamped at upload.
             const bool secTransparent =
                 ArenaSectionTransparent(mesh->name, secMatName);
-            if (secTransparent && texId < 0 && tint != 8 && tint != 9) {
+            if (secTransparent && texId < 0 && tint != 4 && tint != 8 &&
+                tint != 9) {
                 tintRgb[0] = kArenaGlass[0];
                 tintRgb[1] = kArenaGlass[1];
                 tintRgb[2] = kArenaGlass[2];
-                tint = 6;  // glass-veil bucket (opaque grey stays tint 0..5)
+                tint = 6;
             }
             const bool unlit = skyDome || fieldSkin || boostPad || tint == 5 ||
                                tint == 7 || tint == 8 || tint == 9 ||
@@ -1791,6 +1791,31 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.transparent = key.transparent;
         g.alphaTest = key.alphaTest;
         g.tag = b.tag;
+        // Untextured glass has no mask and the pack shader writes alpha 1
+        // when there is no diffuse. A 1x1 texel at kArenaGlassAlpha puts
+        // that alpha on the existing blend path (kArenaFs unchanged).
+        if (key.transparent && g.texId < 0) {
+            const auto byte = [](float c) -> uint8_t {
+                if (c <= 0.f) return 0;
+                if (c >= 1.f) return 255;
+                return (uint8_t)(c * 255.f + 0.5f);
+            };
+            const uint8_t px[4] = {
+                byte(b.tintRgb[0]), byte(b.tintRgb[1]), byte(b.tintRgb[2]),
+                byte(kArenaGlassAlpha)};
+            GLuint veil = 0;
+            glGenTextures(1, &veil);
+            glBindTexture(GL_TEXTURE_2D, veil);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, px);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            arenaTextures_.push_back(veil);
+            g.texId = int(veil);
+        }
         g.cell[0] = key.cx; g.cell[1] = key.cy; g.cell[2] = key.cz;
         g.idxCount = uint32_t(b.idx.size());
         g.tris = b.idx.size() / 3;
