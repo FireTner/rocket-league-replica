@@ -202,7 +202,7 @@ int main(int argc, char** argv) {
       pack.textures.size(), pack.usedSectionSlots);
 
   // ---- 3. the textures decode -------------------------------------------
-  uint64_t rgbaTotal = 0;
+  uint64_t rgbaTotal = 0, blockTotal = 0;
   int dxt1 = 0, dxt5 = 0, rgba8 = 0;
   for (const ArenaTexture& t : pack.textures) {
     const size_t want = static_cast<size_t>(t.width) *
@@ -213,7 +213,21 @@ int main(int argc, char** argv) {
     CHECK(t.rgba.size() > 0, "texture '%s' decoded to nothing", t.name.c_str());
     CHECK(t.width > 0 && t.height > 0, "texture '%s' has no size",
           t.name.c_str());
+    if (t.format == ArenaTexFormat::kDxt1 || t.format == ArenaTexFormat::kDxt5) {
+      const size_t bw = static_cast<size_t>((t.width + 3) / 4);
+      const size_t bh = static_cast<size_t>((t.height + 3) / 4);
+      const size_t blockBytes = t.format == ArenaTexFormat::kDxt1 ? 8u : 16u;
+      const size_t wantBlocks = bw * bh * blockBytes;
+      CHECK(t.blocks.size() == wantBlocks,
+            "texture '%s' kept %zu compressed bytes (want %zu)",
+            t.name.c_str(), t.blocks.size(), wantBlocks);
+    } else {
+      CHECK(t.blocks.empty(),
+            "texture '%s' kept %zu compressed bytes for an expanded payload",
+            t.name.c_str(), t.blocks.size());
+    }
     rgbaTotal += t.rgba.size();
+    blockTotal += t.blocks.size();
     if (t.format == ArenaTexFormat::kDxt1) ++dxt1;
     if (t.format == ArenaTexFormat::kDxt5) ++dxt5;
     if (t.format == ArenaTexFormat::kRgba8) ++rgba8;
@@ -230,9 +244,9 @@ int main(int argc, char** argv) {
     CHECK(dxt1 == 8 && dxt5 == 5, "the compressed formats are DXT1=%d DXT5=%d "
           "(want 8/5)", dxt1, dxt5);
     std::printf("  textures         : %zu decoded, %llu bytes of RGBA8 "
-                "(DXT1 %d, DXT5 %d)\n",
+                "(DXT1 %d, DXT5 %d), %llu compressed bytes retained\n",
                 pack.textures.size(), static_cast<unsigned long long>(rgbaTotal),
-                dxt1, dxt5);
+                dxt1, dxt5, static_cast<unsigned long long>(blockTotal));
   }
 
   // ---- 4. the meshes are internally consistent ---------------------------

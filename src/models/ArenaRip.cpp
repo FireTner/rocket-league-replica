@@ -1048,6 +1048,9 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
 
       const uint8_t* data = blob + payload.offset;
       const size_t len = static_cast<size_t>(payload.length);
+      // Keep the compressed payload.  The RGBA8 decode below stays so the
+      // headless contract test can compare pixels to rldds.py; the GL upload
+      // uses `blocks` when the driver accepts the S3TC format.
       if (storage == "rgba8") {
         if (len != expectedRgba) {
           return fail(where + " stores " + std::to_string(len) +
@@ -1066,6 +1069,7 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
                         "x" + std::to_string(tex.height) +
                         " PF_DXT1 texture needs " + std::to_string(need));
           }
+          tex.blocks.assign(data, data + len);
           if (!DecodeDxt1(data, len, tex.width, tex.height, tex.rgba)) {
             return fail(where + " could not be decoded as PF_DXT1");
           }
@@ -1079,6 +1083,7 @@ bool LoadArenaPack(const std::string& dir, ArenaPack& out) {
                         "x" + std::to_string(tex.height) +
                         " PF_DXT5 texture needs " + std::to_string(need));
           }
+          tex.blocks.assign(data, data + len);
           if (!DecodeDxt5(data, len, tex.width, tex.height, tex.rgba)) {
             return fail(where + " could not be decoded as PF_DXT5");
           }

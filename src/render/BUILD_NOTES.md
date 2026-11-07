@@ -971,3 +971,17 @@ live chart is cyan (~0.67, 1.18, 1.18) and that cast paints the concrete
 purple. Trim-light and goal-generator materials (fallback tint 8 and 9) add
 those existing team colours as an emissive term. The no-pack path does not
 compile or draw this program. Mesh skips are unchanged.
+
+## Compressed arena-pack upload
+
+`ArenaTexture::blocks` keeps the original DXT1/DXT5 payload next to the CPU
+RGBA8 decode (the headless rip test still compares `rgba` to `rldds.py`).
+`Renderer::BuildArenaPack` uploads those blocks with `glCompressedTexImage2D`
+when `GL_EXT_texture_compression_s3tc` accepts the format:
+`PF_DXT1` → `GL_COMPRESSED_RGBA_S3TC_DXT1_EXT` (punch-through alpha, same as
+the CPU decoder) and `PF_DXT5` → `GL_COMPRESSED_RGBA_S3TC_DXT5_EXT`. A refused
+format, a size that is not a multiple of 4, or a driver that drops the
+compressed storage is re-uploaded as RGBA8 and named on stderr. Hexagons,
+`FieldSkin_FutureGrid_D`, and `BoostPad_*` stay RGBA8 because the upload
+rewrites their pixels. Mesh buckets are unchanged. No pack still uploads
+nothing, so the no-pack VG1 capture stays put.

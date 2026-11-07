@@ -54,8 +54,12 @@ python3 tools/arena/rip_arena.py --verify arena_assets/stadium_day
 4×4 block) and `PF_DXT5` (BC3, 16 B per 4×4 block) plus the raw `PF_*` forms.
 The result is **byte-identical to the Python decoder** `tools/arena/rldds.py`
 on **13/13** decoded textures (measured; the contract test asserts it), and
-the pack's `rgba8` size invariant `w*h*4` holds on every texture.  The GL side
-(A6b) is a thin upload layer on top of those CPU pixels.
+the pack's `rgba8` size invariant `w*h*4` holds on every texture.  The reader
+also keeps the original DXT blocks on `ArenaTexture::blocks`.  The GL upload
+sends those blocks as `GL_COMPRESSED_RGBA_S3TC_DXT1_EXT` /
+`GL_COMPRESSED_RGBA_S3TC_DXT5_EXT` when the driver accepts S3TC, and falls
+back to the decoded RGBA8 for a refused format or for a texture whose pixels
+are rewritten at upload.  The CPU decode stays for the headless contract test.
 
 **Still open** (owner decision, round A8): the fidelity captures and the A/B
 perf verdict (**A7**) are deferred, and `tools/verify/arena_gates.py`
