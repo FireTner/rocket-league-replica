@@ -46,6 +46,7 @@ int main() {
     CHECK(s.physics.tick == 120, "physics.tick == 120");
     CHECK(s.boost.unlimited == false, "boost.unlimited == false");
     CHECK(s.arena.soccar == true, "arena.soccar == true");
+    CHECK(s.arena.arenaDir.empty(), "shipped arena_dir is empty");
     CHECK(s.game.kickoffIndex == 0, "game.kickoff_index == 0");
     CHECK(s.render.wallOpacity == 0.40f, "render.wall_opacity == 0.40");
 
@@ -63,6 +64,7 @@ int main() {
     s.boost.unlimited = true;
     s.boost.drain = 50.0f;
     s.arena.soccar = false;
+    s.arena.arenaDir = "/tmp/rl_arena_roundtrip";
     s.game.kickoffIndex = 3;
     s.render.wallOpacity = 0.65f;
     bool saved = rl::Settings::Save("/tmp/rt_out.ini", s, &err);
@@ -89,6 +91,8 @@ int main() {
     CHECK(r.boost.drain == 50.0f, "drain mutation survived (50)");
     CHECK(r.boost.recharge == 10.0f, "untouched recharge intact (10)");
     CHECK(r.arena.soccar == false, "soccar mutation survived (false)");
+    CHECK(r.arena.arenaDir == "/tmp/rl_arena_roundtrip",
+          "arena_dir mutation survived");
     CHECK(r.game.kickoffIndex == 3, "kickoff_index mutation survived (3)");
     CHECK(r.render.wallOpacity == 0.65f, "wall_opacity mutation survived (0.65)");
 
@@ -96,6 +100,7 @@ int main() {
     rl::Settings d = rl::Settings::Defaults();
     CHECK(d.camera.fov == 110.0f && d.physics.tick == 120, "Defaults() matches shipped ini");
     CHECK(d.render.wallOpacity == 0.40f, "Defaults() wall_opacity is 0.40");
+    CHECK(d.arena.arenaDir.empty(), "Defaults() arena_dir is empty");
     {
         std::ofstream bare("/tmp/rt_no_wall.ini");
         bare << "[version]\nschema = 1\n[camera]\nfov = 110\n";
@@ -110,11 +115,8 @@ int main() {
     bool missOk = rl::Settings::Load("/tmp/does_not_exist_xyz.ini", missing, &err);
     CHECK(!missOk && missing.camera.fov == 110.0f, "missing file -> defaults + false");
 
-    // A6b: the [arena] section of the SHIPPED file. `mesh_dir` and the new
-    // `arena_dir` are read by the game (the A5 Settings struct does not carry
-    // `arena_dir` yet — see docs/INI_SCHEMA.md), so the roundtrip contract
-    // for them is the file itself: both keys must be present, in [arena],
-    // with the shipped default of "off" (empty).
+    // Shipped [arena] stays off (empty). A non-empty arena_dir must survive
+    // Save, and a default save must still write the key with an empty value.
     std::printf("[5] the shipped [arena] section (mesh_dir + arena_dir)\n");
     {
         std::ifstream f("config/settings.ini");
@@ -150,10 +152,6 @@ int main() {
         }
         CHECK(meshEmpty, "mesh_dir ships empty (off)");
         CHECK(arenaEmpty, "arena_dir ships empty (off)");
-        // The A5 loader stays tolerant of the key it does not know: the
-        // shipped file loads (step 1) and the SAVED file still loads. The A5
-        // writer DROPS the unknown key — that is the documented A6b debt
-        // (fold `arena_dir` into ArenaSettings; docs/INI_SCHEMA.md).
         std::ifstream g("/tmp/rt_out.ini");
         std::string gl, gout;
         bool gin = false;
@@ -164,11 +162,32 @@ int main() {
             }
             if (gin) gout += gl + "\n";
         }
-        CHECK(gout.find("arena_dir") == std::string::npos,
-              "Settings::Save drops the unknown arena_dir key (A6b debt)");
+        CHECK(gout.find("arena_dir = /tmp/rl_arena_roundtrip") != std::string::npos,
+              "Settings::Save writes the non-empty arena_dir");
         rl::Settings rr;
         CHECK(rl::Settings::Load("/tmp/rt_out.ini", rr, &err),
-              "the saved file still loads (unknown key ignored)");
+              "the saved file still loads");
+        CHECK(rr.arena.arenaDir == "/tmp/rl_arena_roundtrip",
+              "reloaded save keeps the non-empty arena_dir");
+        bool emptySaved = rl::Settings::Save("/tmp/rt_empty_arena.ini", d, &err);
+        CHECK(emptySaved, "save of Defaults() writes arena_dir");
+        rl::Settings emptyLoaded;
+        CHECK(rl::Settings::Load("/tmp/rt_empty_arena.ini", emptyLoaded, &err),
+              "empty arena_dir save reloads");
+        CHECK(emptyLoaded.arena.arenaDir.empty(),
+              "saved default arena_dir stays empty");
+        std::ifstream eg("/tmp/rt_empty_arena.ini");
+        std::string el, eout;
+        bool ein = false;
+        while (std::getline(eg, el)) {
+            if (!el.empty() && el[0] == '[') {
+                ein = (el.compare(0, 7, "[arena]") == 0);
+                continue;
+            }
+            if (ein) eout += el + "\n";
+        }
+        CHECK(eout.find("arena_dir =") != std::string::npos,
+              "default save still emits the arena_dir key");
     }
 
     std::printf(failures == 0 ? "ROUNDTRIP PASS\n" : "ROUNDTRIP FAIL\n");
