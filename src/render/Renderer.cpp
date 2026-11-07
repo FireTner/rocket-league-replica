@@ -1100,7 +1100,8 @@ typedef char GLchar;
 // builds this program.
 //   colour = albedo * vertexColour? * lightmap * wrap + emissive
 // Vertex colour is multiplied only when the mesh stored one (this cook does
-// not). Lightmap hue is kept, except DFH_Day_StadiumBase2 (uLmLuma).
+// not). Lightmap hue is kept, except DFH_Day_StadiumBase2 and the
+// Stadium_Top half-atlas neighbour charts (uLmLuma).
 namespace {
 constexpr const char* kArenaVs = R"(#version 450 compatibility
 layout(location = 0) in vec3 aPos;
@@ -1114,12 +1115,15 @@ out vec2 vUv1;
 out vec3 vNrm;
 out vec3 vTan;
 out vec3 vColor;
+out float vEyeDist;
 void main() {
   vUv0 = aUv0;
   vUv1 = aUv1;
   vNrm = gl_NormalMatrix * aNrm;
   vTan = gl_NormalMatrix * aTan;
   vColor = aColor;
+  vec4 eye = gl_ModelViewMatrix * vec4(aPos, 1.0);
+  vEyeDist = length(eye.xyz);
   gl_Position = gl_ModelViewProjectionMatrix * vec4(aPos, 1.0);
 }
 )";
@@ -1137,11 +1141,14 @@ uniform int uNrmMode;
 uniform int uLmLuma;
 uniform int uAlphaTest;
 uniform int uUseColor;
+uniform int uNearVeil;
+uniform int uGlowFade;
 in vec2 vUv0;
 in vec2 vUv1;
 in vec3 vNrm;
 in vec3 vTan;
 in vec3 vColor;
+in float vEyeDist;
 void main() {
   vec3 albedo = uTint;
   float alpha = 1.0;
@@ -1193,7 +1200,16 @@ void main() {
   }
   float ndl = max(dot(n, normalize(vec3(0.35, 0.2, 0.9))), 0.0);
   float shade = mix(0.92, 1.0, ndl);
-  gl_FragColor = vec4(albedo * lm * shade + uEmit, alpha);
+  // The goal camera sits inside the force-field glass and the team
+  // glow. Both are a thick blue border at full strength. Far trim
+  // lights stay solid; the far dome keeps its veil.
+  // The goal-mouth shell is about 900 uu from that camera. Side trim
+  // and the far goal, from the chase camera, are past ~2600 uu.
+  float near = smoothstep(1400.0, 2600.0, vEyeDist);
+  vec3 emit = uEmit * mix(0.0, 1.0, near);
+  if (uNearVeil != 0) alpha *= mix(0.08, 1.0, near);
+  if (uGlowFade != 0) alpha *= mix(0.05, 1.0, near);
+  gl_FragColor = vec4(albedo * lm * shade + emit, alpha);
 }
 )";
 
@@ -1783,10 +1799,21 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             key.alphaTest = alphaTest;
             // DFH_Day_StadiumBase2's live DirectionalMax chart is cyan
             // (~0.67, 1.18, 1.18). On the grey concrete that cast reads
-            // purple, so this mesh keeps luminance. Every other chart
-            // keeps its colour.
+            // purple, so this mesh keeps luminance.
+            // Stadium_Top's three half-atlas quadrants are the other
+            // neighbour charts (MEASURED chroma 85 / 55 / 55: purple, green,
+            // red). Hue there paints the roof truss as a rainbow band.
+            // Luminance keeps the girders' shade. Pitch floors already
+            // drop these rects; OOBFloor's quadrant stays coloured.
+            bool neighbourLm = false;
+            if (useLm && mesh->name.find("Stadium_Top") != std::string::npos) {
+                const float sx = inst.lightmap.coordScale[0];
+                const float sy = inst.lightmap.coordScale[1];
+                neighbourLm = sx > 0.4f && sx < 0.55f && sy > 0.4f && sy < 0.55f;
+            }
             key.lmLuma = useLm &&
-                mesh->name.find("StadiumBase") != std::string::npos;
+                (mesh->name.find("StadiumBase") != std::string::npos ||
+                 neighbourLm);
             key.color = hasColor;
             if (useLm) {
                 key.lmScale[0] = inst.lightmap.colorScale[0];
@@ -1933,6 +1960,8 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             arenaUniLmLuma_ = glGetUniformLocation(arenaProg_, "uLmLuma");
             arenaUniAlphaTest_ = glGetUniformLocation(arenaProg_, "uAlphaTest");
             arenaUniUseColor_ = glGetUniformLocation(arenaProg_, "uUseColor");
+            arenaUniNearVeil_ = glGetUniformLocation(arenaProg_, "uNearVeil");
+            arenaUniGlowFade_ = glGetUniformLocation(arenaProg_, "uGlowFade");
             std::fprintf(stderr, "[arena] pack GLSL program ready\n");
         } else {
             std::fprintf(stderr,
@@ -2129,6 +2158,7 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
         g.decal = key.decal;
         g.transparent = key.transparent;
         g.alphaTest = key.alphaTest;
+        g.nearVeil = false;
         g.tag = b.tag;
         // Untextured glass has no mask and the pack shader writes alpha 1
         // when there is no diffuse. A 1x1 texel at kArenaGlassAlpha puts
@@ -2154,6 +2184,11 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             glBindTexture(GL_TEXTURE_2D, 0);
             arenaTextures_.push_back(veil);
             g.texId = int(veil);
+            // Untextured glass has no hex mask. Up close (the goal camera
+            // sits inside Goal_STD_Glass / the FF cage) a flat veil is a
+            // thick blue border. The fragment shader thins that alpha.
+            // Textured nets keep their own mask and do not set this.
+            g.nearVeil = true;
         }
         g.cell[0] = key.cx; g.cell[1] = key.cy; g.cell[2] = key.cz;
         g.idxCount = uint32_t(b.idx.size());
@@ -2275,6 +2310,8 @@ void Renderer::DrawArenaPack() {
             glUniform1i(arenaUniLmLuma_, bk.lmLuma ? 1 : 0);
             glUniform1i(arenaUniAlphaTest_, bk.alphaTest ? 1 : 0);
             glUniform1i(arenaUniUseColor_, bk.useColor ? 1 : 0);
+            glUniform1i(arenaUniNearVeil_, bk.nearVeil ? 1 : 0);
+            glUniform1i(arenaUniGlowFade_, bk.emit ? 1 : 0);
             glEnableVertexAttribArray(0);
             glEnableVertexAttribArray(1);
             glEnableVertexAttribArray(2);
@@ -2333,14 +2370,16 @@ void Renderer::DrawArenaPack() {
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
     for (const ArenaBucket& bk : arenaBuckets_) {
-        if (bk.transparent) continue;
+        // Team glow is drawn blended: up close it is the goal-mouth
+        // border, and an opaque pass would ignore the distance alpha.
+        if (bk.transparent || bk.emit) continue;
         if (drawBucket(bk, false)) ++visible; else ++culled;
     }
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glDepthMask(GL_FALSE);
     for (const ArenaBucket& bk : arenaBuckets_) {
-        if (!bk.transparent) continue;
+        if (!bk.transparent && !bk.emit) continue;
         if (drawBucket(bk, true)) ++visible; else ++culled;
     }
     if (useGlsl) {
@@ -2394,6 +2433,8 @@ void Renderer::ShutdownArenaPack() {
     arenaUniEmit_ = -1;
     arenaUniUseDiff_ = arenaUniUseLm_ = arenaUniUseNrm_ = arenaUniNrmMode_ = -1;
     arenaUniLmLuma_ = arenaUniAlphaTest_ = arenaUniUseColor_ = -1;
+    arenaUniNearVeil_ = -1;
+    arenaUniGlowFade_ = -1;
     arenaReady_ = false;
 }
 

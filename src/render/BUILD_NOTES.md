@@ -954,6 +954,27 @@ stand-in, not a mesh silhouette. The analytic shell never calls it.
 `tests/test_pitch_shadow.cpp` checks the ray, the height offset, and that a
 blob past the pitch is dropped.
 
+## Roof truss hue and the near goal veil (2026-11-07)
+
+Three pack-draw regressions against the fixed-function luminance shader.
+
+`Stadium_Top`'s three DirectionalMax quadrants are half-atlas neighbour
+charts (scale 0.498). Measured sample chroma is 85 / 55 / 55 (purple,
+green, red). Keeping that hue paints the roof lattice as a rainbow band.
+`uLmLuma` now covers those rects, same as `DFH_Day_StadiumBase2`, so the
+truss shade stays grey. `Stadium_Supports` (`DarkMetal_Mat`) and
+`Stadium_GlassSupports` (`DarkMetal_Mat` / `MetalBeam_SoftEdge_Mat`) were
+not skipped and are not dropped; the missing girders were this hue
+replacing the lattice shade.
+
+The goal camera sits inside `Goal_STD_Glass`, the FF cage, and the
+team glow (`TrimLight_Glow` / `GoalGenerator`, tint 8 and 9). That glow
+is drawn in the blended pass. Untextured glass (`nearVeil`) and the glow
+alpha both fade from 1400 uu to full strength at 2600 uu, so the
+near frame is a thin veil. Far trim lights stay solid (alpha 1). Textured nets (`Beach_NetFence_MIC` /
+`Hexagons_Pack_01_T`) are not `nearVeil`. Pitch floors, the shadow
+ellipse, and the no-pack path are unchanged.
+
 ## Pack stadium shader (2026-11-07)
 
 The pack-only program (`kArenaVs` / `kArenaFs`) is
