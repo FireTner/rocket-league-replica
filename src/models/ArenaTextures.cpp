@@ -261,6 +261,12 @@ void FillTurf(unsigned char* img) {
         float br = dark ? darkR : liteR;
         float bg = dark ? darkG : liteG;
         float bb = dark ? darkB : liteB;
+        // Side-of-field wash. v=0 is world -Y (blue goal), v=1 is +Y (orange),
+        // matching FillTurfMarkings. UNVERIFIED: no measured DFH bytes. A few
+        // percent keeps VG14 green dominance and the mow-band luma window.
+        const float side = ((float)y + 0.5f) / (float)kTurfH * 2.0f - 1.0f;
+        br *= 1.0f + 0.06f * side;
+        bb *= 1.0f - 0.08f * side;
         for (int x = 0; x < kTurfW; x++) {
             // Grass grain: two octaves of value noise, low amplitude so the
             // floor stays within a couple of luma steps of the flat fill the

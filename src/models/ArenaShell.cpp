@@ -394,8 +394,9 @@ enum DrawId {
 // Plan §1 sums as CLAIMED (used only for the build-log comparison). NOTE the
 // accepted deviation: C1 bakes to 16 tris (8 quads), not the 24 the plan
 // table prints — so the TRUE glass/mesh/fallback sums below differ by -8.
-const uint64_t kPlanMesh[kDraws] = {1056, 2, 416, 2, 144, 2, 480, 24, 4};
-const uint64_t kPlanFallback[kDraws] = {1008, 2, 288, 2, 16, 2, 224, 24, 4};
+// Opaque plan includes 16 stadium lamps × 2 boxes × 12 tris = 384.
+const uint64_t kPlanMesh[kDraws] = {1440, 2, 416, 2, 144, 2, 480, 24, 4};
+const uint64_t kPlanFallback[kDraws] = {1392, 2, 288, 2, 16, 2, 224, 24, 4};
 
 // Bake all 9 buckets for one mode. Every literal below is copied from the
 // cited main.cpp call site (read-only this step); frame/UV/color rules match
@@ -526,6 +527,18 @@ void bake(bool meshMode, Bucket out[kDraws]) {
                 0.95f, 0.95f, 0.95f, 1.0f);
         emitSphere(opq, 908.0f, ys, 643.0f, 12.0f, 6, 0.95f, 0.95f, 0.95f, 1.0f);
         emitSphere(opq, -908.0f, ys, 643.0f, 12.0f, 6, 0.95f, 0.95f, 0.95f, 1.0f);
+    }
+    // Bowl lamps (texturegen::kFieldLamps). Housing is a dull metal box;
+    // the bulb is a smaller warm box. Colours UNVERIFIED (no measured DFH
+    // lamp bytes). Fixed-function vertex colour, no texture.
+    for (int i = 0; i < texturegen::kFieldLampCount; i++) {
+        const texturegen::FieldLamp& lamp = texturegen::kFieldLamps[i];
+        emitBox(opq, Frame::at(lamp.x, lamp.y, lamp.z, 0),
+                texturegen::kLampHousingX, texturegen::kLampHousingY,
+                texturegen::kLampHousingZ, 0.22f, 0.24f, 0.28f, 1.0f);
+        emitBox(opq, Frame::at(lamp.x, lamp.y, lamp.z, 0),
+                texturegen::kLampBulbX, texturegen::kLampBulbY,
+                texturegen::kLampBulbZ, 1.0f, 0.96f, 0.82f, 1.0f);
     }
 
     // B1 turf (main.cpp:895-896): one quad, full footprint.
