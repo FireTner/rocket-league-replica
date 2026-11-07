@@ -1436,12 +1436,14 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
             ++skipped;
             continue;
         }
-        // Reflective centre-trim / hex-floor overlays bind Hexagons_Pack_* as
-        // albedo; sampled they read as purple/iridescent atlas junk over the
-        // FieldSkin. Skip the overlays — pitch shade stays on the skin.
-        if (inst.mesh == "Field_Center_Trim" ||
-            inst.mesh == "Field_STD_Floor_Hex" ||
-            inst.mesh == "Field_Center") {
+        // Field_Center_Trim has no safe albedo. Section 0 resolves
+        // ENV_CarbonFiber_N (a normal; the non-albedo filter drops it) and
+        // section 1 is untextured TrimLight_None. No lightmap, and it is not
+        // a FieldSkin pitch mesh. Field_Center still draws: Hexagons_Pack_B
+        // is rejected and the existing pitch rule binds FieldSkin. The hex
+        // floor still draws: same rejection, then its baked lightmap.
+        // FieldSkin on the main pitch meshes is unchanged.
+        if (inst.mesh == "Field_Center_Trim") {
             ++skipped;
             continue;
         }
@@ -1682,8 +1684,11 @@ bool Renderer::BuildArenaPack(const ArenaPack& pack) {
                 tint = 11;
                 tintRgb[0] = 0.73f; tintRgb[1] = 0.82f; tintRgb[2] = 0.90f;
             }
-            // The out-of-bounds floor is a Reflective_Floor overlay with no
-            // albedo. A flat mid ground reads as the apron instead of a void.
+            // The out-of-bounds floor is a Reflective_Floor overlay. Its only
+            // resolved texture is Hexagons_Pack_B (a spec pack, not albedo),
+            // and FieldSkin is clamped off the apron, so there is no safe
+            // colour to replace this tint. The instance lightmap still
+            // multiplies it. A flat mid ground reads as the apron.
             if (mesh->name == "OOBFloor") {
                 texId = -1;
                 tint = 16;
